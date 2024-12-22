@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Data</title>
+</head>
+<body>
+    <h1>Game Data</h1>
+    <ul>
+        {% for game in games %}
+            <li>
+                <strong>Team 1:</strong> {{ game.team1.name }} - Odd: {{ game.team1.odd }}<br>
+                <strong>Draw:</strong> {{ game.draw.name }} - Odd: {{ game.draw.odd }}<br>
+                <strong>Team 2:</strong> {{ game.team2.name }} - Odd: {{ game.team2.odd }}
+            </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
