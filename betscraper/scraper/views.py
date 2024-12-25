@@ -52,11 +52,15 @@ def scrape_betwin():
     options.headless = True
     page_to_scrape = webdriver.Firefox(service=browser_driver, options=options)
     page_to_scrape.get("https://sports.bwin.de/de/sports/fußball-4/wetten")
-    
-    WebDriverWait(page_to_scrape, 20).until(
-        EC.presence_of_all_elements_located((By.CLASS_NAME, "grid-option-group"))
-    )
-    
+    try:
+        WebDriverWait(page_to_scrape, 2).until(
+            EC.presence_of_all_elements_located((By.CLASS_NAME, "grid-option-group"))
+        )
+    except Exception as e:
+        print(f"Error waiting for page to load: {e}")
+        page_to_scrape.quit()
+        return []
+
     event_rows = page_to_scrape.find_elements(By.CLASS_NAME, "grid-option-group")
     
     gameData = []
@@ -64,7 +68,7 @@ def scrape_betwin():
     for event in event_rows:
         try:
             # Verwende explizite Wartezeiten für die Teamnamen
-            WebDriverWait(event, 10).until(
+            WebDriverWait(event, 2).until(
                 EC.presence_of_all_elements_located((By.CLASS_NAME, "participant-container"))
             )
             team_elements = event.find_elements(By.CLASS_NAME, "participant")
@@ -80,7 +84,7 @@ def scrape_betwin():
                 game = football_game(teams[0], odds[0], odds[1], teams[1], odds[2])
                 gameData.append(game)
         except Exception as e:
-            print(f"Error processing event: {e}")
+            print(f"Error processing event: {e} - {type(e).__name__}: {str(e)}")
     
     page_to_scrape.quit()
     print("Scraping bwin done")
@@ -91,6 +95,9 @@ def scrape_odds(request):
     betwin_data = scrape_betwin()
     all_game_data = tipico_data + betwin_data
     print(betwin_data)
-    # Send the aggregated data to the data_processing module
-    process_data(all_game_data)
-    return render(request, 'scraper/quoten.html', {'games': all_game_data})
+
+    processor = process_data(all_game_data)
+    result_dict = processor.process_data()
+    print(result_dict)
+
+    return render(request, 'scraper/quoten.html', {'games': all_game_data, 'results': result_dict})

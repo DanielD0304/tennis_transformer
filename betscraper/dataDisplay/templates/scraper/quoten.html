@@ -16,5 +16,18 @@
             </li>
         {% endfor %}
     </ul>
+
+    <h1>Results</h1>
+    <ul>
+        {% if results %}
+            {% for draw_name, calculation in results.items %}
+                <li>
+                    <strong>{{ draw_name }}:</strong> {{ calculation }}
+                </li>
+            {% endfor %}
+        {% else %}
+            <li>No results found</li>
+        {% endif %}
+    </ul>
 </body>
 </html>
