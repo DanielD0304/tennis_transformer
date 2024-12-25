@@ -10,13 +10,13 @@
     <ul>
         {% for game in games %}
             <li>
-                <strong>Team 1:</strong> {{ game.team1.name }} - Odd: {{ game.team1.odd }}<br>
-                <strong>Draw:</strong> {{ game.draw.name }} - Odd: {{ game.draw.odd }}<br>
-                <strong>Team 2:</strong> {{ game.team2.name }} - Odd: {{ game.team2.odd }}
+                <strong>Team 1:</strong> {{ game.team1.name }} - Odd: {{ game.team1.odd }} (Source: {{ game.team1.source }})<br>
+                <strong>Draw:</strong> {{ game.draw.name }} - Odd: {{ game.draw.odd }} (Source: {{ game.draw.source }})<br>
+                <strong>Team 2:</strong> {{ game.team2.name }} - Odd: {{ game.team2.odd }} (Source: {{ game.team2.source }})
             </li>
         {% endfor %}
     </ul>
-
+    
     <h1>Results</h1>
     <ul>
         {% if results %}
