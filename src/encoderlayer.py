@@ -22,8 +22,8 @@ class EncoderLayer(nn.Module):
         Returns:
             Tensor of shape [batch, seq, d_model]
         """
-        attn_out, _ = self.attn(x, mask)
+        attn_out, attn_weights = self.attn(x, mask)
         x = self.norm1(x + self.dropout(attn_out))
         ffn_out = self.ffn(x)
         x = self.norm2(x + self.dropout(ffn_out))
-        return x
+        return x, attn_weights
