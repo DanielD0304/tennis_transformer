@@ -15,7 +15,7 @@ Functions:
     - create_training_samples: Generate training samples from match data
 """
 
-import data_loader as dl
+from . import data_loader as dl
 import random
 
 

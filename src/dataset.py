@@ -1,10 +1,10 @@
 import torch
-import preprocessing as pre
-import data_loader as dl
+from . import preprocessing as pre
+from . import data_loader as dl
 
 class DataSet(torch.utils.data.Dataset):
     def __init__(self):
-        self.data = dl.load_all_matches()
+        self.data = dl.load_all_matches(years = [2024])
         self.processed_data = pre.create_training_samples(self.data)
         
     def __len__(self):
