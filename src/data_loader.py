@@ -20,6 +20,7 @@ def load_single_year(year):
     """
     print(f"Loading: {year}")
     dataframe = pd.read_csv(f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv")
+    dataframe = dataframe.fillna(-1)  # or another sentinel value
     return dataframe
 
 def load_all_matches(years=[2020, 2021, 2022, 2023, 2024]):

@@ -53,7 +53,12 @@ class MultiHeadAttention(nn.Module):
         v = v.transpose(1, 2)
         
         if mask is not None:
-            mask = mask.unsqueeze(1)
+            if mask.dim() == 3:
+                mask = mask.unsqueeze(1)  # (batch, 1, seq_len, seq_len)
+            elif mask.dim() == 2:
+                # If mask is (batch, seq_len), expand to (batch, 1, seq_len, seq_len)
+                mask = mask.unsqueeze(1).unsqueeze(2)  # (batch, 1, 1, seq_len)
+                mask = mask.expand(-1, 1, mask.size(-1), mask.size(-1))
         out, weights = scaled_dot_product_attention(q, k, v, mask)
         
         out = out.transpose(1, 2).contiguous().view(batch_size, -1, self.d_model)

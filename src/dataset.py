@@ -4,8 +4,12 @@ from . import data_loader as dl
 
 class DataSet(torch.utils.data.Dataset):
     def __init__(self):
-        self.data = dl.load_all_matches(years = [2024])
+        self.data = dl.load_all_matches()
         self.processed_data = pre.create_training_samples(self.data)
+        self.processed_data = [s for s in self.processed_data
+        if sum(s['player_a_surface_mask']) > 0 or sum(s['player_a_recent_mask']) > 0
+        or sum(s['player_b_surface_mask']) > 0 or sum(s['player_b_recent_mask']) > 0]
+        print(f"Filtered dataset size: {len(self.processed_data)}")
         
     def __len__(self):
         return len(self.processed_data)

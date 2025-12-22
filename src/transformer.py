@@ -9,6 +9,7 @@ class Transformer(nn.Module):
     """
     def __init__(self, d_model, num_heads, num_layers, max_len=15, output_dim=2):
         super(Transformer, self).__init__()
+        self.input_proj = nn.Linear(5, d_model)
         self.d_model = d_model
         self.num_heads = num_heads
         self.max_len = max_len
@@ -33,6 +34,7 @@ class Transformer(nn.Module):
         batch_size, seq_len, _ = x.shape
         assert positions.shape == (batch_size, seq_len)
         pos_emb = self.positionalEncoding(positions)
+        x = self.input_proj(x)
         x = x + pos_emb
         x = self.dropout(x)
         all_attn_weights = []
