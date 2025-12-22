@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from .dataset import DataSet
 from .model import Model
+import matplotlib.pyplot as plt
 
 def train():
     num_epochs = 10
@@ -63,7 +64,13 @@ def train():
             layer = 0
             head = 0
             sample = 0
-            attn = attn_weights[layer, sample, head].detach().cpu().numpy()
+            attn = attn_weights[layer][sample, head].detach().cpu().numpy()
+            plt.imshow(attn, cmap='viridis')
+            plt.colorbar()
+            plt.title(f'Attention Weights (Layer {layer}, Head {head}, Sample {sample})')
+            plt.xlabel('Key Position')
+            plt.ylabel('Query Position')
+            plt.show()
             loss = criterion(outputs, labels)
 
             # Check for NaN loss
