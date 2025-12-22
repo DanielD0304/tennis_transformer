@@ -4,7 +4,7 @@ from . import data_loader as dl
 
 class DataSet(torch.utils.data.Dataset):
     def __init__(self):
-        self.data = dl.load_all_matches()
+        self.data = dl.load_all_matches(list(range(2005, 2025)))
         self.processed_data = pre.create_training_samples(self.data)
         self.processed_data = [s for s in self.processed_data
         if sum(s['player_a_surface_mask']) > 0 or sum(s['player_a_recent_mask']) > 0
