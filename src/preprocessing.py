@@ -1,3 +1,16 @@
+import torch
+def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
+    """
+    Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
+    Args:
+        df (pd.DataFrame): Rohdaten
+        out_path (str): Speicherpfad für .pt-Datei
+        n_matches (int): Surface-Matches
+        n_recent (int): Recent-Matches
+    """
+    samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
+    torch.save(samples, out_path)
+    print(f"Saved {len(samples)} samples to {out_path}")
 """
 Preprocessing module for Tennis Transformer.
 
@@ -13,6 +26,7 @@ Functions:
     - get_recent_history: Get player's last N matches (any surface)
     - pad_sequence: Pad sequences to fixed length with attention mask
     - create_training_samples: Generate training samples from match data
+    - days_since_match: log(1+days) als Feature
 """
 
 from . import data_loader as dl
@@ -20,7 +34,7 @@ import random
 
 
 # Feature names used for each match in the history
-FEATURE_NAMES = ['won', 'rank', 'aces', 'double_faults', 'first_serve_pct']
+FEATURE_NAMES = ['won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 'days_since_match']
 
 
 def filter_by_surface(df, surface):
@@ -76,12 +90,26 @@ def extract_match_features(row, player_role):
         rank_col = "loser_rank"
         won = 0
     
+    import math
+    # Rank kann NaN oder 0 sein, daher robust log(rank+1)
+    rank_value = row[rank_col]
+    if rank_value is None or (isinstance(rank_value, float) and math.isnan(rank_value)) or rank_value < 1:
+        log_rank = 0.0
+    else:
+        log_rank = math.log(rank_value + 1)
+    # days_since_match: log(1 + days)
+    if 'current_match_date' in row and row['current_match_date'] is not None:
+        days = max(0, (row['current_match_date'] - row['tourney_date']) // 1)
+        log_days = math.log(1 + days)
+    else:
+        log_days = 0.0
     return {
         'won': won,
-        'rank': row[rank_col],
+        'rank': log_rank,
         'aces': row[prefix + 'ace'],
         'double_faults': row[prefix + 'df'],
-        'first_serve_pct': row[prefix + '1stIn'] / row[prefix + 'svpt']
+        'first_serve_pct': row[prefix + '1stIn'] / row[prefix + 'svpt'] if row[prefix + 'svpt'] != 0 else 0,
+        'days_since_match': log_days
     }
 
 
@@ -108,6 +136,8 @@ def get_player_surface_history(df, player_name, surface, before_date, n_matches=
     df = df.head(n_matches)
     history = []
     for index, row in df.iterrows():
+        row = row.copy()
+        row['current_match_date'] = before_date
         if row['winner_name'] == player_name:
             features = extract_match_features(row, 'winner')
         else:
@@ -137,6 +167,8 @@ def get_recent_history(df, player_name, before_date, n_recent=15):
     df = df.head(n_recent)
     history = []
     for index, row in df.iterrows():
+        row = row.copy()
+        row['current_match_date'] = before_date
         if row['winner_name'] == player_name:
             features = extract_match_features(row, 'winner')
         else:
@@ -229,6 +261,14 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         player_a_recent, player_a_recent_mask = pad_sequence(a_history_recent, n_recent)
         player_b_surface, player_b_surface_mask = pad_sequence(b_history_surface, n_matches)
         player_b_recent, player_b_recent_mask = pad_sequence(b_history_recent, n_recent)
+
+        # Segment-IDs: 1 = A-Surface, 2 = A-Recent, 3 = B-Surface, 4 = B-Recent
+        seg_a_surface = [1] * n_matches
+        seg_a_recent = [2] * n_recent
+        seg_b_surface = [3] * n_matches
+        seg_b_recent = [4] * n_recent
+        segment_ids = seg_a_surface + seg_a_recent + seg_b_surface + seg_b_recent  # Länge: 2*n_matches + 2*n_recent
+
         sample = {
             'player_a_surface':  player_a_surface,
             'player_a_surface_mask': player_a_surface_mask,
@@ -238,6 +278,7 @@ def create_training_samples(df, n_matches=10, n_recent=15):
             'player_b_surface_mask': player_b_surface_mask,
             'player_b_recent': player_b_recent,
             'player_b_recent_mask': player_b_recent_mask,
+            'segment_ids': segment_ids,
             'label': label        
         }
         samples.append(sample)
@@ -246,6 +287,5 @@ def create_training_samples(df, n_matches=10, n_recent=15):
     
 if __name__ == "__main__":
     df = dl.load_all_matches()
-    test_df = df.head(100)
-    samples = create_training_samples(test_df)
-    print(f"Created {len(samples)} samples")
+    # Beispiel: alle Daten preprocessen und speichern
+    save_preprocessed_samples(df, "preprocessed_samples.pt", n_matches=10, n_recent=15)

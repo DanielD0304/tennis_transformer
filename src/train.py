@@ -25,9 +25,7 @@ def train():
     model = Model(d_model, num_heads, num_layers).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    # ...existing code...
-
+    
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -108,7 +106,6 @@ def train():
                 player_b_recent_mask = batch['player_b_recent_mask'].to(device)
                 labels = batch['label'].to(device)
 
-                # Pass these to your model as needed
                 features = torch.cat([
                 player_a_surface, player_a_recent, player_b_surface, player_b_recent
                 ], dim=1)  # (batch, total_seq_len, feature_dim)

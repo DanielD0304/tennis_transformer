@@ -50,11 +50,18 @@ python main.py
 
 ATP Match-Daten von [Jeff Sackmann's Tennis ATP Repository](https://github.com/JeffSackmann/tennis_atp) (2020-2024).
 
-## Requirements
 
-- Python 3.10+
-- PyTorch
-- pandas
-- numpy
-- scikit-learn
-- matplotlib
+## Lernkurve & Herausforderungen
+
+Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlreiche Herausforderungen und Verbesserungen:
+
+- **NaN/Fehlende Werte:** Ursprünglich führten fehlende oder ungültige Werte in den Features zu NaN-Losses. Lösung: Robustes Data Cleaning und Imputation.
+- **ZeroDivisionError:** Division durch Null bei Feature-Berechnung (z.B. Aufschlagquoten) wurde durch explizite Checks verhindert.
+- **Softmax & CrossEntropy:** Softmax wurde aus dem Modell entfernt, da `CrossEntropyLoss` rohe Logits erwartet.
+- **Sequenzaggregation:** Statt einfachem Mittelwert wird ein [CLS]-Token als globales Repräsentativ verwendet (wie bei BERT).
+- **Ranking-Feature:** Der Rang wurde ursprünglich als numerisches Feature genutzt, was zu Ausreißern führte. Lösung: log(rank+1) als Feature.
+- **Segment-Embeddings:** Um dem Modell Kontext zu geben, wurden Segment-Embeddings für Spieler A/B und Surface/Recent eingeführt.
+- **Match-Alter:** Das Alter jedes Matches wird als Feature (log(1+days_since_match)) übergeben, damit das Modell aktuelle Form besser erkennt.
+- **Effizientes Data Loading:** Preprocessing wird nur einmal ausgeführt und als .pt gespeichert, statt bei jedem Training neu zu laden.
+
+Diese Schritte haben die Robustheit, Interpretierbarkeit und Effizienz des Projekts deutlich verbessert.
