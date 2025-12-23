@@ -12,10 +12,10 @@ class Model(nn.Module):
         self.transformer = Transformer(d_model, num_heads, num_layers)
         
         
-    def forward(self, x, positions, mask=None):
-        output, _ = self.transformer(x, positions, mask)
+    def forward(self, x, positions, segments, mask=None):
+        output, _ = self.transformer(x, positions, segments, mask)
         return output
-    
-    def get_attention_weights(self, x, positions, mask=None):
-        _, attn_weights = self.transformer(x, positions, mask)
+
+    def get_attention_weights(self, x, positions, segments, mask=None):
+        _, attn_weights = self.transformer(x, positions, segments, mask)
         return attn_weights

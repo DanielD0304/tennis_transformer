@@ -33,8 +33,8 @@ def load_all_matches(years=[2020, 2021, 2022, 2023, 2024]):
     Returns:
         Dataframe: includes data from every year that was loaded
     """
-    dataframes = [load_single_year(year) for year in years]
-    data = pd.concat(dataframes, ignore_index=True)
+    data_frames = [load_single_year(year) for year in years]
+    data = pd.concat(data_frames, ignore_index=True)
     return data
 
 

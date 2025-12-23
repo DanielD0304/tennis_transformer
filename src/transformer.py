@@ -9,7 +9,7 @@ class Transformer(nn.Module):
     """
     def __init__(self, d_model, num_heads, num_layers, max_len=15, output_dim=2):
         super(Transformer, self).__init__()
-        self.input_proj = nn.Linear(5, d_model)
+        self.input_proj = nn.Linear(6, d_model)
         # 0: CLS, 1: A-Surface, 2: A-Recent, 3: B-Surface, 4: B-Recent
         self.segmentEmbedding = nn.Embedding(5, d_model)
         self.d_model = d_model
@@ -43,9 +43,8 @@ class Transformer(nn.Module):
         x = self.input_proj(x)
         x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len+1, d_model]
 
-        # Positions für [CLS] anpassen: 0 für CLS, 1... für Rest
         cls_pos = torch.zeros(batch_size, 1, dtype=positions.dtype, device=positions.device)
-        positions = positions + 1  # alle Positionen um 1 erhöhen
+        positions = positions + 1
         positions = torch.cat([cls_pos, positions], dim=1)  # [batch, seq_len+1]
         pos_emb = self.positionalEncoding(positions)
 
@@ -60,7 +59,6 @@ class Transformer(nn.Module):
         for layer in self.encoder_layers:
             x, attn_weights = layer(x, mask)
             all_attn_weights.append(attn_weights)
-        # Nur das [CLS]-Token für Klassifikation verwenden
         x = x[:, 0, :]
         x = self.output(x)
         return x, all_attn_weights

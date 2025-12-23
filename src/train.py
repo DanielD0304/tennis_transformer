@@ -30,7 +30,7 @@ def train():
         model.train()
         running_loss = 0.0
 
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             player_a_surface = batch['player_a_surface'].to(device)
             player_a_recent = batch['player_a_recent'].to(device)
             player_a_surface_pos = batch['player_a_surface_pos'].to(device)
@@ -43,6 +43,7 @@ def train():
             player_b_recent_pos = batch['player_b_recent_pos'].to(device)
             player_b_surface_mask = batch['player_b_surface_mask'].to(device)
             player_b_recent_mask = batch['player_b_recent_mask'].to(device)
+            segment_ids = batch['segment_ids'].to(device).long()
             labels = batch['label'].to(device)
 
             features = torch.cat([
@@ -56,19 +57,20 @@ def train():
             masks = torch.cat([
                 player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
             ], dim=1)  # (batch, total_seq_len)
+            # Mask für CLS-Token am Anfang ergänzen
+            cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
+            masks = torch.cat([cls_mask, masks], dim=1)  # (batch, total_seq_len+1)
 
-            outputs = model(features, positions, masks)
-            attn_weights = model.get_attention_weights(features, positions, masks)
+            outputs = model(features, positions, segment_ids, masks)
+            attn_weights = model.get_attention_weights(features, positions, segment_ids, masks)
             layer = 0
             head = 0
             sample = 0
             attn = attn_weights[layer][sample, head].detach().cpu().numpy()
             plt.imshow(attn, cmap='viridis')
-            plt.colorbar()
-            plt.title(f'Attention Weights (Layer {layer}, Head {head}, Sample {sample})')
-            plt.xlabel('Key Position')
-            plt.ylabel('Query Position')
-            plt.show()
+            plt.title(f'Attention Epoch {epoch} Batch {batch_idx}')
+            plt.savefig(f"attention_epoch_{epoch}_batch_{batch_idx}.png")
+            plt.close()
             loss = criterion(outputs, labels)
 
             # Check for NaN loss
@@ -90,6 +92,7 @@ def train():
         test_loss = 0.0
         correct = 0
         total = 0
+
         with torch.no_grad():
             for batch in test_loader:
                 player_a_surface = batch['player_a_surface'].to(device)
@@ -104,10 +107,11 @@ def train():
                 player_b_recent_pos = batch['player_b_recent_pos'].to(device)
                 player_b_surface_mask = batch['player_b_surface_mask'].to(device)
                 player_b_recent_mask = batch['player_b_recent_mask'].to(device)
+                segment_ids = batch['segment_ids'].to(device).long()
                 labels = batch['label'].to(device)
 
                 features = torch.cat([
-                player_a_surface, player_a_recent, player_b_surface, player_b_recent
+                    player_a_surface, player_a_recent, player_b_surface, player_b_recent
                 ], dim=1)  # (batch, total_seq_len, feature_dim)
 
                 positions = torch.cat([
@@ -117,8 +121,11 @@ def train():
                 masks = torch.cat([
                     player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
                 ], dim=1)  # (batch, total_seq_len)
+                # Mask für CLS-Token am Anfang ergänzen
+                cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
+                masks = torch.cat([cls_mask, masks], dim=1)  # (batch, total_seq_len+1)
 
-                outputs = model(features, positions, masks)
+                outputs = model(features, positions, segment_ids, masks)
                 loss = criterion(outputs, labels)
                 test_loss += loss.item()
 
