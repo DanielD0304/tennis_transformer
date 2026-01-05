@@ -246,6 +246,7 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         loser_name = row['loser_name']
         date = row['tourney_date']
         surface = row['surface']
+        match_year = int(str(date))[:4]
         
         if random.random() > 0.5:
             player_a, player_b = winner_name, loser_name
@@ -279,7 +280,8 @@ def create_training_samples(df, n_matches=10, n_recent=15):
             'player_b_recent': player_b_recent,
             'player_b_recent_mask': player_b_recent_mask,
             'segment_ids': segment_ids,
-            'label': label        
+            'label': label,
+            'year': match_year     
         }
         samples.append(sample)
     return samples

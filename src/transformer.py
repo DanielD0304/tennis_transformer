@@ -7,9 +7,9 @@ class Transformer(nn.Module):
     Transformer encoder for sequence prediction tasks.
     Includes positional encoding, stacked encoder layers, and output head.
     """
-    def __init__(self, d_model, num_heads, num_layers, max_len=15, output_dim=2):
+    def __init__(self, d_model, num_heads, num_layers, input_dim=6, max_len=50, output_dim=2):
         super(Transformer, self).__init__()
-        self.input_proj = nn.Linear(6, d_model)
+        self.input_proj = nn.Linear(input_dim, d_model)
         # 0: CLS, 1: A-Surface, 2: A-Recent, 3: B-Surface, 4: B-Recent
         self.segmentEmbedding = nn.Embedding(5, d_model)
         self.d_model = d_model

@@ -1,32 +1,109 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader as dl
 from torch.nn.utils.rnn import pad_sequence
 from .dataset import DataSet
 from .model import Model
 import matplotlib.pyplot as plt
+from .preprocessing import preprocessing as pre
+from .config import TrainingConfig, default_config
+import os
 
-def train():
-    num_epochs = 10
-    batch_size = 32
-    d_model = 64
-    num_heads = 4
-    num_layers = 2
-    learning_rate = 0.001
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    dataset = DataSet()
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn = custom_collate_fn)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn = custom_collate_fn)
-
-    model = Model(d_model, num_heads, num_layers).to(device)
-    criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+def load_or_preprocess_data(config):
+    """
+    Load preprocessed data if available, otherwise preprocess and save.
     
-    for epoch in range(num_epochs):
+    Args:
+        config: TrainingConfig instance
+        
+    Returns:
+        list: All training samples
+    """
+    if os.path.exists(config.preprocessed_data_path):
+        print(f"Loading preprocessed data from {config.preprocessed_data_path}...")
+        all_samples = torch.load(config.preprocessed_data_path)
+        print(f"Loaded {len(all_samples)} samples.")
+    else:
+        print("Preprocessed data not found. Processing now...")
+        from . import data_loader as dl_module
+        years = list(range(config.data_years_start, config.data_years_end + 1))
+        raw_data = dl_module.load_all_matches(years)
+        
+        print("Processing samples...")
+        all_samples = pre.create_training_samples(
+            raw_data,
+            n_matches=config.n_surface_matches,
+            n_recent=config.n_recent_matches
+        )
+        
+        print(f"Saving to {config.preprocessed_data_path}...")
+        torch.save(all_samples, config.preprocessed_data_path)
+        print("Done!")
+    
+    return all_samples
+
+
+def train(config=default_config):
+    """
+    Train the tennis match prediction model.
+    
+    Args:
+        config: TrainingConfig instance with all hyperparameters
+    """
+def train(config=default_config):
+    """
+    Train the tennis match prediction model.
+    
+    Args:
+        config: TrainingConfig instance with all hyperparameters
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # Load or preprocess data
+    all_samples = load_or_preprocess_data(config)
+    
+    # Split data by year
+    train_samples = [s for s in all_samples if s['year'] <= config.train_years_end]
+    val_samples = [s for s in all_samples if s['year'] == config.val_year]
+    test_samples = [s for s in all_samples if s['year'] == config.test_year]
+    
+    print(f"Train: {len(train_samples)}, Val: {len(val_samples)}, Test: {len(test_samples)}")
+
+    # Create datasets
+    train_dataset = DataSet(train_samples)
+    val_dataset = DataSet(val_samples)
+    test_dataset = DataSet(test_samples)
+
+    # Create loaders
+    train_loader = dl(train_dataset, batch_size=config.batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    val_loader = dl(val_dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn) 
+    test_loader = dl(test_dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn)
+
+    # Initialize model
+    model = Model(
+        d_model=config.d_model,
+        num_heads=config.num_heads,
+        num_layers=config.num_layers,
+        input_dim=config.input_dim,
+        max_len=config.max_len,
+        output_dim=config.output_dim
+    ).to(device)
+    
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    
+    # Tracking variables
+    best_val_accuracy = 0.0
+    patience_counter = 0
+    best_val_loss = float('inf')
+    
+    # Tracking variables
+    best_val_accuracy = 0.0
+    patience_counter = 0
+    best_val_loss = float('inf')
+    
+    for epoch in range(config.num_epochs):
         model.train()
         running_loss = 0.0
 
@@ -62,15 +139,6 @@ def train():
             masks = torch.cat([cls_mask, masks], dim=1)  # (batch, total_seq_len+1)
 
             outputs = model(features, positions, segment_ids, masks)
-            attn_weights = model.get_attention_weights(features, positions, segment_ids, masks)
-            layer = 0
-            head = 0
-            sample = 0
-            attn = attn_weights[layer][sample, head].detach().cpu().numpy()
-            plt.imshow(attn, cmap='viridis')
-            plt.title(f'Attention Epoch {epoch} Batch {batch_idx}')
-            plt.savefig(f"attention_epoch_{epoch}_batch_{batch_idx}.png")
-            plt.close()
             loss = criterion(outputs, labels)
 
             # Check for NaN loss
@@ -80,15 +148,117 @@ def train():
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grconfig.ad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             running_loss += loss.item()
 
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
 
-        # Basic test evaluation
+        # Validation evaluation
         model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+
+        with torch.no_grad():
+            for batch in val_loader:
+                player_a_surface = batch['player_a_surface'].to(device)
+                player_a_recent = batch['player_a_recent'].to(device)
+                player_a_surface_pos = batch['player_a_surface_pos'].to(device)
+                player_a_recent_pos = batch['player_a_recent_pos'].to(device)
+                player_a_surface_mask = batch['player_a_surface_mask'].to(device)
+                player_a_recent_mask = batch['player_a_recent_mask'].to(device)
+                player_b_surface = batch['player_b_surface'].to(device)
+                player_b_recent = batch['player_b_recent'].to(device)
+                player_b_surface_pos = batch['player_b_surface_pos'].to(device)
+                player_b_recent_pos = batch['player_b_recent_pos'].to(device)
+                player_b_surface_mask = batch['player_b_surface_mask'].to(device)
+                player_b_recent_mask = batch['player_b_recent_mask'].to(device)
+                segment_ids = batch['segment_ids'].to(device).long()
+                labels = batch['label'].to(device)
+
+                features = torch.cat([
+                    player_a_surface, player_a_recent, player_b_surface, player_b_recent
+                ], dim=1)
+
+                positions = torch.cat([
+                    player_a_surface_pos, player_a_recent_pos, player_b_surface_pos, player_b_recent_pos
+                ], dim=1)
+
+                masks = torch.cat([
+                    player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
+                ], dim=1)
+                cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
+                masks = torch.cat([cls_mask, masks], dim=1)
+
+                outputs = model(features, positions, segment_ids, masks)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
+
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+
+        current_val_acc = val_correct / val_total
+        current_val_loss = val_loss / len(val_loader)
+        print(f"Validation Loss: {current_val_loss:.4f}, Validation Accuracy: {100 * current_val_acc:.2f}%")
+        
+        # Best Model Checkpointing
+        if current_val_acc > best_val_accuracy:
+            best_val_accuracy = current_val_acc
+            torch.save(model.state_dict(), config.best_model_path)
+            print(f"New best model saved! Validation Accuracy: {100 * best_val_accuracy:.2f}%")
+        
+        # Early Stopping
+        if current_val_loss < best_val_loss:
+            best_val_loss = current_val_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            print(f"No improvement in validation loss. Patience: {patience_counter}/{config.patience}")
+            if patience_counter >= config.patience:
+                print(f"Early stopping triggered after epoch {epoch+1}")
+                break
+        
+        # Visualize attention weights
+        val_batch = next(iter(val_loader))
+        player_a_surface = val_batch['player_a_surface'].to(device)
+        player_a_recent = val_batch['player_a_recent'].to(device)
+        player_a_surface_pos = val_batch['player_a_surface_pos'].to(device)
+        player_a_recent_pos = val_batch['player_a_recent_pos'].to(device)
+        player_a_surface_mask = val_batch['player_a_surface_mask'].to(device)
+        player_a_recent_mask = val_batch['player_a_recent_mask'].to(device)
+        player_b_surface = val_batch['player_b_surface'].to(device)
+        player_b_recent = val_batch['player_b_recent'].to(device)
+        player_b_surface_pos = val_batch['player_b_surface_pos'].to(device)
+        player_b_recent_pos = val_batch['player_b_recent_pos'].to(device)
+        player_b_surface_mask = val_batch['player_b_surface_mask'].to(device)
+        player_b_recent_mask = val_batch['player_b_recent_mask'].to(device)
+        segment_ids = val_batch['segment_ids'].to(device).long()
+        labels = val_batch['label'].to(device)
+
+        features = torch.cat([
+            player_a_surface, player_a_recent, player_b_surface, player_b_recent
+        ], dim=1)
+
+        positions = torch.cat([
+            player_a_surface_pos, player_a_recent_pos, player_b_surface_pos, player_b_recent_pos
+        ], dim=1)
+
+        masks = torch.cat([
+            player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
+        ], dim=1)
+        cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
+        masks = torch.cat([cls_mask, masks], dim=1)
+
+        attn_weights = model.get_attention_weights(features, positions, segment_ids, masks)
+        attn = attn_weights[config.attention_layer][config.attention_sample, config.attention_head].detach().cpu().numpy()
+        plt.imshow(attn, cmap='viridis')
+        plt.title(f'Attention Epoch {epoch}')
+        plt.savefig(f"attention_epoch_{epoch}.png")
+        plt.close()
+        # Basic test evaluation
         test_loss = 0.0
         correct = 0
         total = 0

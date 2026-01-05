@@ -4,19 +4,14 @@ from . import data_loader as dl
 from .preprocessing import FEATURE_NAMES
 
 class DataSet(torch.utils.data.Dataset):
-    def __init__(self):
-        self.data = dl.load_all_matches(list(range(2023, 2024)))
-        self.processed_data = pre.create_training_samples(self.data)
-        self.processed_data = [s for s in self.processed_data
-        if sum(s['player_a_surface_mask']) > 0 or sum(s['player_a_recent_mask']) > 0
-        or sum(s['player_b_surface_mask']) > 0 or sum(s['player_b_recent_mask']) > 0]
-        print(f"Filtered dataset size: {len(self.processed_data)}")
+    def __init__(self, samples):
+        self.samples = samples
         
     def __len__(self):
-        return len(self.processed_data)
+        return len(self.samples)
     
     def __getitem__(self, index):
-        sample = self.processed_data[index]
+        sample = self.samples[index]
         
         def feature_list(d):
             return [d.get(k, 0.0) for k in FEATURE_NAMES]

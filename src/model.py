@@ -7,9 +7,9 @@ class Model(nn.Module):
     Transformer encoder for sequence prediction tasks.
     Includes positional encoding, stacked encoder layers, and output head.
     """
-    def __init__(self, d_model, num_heads, num_layers):
+    def __init__(self, d_model, num_heads, num_layers, input_dim=6, max_len=50, output_dim=2):
         super(Model, self).__init__()
-        self.transformer = Transformer(d_model, num_heads, num_layers)
+        self.transformer = Transformer(d_model, num_heads, num_layers, input_dim, max_len, output_dim)
         
         
     def forward(self, x, positions, segments, mask=None):
