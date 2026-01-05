@@ -50,13 +50,6 @@ def train(config=default_config):
     Args:
         config: TrainingConfig instance with all hyperparameters
     """
-def train(config=default_config):
-    """
-    Train the tennis match prediction model.
-    
-    Args:
-        config: TrainingConfig instance with all hyperparameters
-    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -92,11 +85,6 @@ def train(config=default_config):
     
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
-    
-    # Tracking variables
-    best_val_accuracy = 0.0
-    patience_counter = 0
-    best_val_loss = float('inf')
     
     # Tracking variables
     best_val_accuracy = 0.0
@@ -148,12 +136,12 @@ def train(config=default_config):
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grconfig.ad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             running_loss += loss.item()
 
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
+        print(f"Epoch [{epoch+1}/{config.num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
 
         # Validation evaluation
         model.eval()
