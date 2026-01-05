@@ -113,7 +113,7 @@ def extract_match_features(row, player_role):
     }
 
 
-def get_player_surface_history(df, player_name, surface, before_date, n_matches=10):
+def get_player_surface_history(df, player_name, surface, before_date, current_tourney_id=None, n_matches=10):
     """
     Get a player's last N matches on a specific surface before a given date.
     
@@ -124,6 +124,7 @@ def get_player_surface_history(df, player_name, surface, before_date, n_matches=
         player_name (str): Full name of the player
         surface (str): Surface type ('Hard', 'Clay', 'Grass')
         before_date (int): Date in YYYYMMDD format (matches before this date)
+        current_tourney_id (str): Current tournament ID to exclude future rounds (default: None)
         n_matches (int): Maximum number of matches to retrieve (default: 10)
     
     Returns:
@@ -131,8 +132,13 @@ def get_player_surface_history(df, player_name, surface, before_date, n_matches=
     """
     df = filter_by_surface(df, surface) 
     df = filter_by_playername(df, player_name)
-    df = df[df['tourney_date'] < before_date]
-    df = df.sort_values('tourney_date', ascending=False)
+    # Include matches before this date OR from same tournament (earlier rounds)
+    if current_tourney_id is not None and 'tourney_id' in df.columns:
+        df = df[(df['tourney_date'] < before_date) | 
+                ((df['tourney_date'] == before_date) & (df['tourney_id'] == current_tourney_id))]
+    else:
+        df = df[df['tourney_date'] < before_date]
+    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else 'tourney_date', ascending=False)
     df = df.head(n_matches)
     history = []
     for index, row in df.iterrows():
@@ -146,7 +152,7 @@ def get_player_surface_history(df, player_name, surface, before_date, n_matches=
     return history
 
 
-def get_recent_history(df, player_name, before_date, n_recent=15):
+def get_recent_history(df, player_name, before_date, current_tourney_id=None, n_recent=15):
     """
     Get a player's last N matches on any surface before a given date.
     
@@ -156,14 +162,20 @@ def get_recent_history(df, player_name, before_date, n_recent=15):
         df (pd.DataFrame): DataFrame containing match data
         player_name (str): Full name of the player
         before_date (int): Date in YYYYMMDD format (matches before this date)
+        current_tourney_id (str): Current tournament ID to exclude future rounds (default: None)
         n_recent (int): Maximum number of matches to retrieve (default: 15)
     
     Returns:
         list[dict]: List of feature dictionaries, most recent first
     """
     df = filter_by_playername(df, player_name)
-    df = df[df['tourney_date'] < before_date]
-    df = df.sort_values('tourney_date', ascending=False)
+    # Include matches before this date OR from same tournament (earlier rounds)
+    if current_tourney_id is not None and 'tourney_id' in df.columns:
+        df = df[(df['tourney_date'] < before_date) | 
+                ((df['tourney_date'] == before_date) & (df['tourney_id'] == current_tourney_id))]
+    else:
+        df = df[df['tourney_date'] < before_date]
+    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else 'tourney_date', ascending=False)
     df = df.head(n_recent)
     history = []
     for index, row in df.iterrows():
@@ -246,7 +258,8 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         loser_name = row['loser_name']
         date = row['tourney_date']
         surface = row['surface']
-        match_year = int(str(date))[:4]
+        tourney_id = row.get('tourney_id', None)
+        match_year = int(str(date)[:4])
         
         if random.random() > 0.5:
             player_a, player_b = winner_name, loser_name
@@ -254,10 +267,10 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         else:
             player_a, player_b = loser_name, winner_name
             label = 0
-        a_history_surface = get_player_surface_history(df, player_a, surface, date)
-        a_history_recent = get_recent_history(df, player_a, date)
-        b_history_surface = get_player_surface_history(df, player_b, surface, date)
-        b_history_recent = get_recent_history(df, player_b, date)
+        a_history_surface = get_player_surface_history(df, player_a, surface, date, tourney_id)
+        a_history_recent = get_recent_history(df, player_a, date, tourney_id)
+        b_history_surface = get_player_surface_history(df, player_b, surface, date, tourney_id)
+        b_history_recent = get_recent_history(df, player_b, date, tourney_id)
         player_a_surface, player_a_surface_mask = pad_sequence(a_history_surface, n_matches)
         player_a_recent, player_a_recent_mask = pad_sequence(a_history_recent, n_recent)
         player_b_surface, player_b_surface_mask = pad_sequence(b_history_surface, n_matches)
