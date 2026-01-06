@@ -150,5 +150,17 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 - **Hardcoded Values:** Ursprünglich waren Werte wie `input_dim=6` und `max_len=15` fest im Code. Lösung: Zentrale Config-Datei mit allen Hyperparametern.
 - **Effizientes Data Loading:** Preprocessing wird nur einmal ausgeführt und als `.pt` gespeichert, statt bei jedem Training neu zu laden (spart ~5 Minuten).
 - **Attention Visualization:** Statt 1000+ Bilder (pro Batch) wird nur 1 Bild pro Epoche gespeichert.
+- **Kritischer Data Leakage Fix (Tournament Level):** Nach Initial-Training mit 98%+ Accuracy wurde ein **kritischer Bug** entdeckt: Das aktuelle Match war in seiner eigenen Historie enthalten! Das Modell sah das Ergebnis (`won=1/0`) als erstes Feature im `player_recent`-Vektor und "schummelte". Lösung: Striktes Filtern mit `match_num` - nur Matches mit `match_num < current_match_num` vom gleichen Turnier werden inkludiert. Das aktuelle Match ist definitiv NICHT mehr in der Historie. Nach dem Fix fiel die Accuracy realistisch auf **64.66%** (Test Accuracy, Epoch 5).
 
-Diese Schritte haben die Robustheit, Interpretierbarkeit und Effizienz des Projekts deutlich verbessert.
+## Ergebnisse
+
+Aktuelle Performance (27.672 Samples, 21.610 Training / 2.986 Validation / 3.076 Test):
+
+```
+Epoch [5/10]:
+  Training Loss: 0.6195
+  Validation Loss: 0.6354, Validation Accuracy: 64.03%
+  Test Loss: 0.6249, Test Accuracy: 64.66%
+  
+Early Stopping nach Epoch 7 (keine Verbesserung mehr)
+```

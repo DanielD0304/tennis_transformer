@@ -4,7 +4,7 @@ from torch.nn.utils.rnn import pad_sequence
 from .dataset import DataSet
 from .model import Model
 import matplotlib.pyplot as plt
-from .preprocessing import preprocessing as pre
+from . import preprocessing as pre
 from .config import TrainingConfig, default_config
 import os
 
