@@ -84,8 +84,12 @@ def train(config=default_config):
     ).to(device)
     
     criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=1e-4)
     
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=1
+    )
     # Tracking variables
     best_val_accuracy = 0.0
     patience_counter = 0
@@ -190,7 +194,11 @@ def train(config=default_config):
 
         current_val_acc = val_correct / val_total
         current_val_loss = val_loss / len(val_loader)
-        print(f"Validation Loss: {current_val_loss:.4f}, Validation Accuracy: {100 * current_val_acc:.2f}%")
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Validation Loss: {current_val_loss:.4f}, Accuracy: {100 * current_val_acc:.2f}%, LR: {current_lr:.6f}")
+        
+        scheduler.step(current_val_loss)
         
         # Best Model Checkpointing
         if current_val_acc > best_val_accuracy:
@@ -294,6 +302,8 @@ def train(config=default_config):
         print(f"Test Loss: {test_loss/len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%")
 
         torch.save(model.state_dict(), f"model_epoch_{epoch+1}.pt")
+        
+    
 
 
 def custom_collate_fn(batch):

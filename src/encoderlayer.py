@@ -5,13 +5,13 @@ from .attention import MultiHeadAttention
 
 class EncoderLayer(nn.Module):
     """Transformer Encoder Block: Multi-Head Attention, Feedforward, LayerNorm, Dropout, Residuals."""
-    def __init__(self, d_model, num_heads):
+    def __init__(self, d_model, num_heads, dropout = 0.1):
         super(EncoderLayer, self).__init__()
         self.attn = MultiHeadAttention(d_model, num_heads)
         self.ffn = nn.Sequential(nn.Linear(d_model, d_model), nn.ReLU(), nn.Linear(d_model, d_model))
         self.norm1 = nn.LayerNorm(d_model)
         self.norm2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x, mask=None):
         """

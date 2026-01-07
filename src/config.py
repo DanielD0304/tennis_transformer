@@ -8,8 +8,9 @@ from dataclasses import dataclass
 class TrainingConfig:
     """Training hyperparameters and paths."""
     
+    dropout: float = 0.3
     # Model architecture
-    d_model: int = 64
+    d_model: int = 32
     num_heads: int = 4
     num_layers: int = 2
     input_dim: int = 6  # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since)

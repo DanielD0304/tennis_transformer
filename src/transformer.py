@@ -19,7 +19,7 @@ class Transformer(nn.Module):
         self.encoder_layers = nn.ModuleList([
             EncoderLayer(d_model, num_heads) for _ in range(num_layers)
         ])
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.2)
         self.positionalEncoding = nn.Embedding(max_len + 1, d_model)  # +1 für CLS
         self.output = nn.Linear(d_model, output_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))  # [1, 1, d_model]
