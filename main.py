@@ -45,8 +45,17 @@ def compute_baseline_accuracy(config=default_config):
     else:
         all_samples = torch.load(config.preprocessed_data_path)
     
-    # Create dataset and loader (use all data for baseline)
-    dataset = DataSet(all_samples)
+    # Filter samples to only include test year (same as model test set)
+    test_samples = [s for s in all_samples if s['year'] == config.test_year]
+    print(f"Using {len(test_samples)} test samples from year {config.test_year}")
+    print(f"(Total samples available: {len(all_samples)})\n")
+    
+    if len(test_samples) == 0:
+        print(f"ERROR: No samples found for test year {config.test_year}")
+        return 0.0
+    
+    # Create dataset and loader (use test year data for baseline)
+    dataset = DataSet(test_samples)
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     
     correct = 0

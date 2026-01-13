@@ -154,6 +154,17 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 
 ## Ergebnisse
 
+### Baseline Accuracy
+Das Projekt verwendet eine **Ranking-basierte Baseline**, um die Performance des Transformer-Modells zu bewerten:
+- **Methode**: Einfache Heuristik - Spieler mit besserem (niedrigerem) Ranking gewinnt
+- **Evaluierung**: Baseline wird auf den gleichen **Test-Jahren wie das Modell** berechnet (2024)
+- **Zweck**: Zeigt, wie viel Verbesserung das Transformer-Modell gegenüber der naiven Ranking-Strategie erreicht
+- **Ergebnis**: **Baseline Accuracy: 63.39%** (1.950/3.076 korrekte Vorhersagen)
+
+Dies ermöglicht einen fairen Vergleich: Modell-Accuracy - Baseline-Accuracy = echter Mehrwert durch Deep Learning.
+
+### Modell-Performance
+
 Aktuelle Performance (27.672 Samples, 21.610 Training / 2.986 Validation / 3.076 Test):
 
 ```
