@@ -62,7 +62,15 @@ def filter_by_playername(df, player_name):
     Returns:
         pd.DataFrame: Filtered DataFrame with only matches involving the player
     """
-    return df[(df['winner_name'] == player_name) | (df['loser_name'] == player_name)]
+    import pandas as pd
+    if pd.isna(player_name) or player_name is None:
+        return df.iloc[0:0]  # Return empty dataframe with same structure
+    
+    # Convert to strings to avoid comparison issues
+    player_name_str = str(player_name)
+    winner_mask = df['winner_name'].astype(str) == player_name_str
+    loser_mask = df['loser_name'].astype(str) == player_name_str
+    return df[winner_mask | loser_mask]
 
 
 def extract_match_features(row, player_role):

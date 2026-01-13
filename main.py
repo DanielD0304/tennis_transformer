@@ -88,7 +88,7 @@ def main():
     
     # Train model
     print("Training Transformer Model...\n")
-    #train()
+    train()
 
 
 if __name__ == "__main__":
