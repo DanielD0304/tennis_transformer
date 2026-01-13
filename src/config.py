@@ -35,8 +35,8 @@ class TrainingConfig:
     data_years_end: int = 2024  # Load data up to this year
     
     # Paths
-    preprocessed_data_path: str = "preprocessed_samples.pt"
-    best_model_path: str = "best_model.pt"
+    preprocessed_data_path: str = "data/preprocessed_samples.pt"
+    best_model_path: str = "models/best_model.pt"
     
     # Visualization
     attention_layer: int = 0  # Which layer to visualize
