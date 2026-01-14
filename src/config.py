@@ -13,7 +13,7 @@ class TrainingConfig:
     d_model: int = 32
     num_heads: int = 4
     num_layers: int = 2
-    input_dim: int = 6  # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since)
+    input_dim: int = 8 # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since, opponent_elo, opponent_rank)
     n_surface_matches: int = 10  # Number of surface-specific matches in history
     n_recent_matches: int = 15  # Number of recent matches (any surface)
     max_len: int = 50  # Maximum sequence length (n_surface + n_recent) * 2

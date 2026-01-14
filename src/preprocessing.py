@@ -1,4 +1,6 @@
 import torch
+
+from . import elo
 def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
     """
     Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
@@ -8,6 +10,7 @@ def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
         n_matches (int): Surface-Matches
         n_recent (int): Recent-Matches
     """
+    df = elo.compute_elo_ratings(df)
     samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
     torch.save(samples, out_path)
     print(f"Saved {len(samples)} samples to {out_path}")
@@ -34,7 +37,7 @@ import random
 
 
 # Feature names used for each match in the history
-FEATURE_NAMES = ['won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 'days_since_match']
+FEATURE_NAMES = ['won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 'days_since_match', 'opponent_elo', 'opponent_rank']
 
 
 def filter_by_surface(df, surface):
@@ -93,10 +96,14 @@ def extract_match_features(row, player_role):
         prefix = "w_"
         rank_col = "winner_rank"
         won = 1
+        opp_rank_col = "loser_rank"
+        opp_elo_col = "loser_elo"
     else:
         prefix = "l_"
         rank_col = "loser_rank"
         won = 0
+        opp_rank_col = "winner_rank"
+        opp_elo_col = "winner_elo"
     
     import math
     # Rank kann NaN oder 0 sein, daher robust log(rank+1)
@@ -111,13 +118,28 @@ def extract_match_features(row, player_role):
         log_days = math.log(1 + days)
     else:
         log_days = 0.0
+        
+    # 1. Gegner ELO (normalisiert, damit es besser lernbar ist)
+    # ELO ist meist zwischen 1500 und 2500. Wir teilen durch 1000 oder 2000.
+    opp_elo = row.get(opp_elo_col, 1500.0)
+    norm_opp_elo = opp_elo / 2000.0  # Skalierung auf ca. 0.7 - 1.3
+    
+    # 2. Gegner Rank (logarithmisch, wie beim Spieler selbst)
+    opp_rank_val = row[opp_rank_col]
+    if opp_rank_val is None or (isinstance(opp_rank_val, float) and math.isnan(opp_rank_val)) or opp_rank_val < 1:
+        log_opp_rank = 0.0 # Oder ein schlechter Wert wie log(2000)
+    else:
+        log_opp_rank = math.log(opp_rank_val + 1)   
+        
     return {
         'won': won,
         'rank': log_rank,
         'aces': row[prefix + 'ace'],
         'double_faults': row[prefix + 'df'],
         'first_serve_pct': row[prefix + '1stIn'] / row[prefix + 'svpt'] if row[prefix + 'svpt'] != 0 else 0,
-        'days_since_match': log_days
+        'days_since_match': log_days,
+        'opponent_elo': norm_opp_elo,
+        'opponent_rank': log_opp_rank
     }
 
 
