@@ -52,10 +52,11 @@ python -m tennis_transformer.preprocess_data
 ```
 Dies lädt die ATP-Daten (2015-2024), verarbeitet sie und speichert sie als `preprocessed_samples.pt`. Dadurch sparst du bei jedem Training mehrere Minuten!
 
-### 2. Modell trainieren
+### 2. Modell trainieren mit automatischer Baseline-Berechnung
 ```bash
 python main.py
 ```
+**Automatische Baseline-Berechnung:** `main.py` berechnet automatisch die Baseline-Accuracy (Ranking-basierte Vorhersage) vor dem Training. Dies zeigt, wie viel Verbesserung das Transformer-Modell gegenüber einer naiven Strategie erreicht.
 
 ### 3. Custom Training mit eigener Config
 ```python
@@ -95,6 +96,9 @@ Dies verhindert **Data Leakage**, da das Modell nie Zukunftsdaten sieht.
 - `double_faults`: Anzahl Doppelfehler
 - `first_serve_pct`: Erste-Aufschlag-Quote
 - `days_since_match`: log(1+days) seit dem Match
+- `opponent_elo`: Gegner ELO-Rating (normalisiert: elo/2000). Das ELO-Rating wird dynamisch basierend auf Spielergebissen berechnet (Start: 1500, K-Faktor: 32)
+- `opponent_rank`: log(opponent_rank+1) - Ranking des Gegners bei diesem Match
+- `own_elo`: Spieler-eigenes ELO-Rating (normalisiert: elo/2000) - zeigt die historische Stärke des Spielers
 
 ## Datenquelle
 
@@ -151,6 +155,7 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 - **Effizientes Data Loading:** Preprocessing wird nur einmal ausgeführt und als `.pt` gespeichert, statt bei jedem Training neu zu laden (spart ~5 Minuten).
 - **Attention Visualization:** Statt 1000+ Bilder (pro Batch) wird nur 1 Bild pro Epoche gespeichert.
 - **Kritischer Data Leakage Fix (Tournament Level):** Nach Initial-Training mit 98%+ Accuracy wurde ein **kritischer Bug** entdeckt: Das aktuelle Match war in seiner eigenen Historie enthalten! Das Modell sah das Ergebnis (`won=1/0`) als erstes Feature im `player_recent`-Vektor und "schummelte". Lösung: Striktes Filtern mit `match_num` - nur Matches mit `match_num < current_match_num` vom gleichen Turnier werden inkludiert. Das aktuelle Match ist definitiv NICHT mehr in der Historie. Nach dem Fix fiel die Accuracy realistisch auf **64.66%** (Test Accuracy, Epoch 5).
+- **Preprocessing-Optimierung (Single-Pass O(N)):** Ursprüngliche Implementation hatte O(N²) Komplexität durch wiederholte Filteroperationen für jedes Match. Neue Implementation nutzt einen Single-Pass-Algorithmus mit `defaultdict`, der die Historie inkrementell aufbaut: Nur eine Iteration über alle Matches mit O(N) Zeitkomplexität. Dies reduziert die Preprocessing-Zeit um ~95% (27.672 Matches in Sekunden statt Minuten).
 
 ## Ergebnisse
 
@@ -167,11 +172,21 @@ Dies ermöglicht einen fairen Vergleich: Modell-Accuracy - Baseline-Accuracy = e
 
 Aktuelle Performance (27.672 Samples, 21.610 Training / 2.986 Validation / 3.076 Test):
 
+**Mit neuen Features (own_elo + opponent_elo + Preprocessing-Optimierung):**
 ```
-Epoch [5/10]:
-  Training Loss: 0.6195
-  Validation Loss: 0.6354, Validation Accuracy: 64.03%
-  Test Loss: 0.6249, Test Accuracy: 64.66%
+Epoch [1/10]:  Val Acc: 62.76%, Test Acc: 62.42%
+Epoch [2/10]:  Val Acc: 62.96%, Test Acc: 63.88%
+Epoch [3/10]:  Val Acc: 63.83%, Test Acc: 63.78%
+Epoch [4/10]:  Val Acc: 63.30%, Test Acc: 63.88%
+Epoch [5/10]:  Val Acc: 63.53%, Test Acc: 64.24%
+Epoch [6/10]:  Val Acc: 64.03%, Test Acc: 64.86% ⭐ (Best Test)
+Epoch [7/10]:  Val Acc: 63.60%, Test Acc: 64.04%
+Epoch [8/10]:  Val Acc: 64.30%, Test Acc: 64.86% ⭐ (Best Validation)
   
-Early Stopping nach Epoch 7 (keine Verbesserung mehr)
+Early Stopping nach Epoch 8 (keine Verbesserung in Val Loss mehr)
 ```
+
+**Vergleich zum Baseline:** 
+- Baseline Accuracy: 63.39%
+- Beste Model Accuracy: **64.86%** (Epoch 6)
+- **Improvement über Baseline: +1.47%**

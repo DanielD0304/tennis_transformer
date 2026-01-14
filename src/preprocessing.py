@@ -1,6 +1,32 @@
-import torch
+"""
+Preprocessing module for Tennis Transformer.
 
-from . import elo
+This module transforms raw ATP match data into training samples for the Transformer model.
+Each sample contains the match history of two players (surface-specific and recent form)
+along with attention masks for variable-length sequences.
+
+Functions:
+    - save_preprocessed_samples: Run preprocessing and save to .pt file
+    - extract_match_features: Extract feature dict from a single match
+    - pad_sequence: Pad sequences to fixed length with attention mask
+    - create_training_samples: Generate training samples from match data
+"""
+
+import torch
+import math
+import random
+import pandas as pd
+from collections import defaultdict
+from . import data_loader as dl
+
+# Feature names used for each match in the history
+# Updated to include ELO and opponent rank features
+FEATURE_NAMES = [
+    'won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 
+    'days_since_match', 'opponent_elo', 'opponent_rank', 'own_elo'
+]
+
+
 def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
     """
     Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
@@ -10,70 +36,12 @@ def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
         n_matches (int): Surface-Matches
         n_recent (int): Recent-Matches
     """
-    df = elo.compute_elo_ratings(df)
+    from .elo import compute_elo_ratings
+    df = compute_elo_ratings(df)
+    
     samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
     torch.save(samples, out_path)
     print(f"Saved {len(samples)} samples to {out_path}")
-"""
-Preprocessing module for Tennis Transformer.
-
-This module transforms raw ATP match data into training samples for the Transformer model.
-Each sample contains the match history of two players (surface-specific and recent form)
-along with attention masks for variable-length sequences.
-
-Functions:
-    - filter_by_surface: Filter matches by court surface
-    - filter_by_playername: Filter matches involving a specific player
-    - extract_match_features: Extract feature dict from a single match
-    - get_player_surface_history: Get player's last N matches on a surface
-    - get_recent_history: Get player's last N matches (any surface)
-    - pad_sequence: Pad sequences to fixed length with attention mask
-    - create_training_samples: Generate training samples from match data
-    - days_since_match: log(1+days) als Feature
-"""
-
-from . import data_loader as dl
-import random
-
-
-# Feature names used for each match in the history
-FEATURE_NAMES = ['won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 'days_since_match', 'opponent_elo', 'opponent_rank']
-
-
-def filter_by_surface(df, surface):
-    """
-    Filter DataFrame to only include matches on a specific surface.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing match data
-        surface (str): Surface type ('Hard', 'Clay', 'Grass')
-    
-    Returns:
-        pd.DataFrame: Filtered DataFrame with only matches on specified surface
-    """
-    return df[df['surface'] == surface]
-
-
-def filter_by_playername(df, player_name):
-    """
-    Filter DataFrame to only include matches where a specific player participated.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing match data
-        player_name (str): Full name of the player
-    
-    Returns:
-        pd.DataFrame: Filtered DataFrame with only matches involving the player
-    """
-    import pandas as pd
-    if pd.isna(player_name) or player_name is None:
-        return df.iloc[0:0]  # Return empty dataframe with same structure
-    
-    # Convert to strings to avoid comparison issues
-    player_name_str = str(player_name)
-    winner_mask = df['winner_name'].astype(str) == player_name_str
-    loser_mask = df['loser_name'].astype(str) == player_name_str
-    return df[winner_mask | loser_mask]
 
 
 def extract_match_features(row, player_role):
@@ -87,10 +55,14 @@ def extract_match_features(row, player_role):
     Returns:
         dict: Dictionary containing match features:
             - won (int): 1 if player won, 0 if lost
-            - rank (int): Player's ranking at time of match
+            - rank (int): Player's ranking at time of match (log scaled)
             - aces (int): Number of aces served
             - double_faults (int): Number of double faults
             - first_serve_pct (float): First serve percentage
+            - opponent_elo (float): Normalized ELO of the opponent
+            - opponent_rank (float): Log scaled rank of the opponent
+            - own_elo (float): Normalized ELO of the player
+            - days_since_match (float): Will be calculated dynamically in pad_sequence
     """
     if player_role == "winner":
         prefix = "w_"
@@ -98,179 +70,119 @@ def extract_match_features(row, player_role):
         won = 1
         opp_rank_col = "loser_rank"
         opp_elo_col = "loser_elo"
+        own_elo_col = "winner_elo"
     else:
         prefix = "l_"
         rank_col = "loser_rank"
         won = 0
         opp_rank_col = "winner_rank"
         opp_elo_col = "winner_elo"
+        own_elo_col = "loser_elo"
     
-    import math
-    # Rank kann NaN oder 0 sein, daher robust log(rank+1)
+    # --- Feature Extraction ---
+    
+    # 1. Rank (log)
     rank_value = row[rank_col]
     if rank_value is None or (isinstance(rank_value, float) and math.isnan(rank_value)) or rank_value < 1:
         log_rank = 0.0
     else:
         log_rank = math.log(rank_value + 1)
-    # days_since_match: log(1 + days)
-    if 'current_match_date' in row and row['current_match_date'] is not None:
-        days = max(0, (row['current_match_date'] - row['tourney_date']) // 1)
-        log_days = math.log(1 + days)
-    else:
-        log_days = 0.0
         
-    # 1. Gegner ELO (normalisiert, damit es besser lernbar ist)
-    # ELO ist meist zwischen 1500 und 2500. Wir teilen durch 1000 oder 2000.
-    opp_elo = row.get(opp_elo_col, 1500.0)
-    norm_opp_elo = opp_elo / 2000.0  # Skalierung auf ca. 0.7 - 1.3
-    
-    # 2. Gegner Rank (logarithmisch, wie beim Spieler selbst)
+    # 2. Opponent Rank (log)
     opp_rank_val = row[opp_rank_col]
     if opp_rank_val is None or (isinstance(opp_rank_val, float) and math.isnan(opp_rank_val)) or opp_rank_val < 1:
-        log_opp_rank = 0.0 # Oder ein schlechter Wert wie log(2000)
+        log_opp_rank = 0.0
     else:
-        log_opp_rank = math.log(opp_rank_val + 1)   
-        
+        log_opp_rank = math.log(opp_rank_val + 1)
+
+    # 3. ELO Features (Normalized)
+    opp_elo = row.get(opp_elo_col, 1500.0)
+    norm_opp_elo = opp_elo / 2000.0
+    
+    own_elo = row.get(own_elo_col, 1500.0)
+    norm_own_elo = own_elo / 2000.0
+
+    # 4. Stats
+    aces = row[prefix + 'ace']
+    dfs = row[prefix + 'df']
+    svpt = row[prefix + 'svpt']
+    first_in = row[prefix + '1stIn']
+    first_serve_pct = first_in / svpt if svpt != 0 else 0
+    
+    # 5. Days since match 
+    # Placeholder: days_since_match wird jetzt in pad_sequence dynamisch berechnet,
+    # um immer relativ zum vorhergesagten Match zu sein.
+    
     return {
         'won': won,
         'rank': log_rank,
-        'aces': row[prefix + 'ace'],
-        'double_faults': row[prefix + 'df'],
-        'first_serve_pct': row[prefix + '1stIn'] / row[prefix + 'svpt'] if row[prefix + 'svpt'] != 0 else 0,
-        'days_since_match': log_days,
+        'aces': aces,
+        'double_faults': dfs,
+        'first_serve_pct': first_serve_pct,
+        'days_since_match': 0.0, 
         'opponent_elo': norm_opp_elo,
-        'opponent_rank': log_opp_rank
+        'opponent_rank': log_opp_rank,
+        'own_elo': norm_own_elo,
+        '_date_obj': row.get('match_date_obj', None),
+        '_surface': row['surface'] 
     }
 
 
-def get_player_surface_history(df, player_name, surface, before_date, current_tourney_id=None, current_match_num=None, n_matches=10):
-    """
-    Get a player's last N matches on a specific surface before a given date.
-    
-    Used to capture surface-specific skills and form.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing match data
-        player_name (str): Full name of the player
-        surface (str): Surface type ('Hard', 'Clay', 'Grass')
-        before_date (int): Date in YYYYMMDD format (matches before this date)
-        current_tourney_id (str): Current tournament ID to exclude current match (default: None)
-        current_match_num (int): Current match number to exclude (default: None)
-        n_matches (int): Maximum number of matches to retrieve (default: 10)
-    
-    Returns:
-        list[dict]: List of feature dictionaries, most recent first
-    """
-    df = filter_by_surface(df, surface) 
-    df = filter_by_playername(df, player_name)
-    
-    # FIX: Striktes Filtern mit match_num um Data Leakage zu vermeiden
-    # Das aktuelle Match darf NICHT in der Historie sein!
-    if current_tourney_id is not None and current_match_num is not None and 'tourney_id' in df.columns and 'match_num' in df.columns:
-        # Bedingung:
-        # 1. Datum ist strikt kleiner (Vergangenheit) ODER
-        # 2. Gleiches Turnier mit match_num < current_match_num (vorherige Runde des Turniers)
-        mask = (df['tourney_date'] < before_date) | \
-               ((df['tourney_id'] == current_tourney_id) & (df['match_num'] < current_match_num))
-        df = df[mask]
-    else:
-        # Fallback wenn match_num fehlt
-        df = df[df['tourney_date'] < before_date]
-    
-    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else 'tourney_date', ascending=False)
-    df = df.head(n_matches)
-    history = []
-    for index, row in df.iterrows():
-        row = row.copy()
-        row['current_match_date'] = before_date
-        if row['winner_name'] == player_name:
-            features = extract_match_features(row, 'winner')
-        else:
-            features = extract_match_features(row, 'loser')
-        history.append(features)
-    return history
-
-
-def get_recent_history(df, player_name, before_date, current_tourney_id=None, current_match_num=None, n_recent=15):
-    """
-    Get a player's last N matches on any surface before a given date.
-    
-    Used to capture current form regardless of surface.
-    
-    Args:
-        df (pd.DataFrame): DataFrame containing match data
-        player_name (str): Full name of the player
-        before_date (int): Date in YYYYMMDD format (matches before this date)
-        current_tourney_id (str): Current tournament ID to exclude current match (default: None)
-        current_match_num (int): Current match number to exclude (default: None)
-        n_recent (int): Maximum number of matches to retrieve (default: 15)
-    
-    Returns:
-        list[dict]: List of feature dictionaries, most recent first
-    """
-    df = filter_by_playername(df, player_name)
-    
-    # FIX: Striktes Filtern mit match_num um Data Leakage zu vermeiden
-    # Das aktuelle Match darf NICHT in der Historie sein!
-    if current_tourney_id is not None and current_match_num is not None and 'tourney_id' in df.columns and 'match_num' in df.columns:
-        # Bedingung:
-        # 1. Datum ist strikt kleiner (Vergangenheit) ODER
-        # 2. Gleiches Turnier mit match_num < current_match_num (vorherige Runde des Turniers)
-        mask = (df['tourney_date'] < before_date) | \
-               ((df['tourney_id'] == current_tourney_id) & (df['match_num'] < current_match_num))
-        df = df[mask]
-    else:
-        # Fallback wenn match_num fehlt
-        df = df[df['tourney_date'] < before_date]
-    
-    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else 'tourney_date', ascending=False)
-    df = df.head(n_recent)
-    history = []
-    for index, row in df.iterrows():
-        row = row.copy()
-        row['current_match_date'] = before_date
-        if row['winner_name'] == player_name:
-            features = extract_match_features(row, 'winner')
-        else:
-            features = extract_match_features(row, 'loser')
-        history.append(features)
-    return history
-
-
-def pad_sequence(sequence, max_len):
+def pad_sequence(sequence, max_len, current_date=None):
     """
     Pad a sequence to a fixed length and create an attention mask.
     
     Pads shorter sequences with zero-valued feature dictionaries.
     The attention mask indicates which positions contain real data (1)
     and which are padding (0).
+    Also dynamically calculates 'days_since_match' relative to current_date.
     
     Args:
         sequence (list[dict]): List of feature dictionaries
         max_len (int): Target length for padding
+        current_date (datetime, optional): Date of the match to predict. 
+                                         Used to calculate recency of history matches.
     
     Returns:
         tuple: (padded_sequence, mask)
             - padded_sequence (list[dict]): Sequence padded to max_len
             - mask (list[int]): Attention mask (1=real, 0=padding)
     """
-    actual_len = len(sequence)
+    processed_seq = []
+    
+    for item in sequence:
+        new_item = item.copy()
+        
+        # Dynamische Berechnung der Tage (log scale)
+        if current_date is not None and item.get('_date_obj') is not None:
+            delta = current_date - item['_date_obj']
+            days = max(0, delta.days)
+            new_item['days_since_match'] = math.log(1 + days)
+        else:
+            new_item['days_since_match'] = 0.0
+            
+        new_item.pop('_date_obj', None)
+        new_item.pop('_surface', None)
+        processed_seq.append(new_item)
+
+    actual_len = len(processed_seq)
     pad_len = max_len - actual_len
+    
     mask = [1] * actual_len + [0] * pad_len
-    zero_dict = {
-        'won': 0,
-        'rank': 0,
-        'aces': 0,
-        'double_faults': 0,
-        'first_serve_pct': 0
-    }
-    padded = sequence + [zero_dict.copy() for _ in range(pad_len)]
+    
+    # Zero Dict erstellen (nur mit den relevanten Feature-Keys)
+    keys = processed_seq[0].keys() if processed_seq else FEATURE_NAMES
+    zero_dict = {k: 0.0 for k in keys}
+    
+    padded = processed_seq + [zero_dict.copy() for _ in range(pad_len)]
     return padded, mask
 
 
 def create_training_samples(df, n_matches=10, n_recent=15):
     """
     Create training samples from match data for the Transformer model.
+    
+    OPTIMIZED VERSION: Uses a single-pass approach (O(N)) instead of repeated filtering (O(N^2)).
     
     For each match, creates a sample containing:
     - Surface-specific history for both players (last N matches on same surface)
@@ -298,58 +210,104 @@ def create_training_samples(df, n_matches=10, n_recent=15):
             - player_b_recent_mask: Attention mask for player B recent
             - label: 1 if player A wins, 0 if player B wins
     """
+    print("Preprocessing data (Optimized Speed)...")
+    
+    # 1. Datumskorrektur & Sortierung
+    # Wir konvertieren zu echtem Datetime für korrekte Tages-Differenzen
+    df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
+    
+    if 'match_num' in df.columns:
+        df = df.sort_values(['tourney_date', 'match_num'])
+    else:
+        df = df.sort_values(['tourney_date'])
+    
+    # 2. History Container
+    # Speichert Liste von Match-Features für jeden Spieler
+    # history[player_name] = [ match_1, match_2, ... ] (chronologisch)
+    player_history = defaultdict(list)
+    
     samples = []
+    
+    count = 0
+    total = len(df)
+    
     for index, row in df.iterrows():
-        if index % 1000 == 0:
-            print(f"Processing match {index}...")
-        winner_name = row['winner_name']
-        loser_name = row['loser_name']
-        date = row['tourney_date']
+        count += 1
+        if count % 5000 == 0:
+            print(f"Processing match {count}/{total}...")
+            
+        winner = row['winner_name']
+        loser = row['loser_name']
         surface = row['surface']
-        tourney_id = row.get('tourney_id', None)
-        match_num = row.get('match_num', None)  # Extract match_num to prevent data leakage
-        match_year = int(str(date)[:4])
+        current_date = row['match_date_obj']
+        match_year = int(str(row['tourney_date'])[:4])
         
+        # Label Randomization
         if random.random() > 0.5:
-            player_a, player_b = winner_name, loser_name
+            pA, pB = winner, loser
             label = 1
+            odds_a = row.get('B365W', 0.0)
+            odds_b = row.get('B365L', 0.0)
         else:
-            player_a, player_b = loser_name, winner_name
+            pA, pB = loser, winner
             label = 0
-        a_history_surface = get_player_surface_history(df, player_a, surface, date, tourney_id, match_num)
-        a_history_recent = get_recent_history(df, player_a, date, tourney_id, match_num)
-        b_history_surface = get_player_surface_history(df, player_b, surface, date, tourney_id, match_num)
-        b_history_recent = get_recent_history(df, player_b, date, tourney_id, match_num)
-        player_a_surface, player_a_surface_mask = pad_sequence(a_history_surface, n_matches)
-        player_a_recent, player_a_recent_mask = pad_sequence(a_history_recent, n_recent)
-        player_b_surface, player_b_surface_mask = pad_sequence(b_history_surface, n_matches)
-        player_b_recent, player_b_recent_mask = pad_sequence(b_history_recent, n_recent)
+            odds_a = row.get('B365L', 0.0)
+            odds_b = row.get('B365W', 0.0)
+            
+        def get_hist(player, surf):
+            full = player_history.get(player, [])
+            
+            # Recent: Letzte N Matches
+            recent = full[-n_recent:][::-1]
+            
+            # Surface: Filtern nach Belag
+            surf_hist = [m for m in full if m['_surface'] == surf]
+            surf_recent = surf_hist[-n_matches:][::-1]
+            
+            return surf_recent, recent
 
-        # Segment-IDs: 1 = A-Surface, 2 = A-Recent, 3 = B-Surface, 4 = B-Recent
-        seg_a_surface = [1] * n_matches
-        seg_a_recent = [2] * n_recent
-        seg_b_surface = [3] * n_matches
-        seg_b_recent = [4] * n_recent
-        segment_ids = seg_a_surface + seg_a_recent + seg_b_surface + seg_b_recent  # Länge: 2*n_matches + 2*n_recent
+        pA_surf_hist, pA_rec_hist = get_hist(pA, surface)
+        pB_surf_hist, pB_rec_hist = get_hist(pB, surface)
+        
+        # Padding & Feature Berechnung
+        pA_surf, pA_surf_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
+        pA_rec, pA_rec_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
+        pB_surf, pB_surf_mask = pad_sequence(pB_surf_hist, n_matches, current_date)
+        pB_rec, pB_rec_mask = pad_sequence(pB_rec_hist, n_recent, current_date)
+        
+        # Segment IDs
+        seg_ids = [1]*n_matches + [2]*n_recent + [3]*n_matches + [4]*n_recent
+        
+        # NaN Quoten abfangen
+        if pd.isna(odds_a): odds_a = 0.0
+        if pd.isna(odds_b): odds_b = 0.0
 
         sample = {
-            'player_a_surface':  player_a_surface,
-            'player_a_surface_mask': player_a_surface_mask,
-            'player_a_recent': player_a_recent,
-            'player_a_recent_mask': player_a_recent_mask,
-            'player_b_surface':  player_b_surface,
-            'player_b_surface_mask': player_b_surface_mask,
-            'player_b_recent': player_b_recent,
-            'player_b_recent_mask': player_b_recent_mask,
-            'segment_ids': segment_ids,
+            'player_a_surface': pA_surf,
+            'player_a_surface_mask': pA_surf_mask,
+            'player_a_recent': pA_rec,
+            'player_a_recent_mask': pA_rec_mask,
+            'player_b_surface': pB_surf,
+            'player_b_surface_mask': pB_surf_mask,
+            'player_b_recent': pB_rec,
+            'player_b_recent_mask': pB_rec_mask,
+            'segment_ids': seg_ids,
             'label': label,
-            'year': match_year     
+            'year': match_year,
+            'odds_a': odds_a,
+            'odds_b': odds_b
         }
         samples.append(sample)
-    return samples
         
-    
+        # Feature Extraction für das aktuelle Match
+        w_feats = extract_match_features(row, 'winner')
+        l_feats = extract_match_features(row, 'loser')
+        
+        player_history[winner].append(w_feats)
+        player_history[loser].append(l_feats)
+
+    return samples
+
 if __name__ == "__main__":
     df = dl.load_all_matches()
-    # Beispiel: alle Daten preprocessen und speichern
-    save_preprocessed_samples(df, "preprocessed_samples.pt", n_matches=10, n_recent=15)
+    save_preprocessed_samples(df, "data/preprocessed_samples.pt", n_matches=10, n_recent=15)

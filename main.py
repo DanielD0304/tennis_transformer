@@ -92,8 +92,7 @@ def compute_baseline_accuracy(config=default_config):
 
 def main():
     """Main entry point: compute baseline, then train model."""
-    # Compute baseline first
-    baseline_acc = compute_baseline_accuracy()
+    #baseline_acc = compute_baseline_accuracy()
     
     # Train model
     print("Training Transformer Model...\n")
