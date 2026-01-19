@@ -261,7 +261,6 @@ def compute_baseline_accuracy(config=default_config):
     print("Computing Baseline Accuracy (Better Ranking Wins)")
     print("="*60)
     
-    # Load preprocessed data
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     # Check if preprocessed data exists, if not preprocess it
@@ -285,7 +284,7 @@ def compute_baseline_accuracy(config=default_config):
     else:
         all_samples = torch.load(config.preprocessed_data_path)
     
-    # Filter samples to only include test year (same as model test set)
+    # Filter samples to only include test year
     test_samples = [s for s in all_samples if s['year'] == config.test_year]
     print(f"Using {len(test_samples)} test samples from year {config.test_year}")
     print(f"(Total samples available: {len(all_samples)})\n")
@@ -294,7 +293,7 @@ def compute_baseline_accuracy(config=default_config):
         print(f"ERROR: No samples found for test year {config.test_year}")
         return 0.0
     
-    # Create dataset and loader (use test year data for baseline)
+    # Create dataset and loader
     dataset = DataSet(test_samples)
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     

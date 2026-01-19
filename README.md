@@ -137,6 +137,8 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 - **ZeroDivisionError:** Division durch Null bei Feature-Berechnung (z.B. Aufschlagquoten) wurde durch explizite Checks verhindert.
 - **Data Leakage (Year-Split):** Initial wurden Daten zufällig gesplittet. Lösung: Chronologischer Split nach Jahren (Train: ≤2022, Val: 2023, Test: 2024).
 - **Missing Tournament Information:** Ursprünglich wurden alle Matches vom gleichen Turniertag mit `<` ausgeschlossen, was wichtige Vorrunden-Matches ignorierte. Problem: Alle Matches eines Turniers haben das gleiche `tourney_date`. Lösung: Matches vom gleichen Turnier (`tourney_id`) werden jetzt inkludiert, da sie zeitlich vor dem aktuellen Match stattfanden (Vorrunde → Finale). Kein Data Leakage, da nur frühere Runden berücksichtigt werden.
+- **Noise Reduction (Top 150 & Aktivität):** Matches auf niedrigerem Niveau (Challenger/Futures) oder von inaktiven Spielern erzeugten zu viel Rauschen ("Noise"). Lösung: Strikte Filterung – Ein Match wird nur trainiert/getestet, wenn beide Spieler in den Top 150 stehen UND beide mindestens 5 Spiele in den letzten 3 Monaten absolviert haben.
+- **Hybrid-Datenquelle (Stats + Odds)**: Für eine echte ROI-Berechnung fehlten kompatible Daten. Jeff Sackmann liefert Stats (aber keine Quoten), Wettanbieter liefern Quoten, deswegen wurde als neue zusätzlich auswählbare Datenquelle http://www.tennis-data.co.uk benutzt.
 
 ### Model Architecture
 - **Softmax & CrossEntropy:** Softmax wurde aus dem Modell entfernt, da `CrossEntropyLoss` rohe Logits erwartet.
@@ -164,29 +166,48 @@ Das Projekt verwendet eine **Ranking-basierte Baseline**, um die Performance des
 - **Methode**: Einfache Heuristik - Spieler mit besserem (niedrigerem) Ranking gewinnt
 - **Evaluierung**: Baseline wird auf den gleichen **Test-Jahren wie das Modell** berechnet (2024)
 - **Zweck**: Zeigt, wie viel Verbesserung das Transformer-Modell gegenüber der naiven Ranking-Strategie erreicht
-- **Ergebnis**: **Baseline Accuracy: 63.39%** (1.950/3.076 korrekte Vorhersagen)
 
 Dies ermöglicht einen fairen Vergleich: Modell-Accuracy - Baseline-Accuracy = echter Mehrwert durch Deep Learning.
 
 ### Modell-Performance
 
-Aktuelle Performance (27.672 Samples, 21.610 Training / 2.986 Validation / 3.076 Test):
+#### Ergebnisse vom 19.01.2025
 
-**Mit neuen Features (own_elo + opponent_elo + Preprocessing-Optimierung):**
+**Test-Daten**: 2024 (1.717 Samples)
+- **Baseline (Ranking-Heuristik)**: 63.25% Accuracy (1.086/1.717 korrekte Vorhersagen)
+- **Transformer-Modell**: 64.98% Accuracy (Best Validation, Epoch 6)
+- **Verbesserung über Baseline**: +1.73%
+
+**Training-Metriken (10 Epochen):**
 ```
-Epoch [1/10]:  Val Acc: 62.76%, Test Acc: 62.42%
-Epoch [2/10]:  Val Acc: 62.96%, Test Acc: 63.88%
-Epoch [3/10]:  Val Acc: 63.83%, Test Acc: 63.78%
-Epoch [4/10]:  Val Acc: 63.30%, Test Acc: 63.88%
-Epoch [5/10]:  Val Acc: 63.53%, Test Acc: 64.24%
-Epoch [6/10]:  Val Acc: 64.03%, Test Acc: 64.86% ⭐ (Best Test)
-Epoch [7/10]:  Val Acc: 63.60%, Test Acc: 64.04%
-Epoch [8/10]:  Val Acc: 64.30%, Test Acc: 64.86% ⭐ (Best Validation)
+Epoch [1/10]:  Val Acc: 64.38%, Loss: 0.6370 → New Best
+Epoch [2/10]:  Val Acc: 63.90%, Loss: 0.6388 (Patience: 1/3)
+Epoch [3/10]:  Val Acc: 63.60%, Loss: 0.6294
+Epoch [4/10]:  Val Acc: 63.54%, Loss: 0.6308 (Patience: 1/3)
+Epoch [5/10]:  Val Acc: 62.52%, Loss: 0.6302 (Patience: 2/3)
+Epoch [6/10]:  Val Acc: 64.98%, Loss: 0.6261 → New Best ⭐
+Epoch [7/10]:  Val Acc: 63.78%, Loss: 0.6261
+Epoch [8/10]:  Val Acc: 64.32%, Loss: 0.6269 (Patience: 1/3)
+Epoch [9/10]:  Val Acc: 64.26%, Loss: 0.6291 (Patience: 2/3)
+Epoch [10/10]: Val Acc: 64.62%, Loss: 0.6309 (Patience: 3/3)
   
-Early Stopping nach Epoch 8 (keine Verbesserung in Val Loss mehr)
+Early Stopping nach Epoch 10 (keine Verbesserung mehr)
 ```
 
-**Vergleich zum Baseline:** 
-- Baseline Accuracy: 63.39%
-- Beste Model Accuracy: **64.86%** (Epoch 6)
-- **Improvement über Baseline: +1.47%**
+### Wett-Simulation (ROI-Analyse)
+
+Simulation basierend auf Modell-Vorhersagen vs. Baseline auf 1.717 Test-Matches (2024):
+
+**Baseline (Ranking-Heuristik):**
+- Startkapital: 1.000€
+- Endkapital: 169,30€
+- **ROI: -83,07%**
+- Wetten: 1.705
+- Win-Rate: 63,23%
+
+**Transformer-Modell (Selective Betting):**
+- Startkapital: 1.000€
+- Endkapital: 616,70€
+- **ROI: -38,33%**
+- Anzahl Wetten: 397 (nur bei hoher Konfidenz)
+- Win-Rate: 51,89%
