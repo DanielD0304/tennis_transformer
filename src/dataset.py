@@ -36,6 +36,9 @@ class DataSet(torch.utils.data.Dataset):
 
         segment_ids = torch.tensor(sample['segment_ids'], dtype=torch.long)
         label = torch.tensor(sample['label'], dtype=torch.long)
+        
+        odds_a = torch.tensor(sample.get('odds_a', 0.0), dtype=torch.float)
+        odds_b = torch.tensor(sample.get('odds_b', 0.0), dtype=torch.float)
 
         return {
             'player_a_surface': player_a_surface,
@@ -51,7 +54,9 @@ class DataSet(torch.utils.data.Dataset):
             'player_b_recent_mask': player_b_recent_mask,
             'player_b_recent_pos': player_b_recent_pos,
             'segment_ids': segment_ids,
-            'label': label
+            'label': label,
+            'odds_a': odds_a,
+            'odds_b': odds_b
         }
         
         
