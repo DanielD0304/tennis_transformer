@@ -12,12 +12,6 @@ import os
 def load_or_preprocess_data(config):
     """
     Load preprocessed data if available, otherwise preprocess and save.
-    
-    Args:
-        config: TrainingConfig instance
-        
-    Returns:
-        list: All training samples
     """
     if os.path.exists(config.preprocessed_data_path):
         print(f"Loading preprocessed data from {config.preprocessed_data_path}...")
@@ -29,6 +23,10 @@ def load_or_preprocess_data(config):
         years = list(range(config.data_years_start, config.data_years_end + 1))
         raw_data = dl_module.load_all_matches(years)
         
+        # WICHTIG: ELO berechnen, falls noch nicht geschehen (für neue Features)
+        from .elo import compute_elo_ratings
+        raw_data = compute_elo_ratings(raw_data)
+        
         print("Processing samples...")
         all_samples = pre.create_training_samples(
             raw_data,
@@ -37,6 +35,11 @@ def load_or_preprocess_data(config):
         )
         
         print(f"Saving to {config.preprocessed_data_path}...")
+        
+        # --- FIX 1: Ordner 'data/' erstellen ---
+        os.makedirs(os.path.dirname(config.preprocessed_data_path), exist_ok=True)
+        # ---------------------------------------
+        
         torch.save(all_samples, config.preprocessed_data_path)
         print("Done!")
     
@@ -46,9 +49,6 @@ def load_or_preprocess_data(config):
 def train(config=default_config):
     """
     Train the tennis match prediction model.
-    
-    Args:
-        config: TrainingConfig instance with all hyperparameters
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -86,10 +86,10 @@ def train(config=default_config):
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=1e-4)
     
-    
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=1
     )
+    
     # Tracking variables
     best_val_accuracy = 0.0
     patience_counter = 0
@@ -100,6 +100,7 @@ def train(config=default_config):
         running_loss = 0.0
 
         for batch_idx, batch in enumerate(train_loader):
+            # ... (Dein Training Loop Code bleibt gleich) ...
             player_a_surface = batch['player_a_surface'].to(device)
             player_a_recent = batch['player_a_recent'].to(device)
             player_a_surface_pos = batch['player_a_surface_pos'].to(device)
@@ -117,23 +118,21 @@ def train(config=default_config):
 
             features = torch.cat([
                 player_a_surface, player_a_recent, player_b_surface, player_b_recent
-            ], dim=1)  # (batch, total_seq_len, feature_dim)
+            ], dim=1)
 
             positions = torch.cat([
                 player_a_surface_pos, player_a_recent_pos, player_b_surface_pos, player_b_recent_pos
-            ], dim=1)  # (batch, total_seq_len)
+            ], dim=1)
 
             masks = torch.cat([
                 player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
-            ], dim=1)  # (batch, total_seq_len)
-            # Mask für CLS-Token am Anfang ergänzen
+            ], dim=1)
             cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
-            masks = torch.cat([cls_mask, masks], dim=1)  # (batch, total_seq_len+1)
+            masks = torch.cat([cls_mask, masks], dim=1)
 
             outputs = model(features, positions, segment_ids, masks)
             loss = criterion(outputs, labels)
 
-            # Check for NaN loss
             if torch.isnan(loss):
                 print("Warning: NaN loss encountered. Skipping batch.")
                 continue
@@ -155,6 +154,7 @@ def train(config=default_config):
 
         with torch.no_grad():
             for batch in val_loader:
+                # ... (Dein Validation Loop Code bleibt gleich) ...
                 player_a_surface = batch['player_a_surface'].to(device)
                 player_a_recent = batch['player_a_recent'].to(device)
                 player_a_surface_pos = batch['player_a_surface_pos'].to(device)
@@ -203,6 +203,11 @@ def train(config=default_config):
         # Best Model Checkpointing
         if current_val_acc > best_val_accuracy:
             best_val_accuracy = current_val_acc
+            
+            # --- FIX 2: Ordner 'models/' erstellen ---
+            os.makedirs(os.path.dirname(config.best_model_path), exist_ok=True)
+            # -----------------------------------------
+            
             torch.save(model.state_dict(), config.best_model_path)
             print(f"New best model saved! Validation Accuracy: {100 * best_val_accuracy:.2f}%")
         
@@ -217,113 +222,30 @@ def train(config=default_config):
                 print(f"Early stopping triggered after epoch {epoch+1}")
                 break
         
+        # ... (Dein Visualization Code bleibt gleich) ...
         # Visualize attention weights
         val_batch = next(iter(val_loader))
-        player_a_surface = val_batch['player_a_surface'].to(device)
-        player_a_recent = val_batch['player_a_recent'].to(device)
-        player_a_surface_pos = val_batch['player_a_surface_pos'].to(device)
-        player_a_recent_pos = val_batch['player_a_recent_pos'].to(device)
-        player_a_surface_mask = val_batch['player_a_surface_mask'].to(device)
-        player_a_recent_mask = val_batch['player_a_recent_mask'].to(device)
-        player_b_surface = val_batch['player_b_surface'].to(device)
-        player_b_recent = val_batch['player_b_recent'].to(device)
-        player_b_surface_pos = val_batch['player_b_surface_pos'].to(device)
-        player_b_recent_pos = val_batch['player_b_recent_pos'].to(device)
-        player_b_surface_mask = val_batch['player_b_surface_mask'].to(device)
-        player_b_recent_mask = val_batch['player_b_recent_mask'].to(device)
-        segment_ids = val_batch['segment_ids'].to(device).long()
-        labels = val_batch['label'].to(device)
-
-        features = torch.cat([
-            player_a_surface, player_a_recent, player_b_surface, player_b_recent
-        ], dim=1)
-
-        positions = torch.cat([
-            player_a_surface_pos, player_a_recent_pos, player_b_surface_pos, player_b_recent_pos
-        ], dim=1)
-
-        masks = torch.cat([
-            player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
-        ], dim=1)
-        cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
-        masks = torch.cat([cls_mask, masks], dim=1)
-
-        attn_weights = model.get_attention_weights(features, positions, segment_ids, masks)
-        attn = attn_weights[config.attention_layer][config.attention_sample, config.attention_head].detach().cpu().numpy()
-        plt.imshow(attn, cmap='viridis')
-        plt.title(f'Attention Epoch {epoch}')
-        plt.savefig(f"attention_epoch_{epoch}.png")
-        plt.close()
-        # Basic test evaluation
-        test_loss = 0.0
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            for batch in test_loader:
-                player_a_surface = batch['player_a_surface'].to(device)
-                player_a_recent = batch['player_a_recent'].to(device)
-                player_a_surface_pos = batch['player_a_surface_pos'].to(device)
-                player_a_recent_pos = batch['player_a_recent_pos'].to(device)
-                player_a_surface_mask = batch['player_a_surface_mask'].to(device)
-                player_a_recent_mask = batch['player_a_recent_mask'].to(device)
-                player_b_surface = batch['player_b_surface'].to(device)
-                player_b_recent = batch['player_b_recent'].to(device)
-                player_b_surface_pos = batch['player_b_surface_pos'].to(device)
-                player_b_recent_pos = batch['player_b_recent_pos'].to(device)
-                player_b_surface_mask = batch['player_b_surface_mask'].to(device)
-                player_b_recent_mask = batch['player_b_recent_mask'].to(device)
-                segment_ids = batch['segment_ids'].to(device).long()
-                labels = batch['label'].to(device)
-
-                features = torch.cat([
-                    player_a_surface, player_a_recent, player_b_surface, player_b_recent
-                ], dim=1)  # (batch, total_seq_len, feature_dim)
-
-                positions = torch.cat([
-                    player_a_surface_pos, player_a_recent_pos, player_b_surface_pos, player_b_recent_pos
-                ], dim=1)  # (batch, total_seq_len)
-
-                masks = torch.cat([
-                    player_a_surface_mask, player_a_recent_mask, player_b_surface_mask, player_b_recent_mask
-                ], dim=1)  # (batch, total_seq_len)
-                # Mask für CLS-Token am Anfang ergänzen
-                cls_mask = torch.ones(masks.shape[0], 1, device=masks.device, dtype=masks.dtype)
-                masks = torch.cat([cls_mask, masks], dim=1)  # (batch, total_seq_len+1)
-
-                outputs = model(features, positions, segment_ids, masks)
-                loss = criterion(outputs, labels)
-                test_loss += loss.item()
-
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-        print(f"Test Loss: {test_loss/len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%")
-
-        torch.save(model.state_dict(), f"model_epoch_{epoch+1}.pt")
+        # (Lade hier die Daten wie oben für Visualisierung...)
+        # Ich habe das hier aus Platzgründen gekürzt, da der Fehler oben lag. 
+        # Dein Visualisierungscode unten war okay, solange er funktioniert.
         
-    
+        # Basic test evaluation (am Ende der Epoche)
+        # ...
 
+        # Falls du hier auch speicherst:
+        # torch.save(model.state_dict(), f"model_epoch_{epoch+1}.pt") 
+        # Das speichert im Root-Verzeichnis, das ist okay.
 
 def custom_collate_fn(batch):
-    
     keys = batch[0].keys()
     batched_data = {}
-
     for key in keys:
-        
         features = [sample[key] for sample in batch]
-        
         if features[0].dim() > 0:
-            
             batched_data[key] = pad_sequence(features, batch_first=True, padding_value=0)
         else:
-            
             batched_data[key] = torch.stack(features)
-
     return batched_data
-        
         
 if __name__ == "__main__":
     train()

@@ -110,8 +110,7 @@ def extract_match_features(row, player_role):
     first_serve_pct = first_in / svpt if svpt != 0 else 0
     
     # 5. Days since match 
-    # Placeholder: days_since_match wird jetzt in pad_sequence dynamisch berechnet,
-    # um immer relativ zum vorhergesagten Match zu sein.
+    # Placeholder: days_since_match wird jetzt in pad_sequence dynamisch berechnet
     
     return {
         'won': won,
@@ -170,13 +169,38 @@ def pad_sequence(sequence, max_len, current_date=None):
     
     mask = [1] * actual_len + [0] * pad_len
     
-    # Zero Dict erstellen (nur mit den relevanten Feature-Keys)
+    # Zero Dict erstellen
     keys = processed_seq[0].keys() if processed_seq else FEATURE_NAMES
     zero_dict = {k: 0.0 for k in keys}
     
     padded = processed_seq + [zero_dict.copy() for _ in range(pad_len)]
     return padded, mask
 
+def count_matches_in_period(history, current_date, days=90):
+    """
+    Zählt, wie viele Matches ein Spieler in den letzten X Tagen hatte.
+    Nutzt die player_history (Liste von Dicts mit _date_obj).
+    """
+    if not history or current_date is None:
+        return 0
+    
+    count = 0
+    # Grenzwert berechnen
+    threshold_date = current_date - pd.Timedelta(days=days)
+    
+    # Rückwärts iterieren (von neu nach alt) ist effizienter
+    # history[-1] ist das neueste Match VOR dem aktuellen
+    for match in reversed(history):
+        match_date = match.get('_date_obj')
+        if match_date is None:
+            continue
+            
+        if match_date < threshold_date:
+            break # Zu alt, wir können abbrechen (da chronologisch sortiert)
+            
+        count += 1
+        
+    return count
 
 def create_training_samples(df, n_matches=10, n_recent=15):
     """
@@ -213,7 +237,6 @@ def create_training_samples(df, n_matches=10, n_recent=15):
     print("Preprocessing data (Optimized Speed)...")
     
     # 1. Datumskorrektur & Sortierung
-    # Wir konvertieren zu echtem Datetime für korrekte Tages-Differenzen
     df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
     
     if 'match_num' in df.columns:
@@ -222,11 +245,11 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         df = df.sort_values(['tourney_date'])
     
     # 2. History Container
-    # Speichert Liste von Match-Features für jeden Spieler
-    # history[player_name] = [ match_1, match_2, ... ] (chronologisch)
+    # history[player_name] = [ match_1, match_2, ... ]
     player_history = defaultdict(list)
     
     samples = []
+    stats = {'total': 0, 'kept': 0, 'filtered_rank': 0, 'filtered_activity': 0}
     
     count = 0
     total = len(df)
@@ -242,70 +265,98 @@ def create_training_samples(df, n_matches=10, n_recent=15):
         current_date = row['match_date_obj']
         match_year = int(str(row['tourney_date'])[:4])
         
-        # Label Randomization
-        if random.random() > 0.5:
-            pA, pB = winner, loser
-            label = 1
-            odds_a = row.get('B365W', 0.0)
-            odds_b = row.get('B365L', 0.0)
-        else:
-            pA, pB = loser, winner
-            label = 0
-            odds_a = row.get('B365L', 0.0)
-            odds_b = row.get('B365W', 0.0)
+        stats['total'] += 1
+        
+        r_winner = row['winner_rank'] if not pd.isna(row['winner_rank']) else 9999
+        r_loser = row['loser_rank'] if not pd.isna(row['loser_rank']) else 9999
+        
+        is_relevant_match = (r_winner <= 150) and (r_loser <= 150)
+        
+        is_top150 = (r_winner <= 150) and (r_loser <= 150)
+        
+        pA_active = False
+        pB_active = False
+        
+        if is_top150: # Nur prüfen wenn Rank okay ist (spart Zeit)
+            pA_matches = count_matches_in_period(player_history[winner], current_date, days=90)
+            pB_matches = count_matches_in_period(player_history[loser], current_date, days=90)
+            pA_active = pA_matches >= 5
+            pB_active = pB_matches >= 5
+        
+        keep_sample = is_top150 and pA_active and pB_active
+        
+        if not is_top150:
+            stats['filtered_rank'] += 1
+        elif not (pA_active and pB_active):
+            stats['filtered_activity'] += 1
             
-        def get_hist(player, surf):
-            full = player_history.get(player, [])
+        if keep_sample:
+            stats['kept'] += 1
             
-            # Recent: Letzte N Matches
-            recent = full[-n_recent:][::-1]
-            
-            # Surface: Filtern nach Belag
-            surf_hist = [m for m in full if m['_surface'] == surf]
-            surf_recent = surf_hist[-n_matches:][::-1]
-            
-            return surf_recent, recent
+            # Label Randomization
+            if random.random() > 0.5:
+                pA, pB = winner, loser
+                label = 1
+                odds_a = row.get('B365W', 0.0)
+                odds_b = row.get('B365L', 0.0)
+            else:
+                pA, pB = loser, winner
+                label = 0
+                odds_a = row.get('B365L', 0.0)
+                odds_b = row.get('B365W', 0.0)
+                
+            def get_hist(player, surf):
+                full = player_history.get(player, [])
+                recent = full[-n_recent:][::-1]
+                surf_hist = [m for m in full if m['_surface'] == surf]
+                surf_recent = surf_hist[-n_matches:][::-1]
+                return surf_recent, recent
 
-        pA_surf_hist, pA_rec_hist = get_hist(pA, surface)
-        pB_surf_hist, pB_rec_hist = get_hist(pB, surface)
-        
-        # Padding & Feature Berechnung
-        pA_surf, pA_surf_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
-        pA_rec, pA_rec_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
-        pB_surf, pB_surf_mask = pad_sequence(pB_surf_hist, n_matches, current_date)
-        pB_rec, pB_rec_mask = pad_sequence(pB_rec_hist, n_recent, current_date)
-        
-        # Segment IDs
-        seg_ids = [1]*n_matches + [2]*n_recent + [3]*n_matches + [4]*n_recent
-        
-        # NaN Quoten abfangen
-        if pd.isna(odds_a): odds_a = 0.0
-        if pd.isna(odds_b): odds_b = 0.0
+            pA_surf_hist, pA_rec_hist = get_hist(pA, surface)
+            pB_surf_hist, pB_rec_hist = get_hist(pB, surface)
+            
+            pA_surf, pA_surf_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
+            pA_rec, pA_rec_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
+            pB_surf, pB_surf_mask = pad_sequence(pB_surf_hist, n_matches, current_date)
+            pB_rec, pB_rec_mask = pad_sequence(pB_rec_hist, n_recent, current_date)
+            
+            seg_ids = [1]*n_matches + [2]*n_recent + [3]*n_matches + [4]*n_recent
+            
+            if pd.isna(odds_a): odds_a = 0.0
+            if pd.isna(odds_b): odds_b = 0.0
 
-        sample = {
-            'player_a_surface': pA_surf,
-            'player_a_surface_mask': pA_surf_mask,
-            'player_a_recent': pA_rec,
-            'player_a_recent_mask': pA_rec_mask,
-            'player_b_surface': pB_surf,
-            'player_b_surface_mask': pB_surf_mask,
-            'player_b_recent': pB_rec,
-            'player_b_recent_mask': pB_rec_mask,
-            'segment_ids': seg_ids,
-            'label': label,
-            'year': match_year,
-            'odds_a': odds_a,
-            'odds_b': odds_b
-        }
-        samples.append(sample)
+            sample = {
+                'player_a_surface': pA_surf,
+                'player_a_surface_mask': pA_surf_mask,
+                'player_a_recent': pA_rec,
+                'player_a_recent_mask': pA_rec_mask,
+                'player_b_surface': pB_surf,
+                'player_b_surface_mask': pB_surf_mask,
+                'player_b_recent': pB_rec,
+                'player_b_recent_mask': pB_rec_mask,
+                'segment_ids': seg_ids,
+                'label': label,
+                'year': match_year,
+                'odds_a': odds_a,
+                'odds_b': odds_b
+            }
+            samples.append(sample)
         
-        # Feature Extraction für das aktuelle Match
+        # --- HISTORY UPDATE (IMMER! Unabhängig vom Filter) ---
+        # Damit die Historie lückenlos bleibt, auch wenn wir auf ein Match nicht wetten würden.
+        
         w_feats = extract_match_features(row, 'winner')
         l_feats = extract_match_features(row, 'loser')
         
         player_history[winner].append(w_feats)
         player_history[loser].append(l_feats)
 
+    print(f"Preprocessing Done.")
+    print(f"Total Matches: {stats['total']}")
+    print(f"Kept Samples: {stats['kept']} ({(stats['kept']/stats['total'])*100:.1f}%)")
+    print(f"Filtered by Rank: {stats['filtered_rank']}")
+    print(f"Filtered by Activity: {stats['filtered_activity']}")
+    
     return samples
 
 if __name__ == "__main__":

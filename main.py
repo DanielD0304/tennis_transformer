@@ -21,8 +21,7 @@ def compute_baseline_accuracy(config=default_config):
     print("="*60)
     
     # Load preprocessed data
-    if not torch.cuda.is_available():
-        os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     # Check if preprocessed data exists, if not preprocess it
     if not os.path.exists(config.preprocessed_data_path):
