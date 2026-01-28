@@ -431,10 +431,107 @@ def check_calibration(config=default_config):
     print("="*60)
     print("Hinweis: Negative 'Diff' bedeutet, das Modell ist zu optimistisch (overconfident).")
 
+def simulate_strategy_sniper(config=default_config):
+    """
+    STRATEGIE 3: SNIPER (Confidence Window)
+    Wette nur, wenn die Modell-Wahrscheinlichkeit im 'Gold-Bereich' liegt.
+    Basierend auf Calibration Check: 70% - 80% Konfidenz.
+    """
+    print("\n" + "="*60)
+    print("STRATEGIE 3: SNIPER (Confidence 70% - 80%)")
+    print("="*60)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = Model(config.d_model, config.num_heads, config.num_layers, config.input_dim, config.max_len, config.output_dim).to(device)
+    if os.path.exists(config.best_model_path): model.load_state_dict(torch.load(config.best_model_path, map_location=device))
+    if not os.path.exists(config.preprocessed_data_path): return
+    all_samples = torch.load(config.preprocessed_data_path)
+    test_samples = [s for s in all_samples if s['year'] == config.test_year]
+    if not test_samples: return
+    dataset = DataSet(test_samples)
+    test_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    
+    balance = 1000.0
+    start_balance = balance
+    stake = 10.0
+    bets = 0
+    wins = 0
+    skipped = 0
+    
+    min_conf = 0.60
+    max_conf = 0.80
+    
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            # ... (Inputs laden wie immer) ...
+            features = torch.cat([batch['player_a_surface'], batch['player_a_recent'], 
+                                batch['player_b_surface'], batch['player_b_recent']], dim=1).to(device)
+            positions = torch.cat([batch['player_a_surface_pos'], batch['player_a_recent_pos'], 
+                                 batch['player_b_surface_pos'], batch['player_b_recent_pos']], dim=1).to(device)
+            masks = torch.cat([batch['player_a_surface_mask'], batch['player_a_recent_mask'], 
+                             batch['player_b_surface_mask'], batch['player_b_recent_mask']], dim=1).to(device)
+            cls_mask = torch.ones(masks.shape[0], 1, device=masks.device)
+            masks = torch.cat([cls_mask, masks], dim=1)
+            segment_ids = batch['segment_ids'].to(device)
+            
+            outputs = model(features, positions, segment_ids, masks)
+            probs = torch.softmax(outputs, dim=1)
+            
+            labels = batch['label'].to(device)
+            odds_a = batch['odds_a'].to(device)
+            odds_b = batch['odds_b'].to(device)
+            
+            for i in range(len(labels)):
+                prob_a = probs[i][1].item()
+                prob_b = probs[i][0].item()
+                real_outcome = labels[i].item()
+                oda = odds_a[i].item()
+                odb = odds_b[i].item()
+                
+                if oda <= 1.01 or odb <= 1.01: continue
+                
+                bet_placed = False
+                
+                # Prüfe Player A
+                if prob_a > prob_b:
+                    # Nur wetten, wenn wir im Gold-Bereich sind
+                    if min_conf <= prob_a <= max_conf:
+                        balance -= stake
+                        bets += 1
+                        bet_placed = True
+                        if real_outcome == 1:
+                            balance += stake * oda
+                            wins += 1
+                # Prüfe Player B
+                else:
+                    if min_conf <= prob_b <= max_conf:
+                        balance -= stake
+                        bets += 1
+                        bet_placed = True
+                        if real_outcome == 0:
+                            balance += stake * odb
+                            wins += 1
+                            
+                if not bet_placed:
+                    skipped += 1
 
-# ======================================================================================
-# 5. BASELINE ACCURACY COMPUTATION
-# ======================================================================================
+    # ROI Berechnung (wie gehabt)
+    profit = balance - start_balance
+    roc = (profit / start_balance) * 100
+    total_staked = bets * stake
+    yield_percent = (profit / total_staked) * 100 if total_staked > 0 else 0.0
+
+    print(f"Endkapital:       {balance:.2f}€")
+    print(f"Profit/Verlust:   {profit:.2f}€")
+    print(f"ROC (Bankroll):   {roc:.2f}%")
+    print(f"YIELD (Echt-ROI): {yield_percent:.2f}%")
+    print(f"Wetten:           {bets} (Gefiltert: {skipped})")
+    if bets > 0:
+        print(f"Win-Rate:         {100*wins/bets:.2f}%")
+    print("="*60)
+    
+    
 def compute_baseline_accuracy(config=default_config):
     print("\n" + "="*60)
     print("Computing Baseline Accuracy (Better Ranking Wins)")
@@ -510,7 +607,7 @@ def compute_baseline_accuracy(config=default_config):
 # MAIN EXECUTION
 # ======================================================================================
 def main():
-    # 1. Baseline Accuracy berechnen (und Daten preprocessen falls nötig)
+    
     compute_baseline_accuracy()
     
     # 2. Modell trainieren
@@ -521,7 +618,7 @@ def main():
     simulate_betting_baseline()
     
     # Strategie 1 mit Filter (z.B. alles unter Quote 1.30 ignorieren)
-    simulate_strategy_filtered(min_odds=1.30)
+    simulate_strategy_sniper()
     
     # Strategie 2 (Value Betting)
     simulate_strategy_pure_value()

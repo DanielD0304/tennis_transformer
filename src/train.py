@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from . import preprocessing as pre
 from .config import TrainingConfig, default_config
 import os
+from .loss import FocalLoss
 
 
 def load_or_preprocess_data(config):
@@ -16,7 +17,6 @@ def load_or_preprocess_data(config):
     if os.path.exists(config.preprocessed_data_path):
         print(f"Loading preprocessed data from {config.preprocessed_data_path}...")
         all_samples = torch.load(config.preprocessed_data_path)
-        print(f"Loaded {len(all_samples)} samples.")
     else:
         print("Preprocessed data not found. Processing now...")
         from . import data_loader as dl_module
@@ -83,7 +83,8 @@ def train(config=default_config):
         output_dim=config.output_dim
     ).to(device)
     
-    criterion = torch.nn.CrossEntropyLoss()
+    #criterion = torch.nn.CrossEntropyLoss() old
+    criterion = FocalLoss(gamma = 2.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=1e-4)
     
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
