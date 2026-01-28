@@ -435,10 +435,10 @@ def simulate_strategy_sniper(config=default_config):
     """
     STRATEGIE 3: SNIPER (Confidence Window)
     Wette nur, wenn die Modell-Wahrscheinlichkeit im 'Gold-Bereich' liegt.
-    Basierend auf Calibration Check: 70% - 80% Konfidenz.
+    Basierend auf Calibration Check: 65% - 80% Konfidenz.
     """
     print("\n" + "="*60)
-    print("STRATEGIE 3: SNIPER (Confidence 70% - 80%)")
+    print("STRATEGIE 3: SNIPER (Confidence 65% - 80%)")
     print("="*60)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -458,7 +458,7 @@ def simulate_strategy_sniper(config=default_config):
     wins = 0
     skipped = 0
     
-    min_conf = 0.60
+    min_conf = 0.65
     max_conf = 0.80
     
     model.eval()

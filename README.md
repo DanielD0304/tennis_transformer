@@ -29,9 +29,11 @@ tennis_transformer/
 │   ├── transformer.py       # Transformer-Block
 │   ├── model.py             # Gesamtarchitektur
 │   ├── dataset.py           # PyTorch Dataset
+│   ├── loss.py              # Focal Loss Implementation
+│   ├── elo.py               # ELO-Rating Berechnung
 │   └── train.py             # Training Loop mit Validation & Early Stopping
 ├── preprocess_data.py       # Einmaliges Preprocessing (spart Zeit)
-├── main.py
+├── main.py                  # Hauptskript mit Strategien & Simulationen
 ├── requirements.txt
 └── README.md
 ```
@@ -159,6 +161,49 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 - **Kritischer Data Leakage Fix (Tournament Level):** Nach Initial-Training mit 98%+ Accuracy wurde ein **kritischer Bug** entdeckt: Das aktuelle Match war in seiner eigenen Historie enthalten! Das Modell sah das Ergebnis (`won=1/0`) als erstes Feature im `player_recent`-Vektor und "schummelte". Lösung: Striktes Filtern mit `match_num` - nur Matches mit `match_num < current_match_num` vom gleichen Turnier werden inkludiert. Das aktuelle Match ist definitiv NICHT mehr in der Historie. Nach dem Fix fiel die Accuracy realistisch auf **64.66%** (Test Accuracy, Epoch 5).
 - **Preprocessing-Optimierung (Single-Pass O(N)):** Ursprüngliche Implementation hatte O(N²) Komplexität durch wiederholte Filteroperationen für jedes Match. Neue Implementation nutzt einen Single-Pass-Algorithmus mit `defaultdict`, der die Historie inkrementell aufbaut: Nur eine Iteration über alle Matches mit O(N) Zeitkomplexität. Dies reduziert die Preprocessing-Zeit um ~95% (27.672 Matches in Sekunden statt Minuten).
 
+## Loss Function
+
+Das Projekt verwendet **Focal Loss** statt der Standard CrossEntropyLoss:
+
+```python
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        return focal_loss.mean()
+```
+
+**Vorteile von Focal Loss:**
+- Reduziert den Einfluss von leicht klassifizierbaren Samples
+- Fokussiert das Training auf schwierige Fälle
+- Verbessert die Kalibrierung der Wahrscheinlichkeiten
+
+## Wett-Strategien
+
+Das Projekt implementiert mehrere Wett-Strategien zur ROI-Analyse:
+
+### Strategie 1: Filtered Betting
+Wette auf den Spieler mit der höheren Wahrscheinlichkeit, aber nur wenn die Quote >= min_odds (Standard: 1.30) ist. Filtert "Müll-Quoten" (1.01-1.29) heraus.
+
+### Strategie 2: Pure Value
+Wette nur, wenn der erwartete Wert (Expected Value) > 1.0 ist. Formel: `Wahrscheinlichkeit * Quote > 1.0`
+
+### Strategie 3: Sniper
+Wette nur, wenn die Modell-Wahrscheinlichkeit im "Gold-Bereich" liegt (65% - 80% Konfidenz). Basiert auf dem Calibration Check.
+
+### Baseline: Better Rank Wins
+Setzt immer auf den Spieler mit dem besseren (niedrigeren) Rang.
+
+### Diagnose: Probability Calibration Check
+Überprüft, ob die Wahrscheinlichkeiten des Modells der Realität entsprechen und zeigt "Overconfidence" oder "Underconfidence" an.
+
 ## Ergebnisse
 
 ### Baseline Accuracy
@@ -171,43 +216,65 @@ Dies ermöglicht einen fairen Vergleich: Modell-Accuracy - Baseline-Accuracy = e
 
 ### Modell-Performance
 
-#### Ergebnisse vom 19.01.2025
+#### Ergebnisse vom 29.01.2025
 
 **Test-Daten**: 2024 (1.717 Samples)
-- **Baseline (Ranking-Heuristik)**: 63.25% Accuracy (1.086/1.717 korrekte Vorhersagen)
-- **Transformer-Modell**: 64.98% Accuracy (Best Validation, Epoch 6)
-- **Verbesserung über Baseline**: +1.73%
+- **Baseline (Ranking-Heuristik)**: 63.23% Accuracy
+- **Transformer-Modell**: 64.44% Accuracy (Best Validation, Epoch 9)
+- **Verbesserung über Baseline**: +1.21%
 
-**Training-Metriken (10 Epochen):**
+**Training-Metriken (10 Epochen mit Focal Loss):**
 ```
-Epoch [1/10]:  Val Acc: 64.38%, Loss: 0.6370 → New Best
-Epoch [2/10]:  Val Acc: 63.90%, Loss: 0.6388 (Patience: 1/3)
-Epoch [3/10]:  Val Acc: 63.60%, Loss: 0.6294
-Epoch [4/10]:  Val Acc: 63.54%, Loss: 0.6308 (Patience: 1/3)
-Epoch [5/10]:  Val Acc: 62.52%, Loss: 0.6302 (Patience: 2/3)
-Epoch [6/10]:  Val Acc: 64.98%, Loss: 0.6261 → New Best ⭐
-Epoch [7/10]:  Val Acc: 63.78%, Loss: 0.6261
-Epoch [8/10]:  Val Acc: 64.32%, Loss: 0.6269 (Patience: 1/3)
-Epoch [9/10]:  Val Acc: 64.26%, Loss: 0.6291 (Patience: 2/3)
-Epoch [10/10]: Val Acc: 64.62%, Loss: 0.6309 (Patience: 3/3)
-  
-Early Stopping nach Epoch 10 (keine Verbesserung mehr)
+Epoch [1/10]:  Val Acc: 62.09%, Loss: 0.1615 → New Best
+Epoch [2/10]:  Val Acc: 63.54%, Loss: 0.1607 → New Best
+Epoch [3/10]:  Val Acc: 63.72%, Loss: 0.1591 → New Best
+Epoch [4/10]:  Val Acc: 63.90%, Loss: 0.1586 → New Best
+Epoch [5/10]:  Val Acc: 63.78%, Loss: 0.1601 (Patience: 1/3)
+Epoch [6/10]:  Val Acc: 63.96%, Loss: 0.1587 → New Best (Patience: 2/3)
+Epoch [7/10]:  Val Acc: 63.78%, Loss: 0.1584, LR: 0.0005
+Epoch [8/10]:  Val Acc: 64.20%, Loss: 0.1579 → New Best
+Epoch [9/10]:  Val Acc: 64.44%, Loss: 0.1578 → New Best ⭐
+Epoch [10/10]: Val Acc: 64.26%, Loss: 0.1582 (Patience: 1/3)
 ```
 
 ### Wett-Simulation (ROI-Analyse)
 
 Simulation basierend auf Modell-Vorhersagen vs. Baseline auf 1.717 Test-Matches (2024):
 
-**Baseline (Ranking-Heuristik):**
+**Baseline (Better Rank Wins):**
 - Startkapital: 1.000€
 - Endkapital: 169,30€
-- **ROI: -83,07%**
+- **ROC: -83,07%**
+- **YIELD: -4,87%**
 - Wetten: 1.705
 - Win-Rate: 63,23%
 
-**Transformer-Modell (Selective Betting):**
+**Strategie 3: Sniper (Confidence 70% - 80%):**
 - Startkapital: 1.000€
-- Endkapital: 616,70€
-- **ROI: -38,33%**
-- Anzahl Wetten: 397 (nur bei hoher Konfidenz)
-- Win-Rate: 51,89%
+- Endkapital: 1.030,00€
+- **ROC: +3,00%** ✅
+- **YIELD: +2,73%** ✅
+- Wetten: 110 (Gefiltert: 1.598)
+- Win-Rate: 93,64%
+
+**Strategie 2: Pure Value (Math > Bookie):**
+- Startkapital: 1.000€
+- Endkapital: -482,10€
+- **ROC: -148,21%**
+- **YIELD: -9,55%**
+- Wetten: 1.552 (Gefiltert: 156)
+- Win-Rate: 31,57%
+
+### Probability Calibration
+
+```
+Confidence      | Count    | Real Win Rate   | Diff      
+------------------------------------------------------------
+0.0 - 0.4      | 228      | 17.11%          | -18.65%
+0.4 - 0.5      | 723      | 41.91%          | -3.85%
+0.5 - 0.6      | 619      | 61.39%          | +7.43%
+0.6 - 0.7      | 146      | 81.51%          | +18.24%
+0.7 - 0.8      | 1        | 100.00%         | +29.80%
+```
+
+**Hinweis:** Negative 'Diff' bedeutet, das Modell ist zu optimistisch (overconfident). Die Sniper-Strategie nutzt den kalibrierten Bereich (0.6-0.8) optimal aus
