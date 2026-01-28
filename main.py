@@ -1,26 +1,28 @@
 import torch
 import os
-from src.train import train
+import numpy as np
+from torch.utils.data import DataLoader
+from src.train import train, custom_collate_fn
 from src.config import default_config
 from src.dataset import DataSet
-from torch.utils.data import DataLoader
-from src.train import custom_collate_fn
 from src.model import Model
 
-
-
-def simulate_strategy_always_bet(config=default_config):
+# ======================================================================================
+# 1. STRATEGIE: FILTERED BETTING (Höhere Wahrscheinlichkeit + Mindestquote)
+# ======================================================================================
+def simulate_strategy_filtered(config=default_config, min_odds=1.30):
     """
-    Strategie 1: Wette auf JEDES Spiel auf den Spieler mit der höheren Wahrscheinlichkeit.
-    Egal wie die Quote ist (solange sie existiert).
+    Strategie: Wette auf den Spieler mit der höheren Wahrscheinlichkeit,
+    ABER NUR wenn die Quote >= min_odds (Standard: 1.30) ist.
+    Dies filtert "Müll-Quoten" (1.01-1.29) heraus, die oft unprofitabel sind.
     """
     print("\n" + "="*60)
-    print("STRATEGIE 1: IMMER WETTEN (Highest Probability)")
+    print(f"STRATEGIE 1: FILTERED BETTING (Odds >= {min_odds:.2f})")
     print("="*60)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load model
+    # Modell initialisieren
     model = Model(
         d_model=config.d_model,
         num_heads=config.num_heads,
@@ -29,40 +31,50 @@ def simulate_strategy_always_bet(config=default_config):
         max_len=config.max_len,
         output_dim=config.output_dim
     ).to(device)
-    model.load_state_dict(torch.load(config.best_model_path, map_location=device))
     
-    # Load test data
+    # Bestes Modell laden
+    if os.path.exists(config.best_model_path):
+        model.load_state_dict(torch.load(config.best_model_path, map_location=device))
+    else:
+        print("Warnung: Kein trainiertes Modell gefunden! Bitte erst trainieren.")
+        return
+    
+    # Daten laden
     if not os.path.exists(config.preprocessed_data_path):
-        print("No data found!")
+        print("Keine vorverarbeiteten Daten gefunden!")
         return
     
     all_samples = torch.load(config.preprocessed_data_path)
     test_samples = [s for s in all_samples if s['year'] == config.test_year]
     
     if not test_samples:
-        print(f"No test samples for year {config.test_year}")
+        print(f"Keine Test-Samples für Jahr {config.test_year}")
         return
     
     dataset = DataSet(test_samples)
     test_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn)
     
+    # Bankroll Management
     balance = 1000.0
     start_balance = balance
     stake = 10.0
     
     bets = 0
     wins = 0
+    skipped = 0
     
     model.eval()
     with torch.no_grad():
         for batch in test_loader:
-            # Inputs auf Device
+            # Features auf Device schieben
             features = torch.cat([batch['player_a_surface'], batch['player_a_recent'], 
                                 batch['player_b_surface'], batch['player_b_recent']], dim=1).to(device)
             positions = torch.cat([batch['player_a_surface_pos'], batch['player_a_recent_pos'], 
                                  batch['player_b_surface_pos'], batch['player_b_recent_pos']], dim=1).to(device)
             masks = torch.cat([batch['player_a_surface_mask'], batch['player_a_recent_mask'], 
                              batch['player_b_surface_mask'], batch['player_b_recent_mask']], dim=1).to(device)
+            
+            # CLS Mask hinzufügen
             cls_mask = torch.ones(masks.shape[0], 1, device=masks.device)
             masks = torch.cat([cls_mask, masks], dim=1)
             segment_ids = batch['segment_ids'].to(device)
@@ -71,7 +83,6 @@ def simulate_strategy_always_bet(config=default_config):
             outputs = model(features, positions, segment_ids, masks)
             probs = torch.softmax(outputs, dim=1)
             
-            # Daten für Auswertung
             labels = batch['label'].to(device)
             odds_a = batch['odds_a'].to(device)
             odds_b = batch['odds_b'].to(device)
@@ -83,37 +94,59 @@ def simulate_strategy_always_bet(config=default_config):
                 oda = odds_a[i].item()
                 odb = odds_b[i].item()
                 
-                # Ohne Quote keine Wette
-                if oda <= 1.01 or odb <= 1.01: continue
+                # Genereller Datenfilter: Ungültige Quoten ignorieren
+                if oda <= 1.01 or odb <= 1.01:
+                    skipped += 1
+                    continue
                 
-                bets += 1
-                balance -= stake
+                bet_placed = False
                 
-                # Wir wetten einfach auf den, der wahrscheinlicher ist
+                # Wir wetten auf den Spieler, den das Modell favorisiert
+                # Aber NUR, wenn die Quote über dem Grenzwert (min_odds) liegt
                 if prob_a > prob_b:
-                    # Wette auf A
-                    if real_outcome == 1:
-                        balance += stake * oda
-                        wins += 1
+                    if oda >= min_odds:
+                        balance -= stake
+                        bets += 1
+                        bet_placed = True
+                        if real_outcome == 1:
+                            balance += stake * oda
+                            wins += 1
                 else:
-                    # Wette auf B
-                    if real_outcome == 0:
-                        balance += stake * odb
-                        wins += 1
+                    if odb >= min_odds:
+                        balance -= stake
+                        bets += 1
+                        bet_placed = True
+                        if real_outcome == 0:
+                            balance += stake * odb
+                            wins += 1
+                            
+                if not bet_placed:
+                    skipped += 1
 
-    roi = ((balance - start_balance) / start_balance) * 100
-    print(f"Endkapital: {balance:.2f}€")
-    print(f"ROI: {roi:.2f}%")
+    # --- ROI / Yield Berechnung ---
+    profit = balance - start_balance
+    roc = (profit / start_balance) * 100
+    
+    total_staked = bets * stake
+    yield_percent = (profit / total_staked) * 100 if total_staked > 0 else 0.0
+
+    print(f"Endkapital:       {balance:.2f}€")
+    print(f"Profit/Verlust:   {profit:.2f}€")
+    print(f"ROC (Bankroll):   {roc:.2f}%")
+    print(f"YIELD (Echt-ROI): {yield_percent:.2f}%")
+    print(f"Wetten:           {bets} (Gefiltert: {skipped})")
     if bets > 0:
-        print(f"Wetten: {bets} (Win-Rate: {100*wins/bets:.2f}%)")
+        print(f"Win-Rate:         {100*wins/bets:.2f}%")
     print("="*60)
 
 
+# ======================================================================================
+# 2. STRATEGIE: PURE VALUE (Mathematischer Vorteil)
+# ======================================================================================
 def simulate_strategy_pure_value(config=default_config):
     """
-    Strategie 2: PURE VALUE.
-    Wette nur, wenn (Unsere Wahrscheinlichkeit * Buchmacher Quote) > 1.0
-    Das wettet auch auf Außenseiter, wenn die Quote hoch genug ist!
+    Strategie: Wette nur, wenn der erwartete Wert (Expected Value) > 1.0 ist.
+    Formel: Wahrscheinlichkeit * Quote > 1.0
     """
     print("\n" + "="*60)
     print("STRATEGIE 2: PURE VALUE (Math > Bookie)")
@@ -121,7 +154,6 @@ def simulate_strategy_pure_value(config=default_config):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load model
     model = Model(
         d_model=config.d_model,
         num_heads=config.num_heads,
@@ -130,19 +162,17 @@ def simulate_strategy_pure_value(config=default_config):
         max_len=config.max_len,
         output_dim=config.output_dim
     ).to(device)
-    model.load_state_dict(torch.load(config.best_model_path, map_location=device))
     
-    # Load test data
+    if os.path.exists(config.best_model_path):
+        model.load_state_dict(torch.load(config.best_model_path, map_location=device))
+    
     if not os.path.exists(config.preprocessed_data_path):
-        print("No data found!")
         return
     
     all_samples = torch.load(config.preprocessed_data_path)
     test_samples = [s for s in all_samples if s['year'] == config.test_year]
     
-    if not test_samples:
-        print(f"No test samples for year {config.test_year}")
-        return
+    if not test_samples: return
     
     dataset = DataSet(test_samples)
     test_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn)
@@ -155,14 +185,11 @@ def simulate_strategy_pure_value(config=default_config):
     wins = 0
     skipped = 0
     
-    # 1.0 = Fair Value. 1.05 = Wir wollen 5% Puffer. 
-    # Du kannst hier 1.0 setzen, um ALLES mitzunehmen.
     min_value = 1.0 
     
     model.eval()
     with torch.no_grad():
         for batch in test_loader:
-            # Inputs
             features = torch.cat([batch['player_a_surface'], batch['player_a_recent'], 
                                 batch['player_b_surface'], batch['player_b_recent']], dim=1).to(device)
             positions = torch.cat([batch['player_a_surface_pos'], batch['player_a_recent_pos'], 
@@ -189,15 +216,13 @@ def simulate_strategy_pure_value(config=default_config):
                 
                 if oda <= 1.01 or odb <= 1.01: continue
                 
-                # --- HIER IST DIE MAGIE ---
-                # Berechne den erwarteten Wert (Expected Value - EV)
+                # Value Berechnung
                 ev_a = prob_a * oda
                 ev_b = prob_b * odb
                 
-                # Wir wetten auf die Seite mit dem höchsten Value, FALLS Value > 1.0
                 bet_placed = False
                 
-                # Fall 1: A hat Value und mehr Value als B
+                # Wir setzen auf den höchsten Value, falls er > min_value ist
                 if ev_a > min_value and ev_a > ev_b:
                     balance -= stake
                     bets += 1
@@ -205,8 +230,6 @@ def simulate_strategy_pure_value(config=default_config):
                     if real_outcome == 1:
                         balance += stake * oda
                         wins += 1
-                        
-                # Fall 2: B hat Value (und mehr als A)
                 elif ev_b > min_value:
                     balance -= stake
                     bets += 1
@@ -218,14 +241,24 @@ def simulate_strategy_pure_value(config=default_config):
                 if not bet_placed:
                     skipped += 1
 
-    roi = ((balance - start_balance) / start_balance) * 100
-    print(f"Endkapital: {balance:.2f}€")
-    print(f"ROI: {roi:.2f}%")
-    print(f"Wetten: {bets} (Gefiltert: {skipped})")
+    profit = balance - start_balance
+    roc = (profit / start_balance) * 100
+    total_staked = bets * stake
+    yield_percent = (profit / total_staked) * 100 if total_staked > 0 else 0.0
+
+    print(f"Endkapital:       {balance:.2f}€")
+    print(f"Profit/Verlust:   {profit:.2f}€")
+    print(f"ROC (Bankroll):   {roc:.2f}%")
+    print(f"YIELD (Echt-ROI): {yield_percent:.2f}%")
+    print(f"Wetten:           {bets} (Gefiltert: {skipped})")
     if bets > 0:
-        print(f"Win-Rate: {100*wins/bets:.2f}%")
+        print(f"Win-Rate:         {100*wins/bets:.2f}%")
     print("="*60)
-    
+
+
+# ======================================================================================
+# 3. STRATEGIE: BASELINE (Rangliste)
+# ======================================================================================
 def simulate_betting_baseline(config=default_config):
     """
     Simuliert Wetten basierend auf der einfachen Strategie:
@@ -235,10 +268,6 @@ def simulate_betting_baseline(config=default_config):
     print("SIMULATION: BASELINE (BETTER RANK WINS)")
     print("="*60)
     
-    # Pfad korrigieren und Daten laden
-    if not torch.cuda.is_available():
-         os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
     if not os.path.exists(config.preprocessed_data_path):
         print("Keine Daten gefunden!")
         return
@@ -246,31 +275,24 @@ def simulate_betting_baseline(config=default_config):
     all_samples = torch.load(config.preprocessed_data_path)
     test_samples = [s for s in all_samples if s['year'] == config.test_year]
     
-    if not test_samples:
-        print(f"Keine Test-Samples für Jahr {config.test_year}")
-        return
+    if not test_samples: return
 
     dataset = DataSet(test_samples)
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     
     balance = 1000.0
-    initial_balance = balance
+    start_balance = balance
     stake = 10.0
-    
     bets_placed = 0
     correct_bets = 0
     
-    print(f"Simuliere Wetten auf {len(test_samples)} Matches (Jahr {config.test_year})...")
-    
     with torch.no_grad():
         for batch in loader:
-            # Wir nehmen den Rang aus dem letzten Match der Historie als Proxy für den aktuellen Rang
-            # Index 1 ist der Rank (siehe preprocessing FEATURE_NAMES)
-            # Index 0 ist das aktuellste Match in der Historie (wegen [::-1] im Preprocessing)
+            # Rang extrahieren (Index 1 im Feature Vektor des letzten Matches)
             rank_a = batch['player_a_recent'][:, 0, 1]
             rank_b = batch['player_b_recent'][:, 0, 1]
             
-            # 0.0 (Padding) durch Unendlich ersetzen, damit diese nicht als "bester Rang" gelten
+            # Padding (0.0) durch Unendlich ersetzen
             rank_a = torch.where(rank_a == 0, torch.tensor(float('inf')), rank_a)
             rank_b = torch.where(rank_b == 0, torch.tensor(float('inf')), rank_b)
             
@@ -285,25 +307,19 @@ def simulate_betting_baseline(config=default_config):
                 oda = odds_a[i].item()
                 odb = odds_b[i].item()
                 
-                # Ohne Quoten keine Wette
-                if oda <= 1.01 or odb <= 1.01:
-                    continue
+                if oda <= 1.01 or odb <= 1.01: continue
                 
                 bet_made = False
                 won = False
                 
-                # Strategie: Setze auf den besseren Rang
                 if r_a < r_b: 
-                    # A ist besser -> Wette auf A
                     balance -= stake
                     bets_placed += 1
                     bet_made = True
                     if real_outcome == 1:
                         balance += stake * oda
                         won = True
-                        
                 elif r_b < r_a:
-                    # B ist besser -> Wette auf B
                     balance -= stake
                     bets_placed += 1
                     bet_made = True
@@ -314,34 +330,121 @@ def simulate_betting_baseline(config=default_config):
                 if bet_made and won:
                     correct_bets += 1
 
-    roi = ((balance - initial_balance) / initial_balance) * 100
+    profit = balance - start_balance
+    roc = (profit / start_balance) * 100
+    total_staked = bets_placed * stake
+    yield_percent = (profit / total_staked) * 100 if total_staked > 0 else 0.0
     
-    print("-" * 30)
-    print(f"Startkapital: {initial_balance:.2f}€")
-    print(f"Endkapital:   {balance:.2f}€")
-    print(f"ROI:          {roi:.2f}%")
-    print(f"Wetten:       {bets_placed}")
+    print(f"Endkapital:       {balance:.2f}€")
+    print(f"Profit/Verlust:   {profit:.2f}€")
+    print(f"ROC (Bankroll):   {roc:.2f}%")
+    print(f"YIELD (Echt-ROI): {yield_percent:.2f}%")
+    print(f"Wetten:           {bets_placed}")
     if bets_placed > 0:
-        print(f"Win-Rate:     {100 * correct_bets / bets_placed:.2f}%")
-    print("="*60 + "\n")    
+        print(f"Win-Rate:         {100 * correct_bets / bets_placed:.2f}%")
+    print("="*60 + "\n")
+
+
+# ======================================================================================
+# 4. DIAGNOSE: PROBABILITY CALIBRATION
+# ======================================================================================
+def check_calibration(config=default_config):
+    """
+    Überprüft, ob die Wahrscheinlichkeiten des Modells der Realität entsprechen.
+    Zeigt "Overconfidence" oder "Underconfidence" an.
+    """
+    print("\n" + "="*60)
+    print("DIAGNOSE: PROBABILITY CALIBRATION CHECK")
+    print("="*60)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    model = Model(
+        d_model=config.d_model,
+        num_heads=config.num_heads,
+        num_layers=config.num_layers,
+        input_dim=config.input_dim,
+        max_len=config.max_len,
+        output_dim=config.output_dim
+    ).to(device)
+    
+    if os.path.exists(config.best_model_path):
+        model.load_state_dict(torch.load(config.best_model_path, map_location=device))
+    else:
+        print("Für Diagnose wird ein trainiertes Modell benötigt.")
+        return
+
+    if not os.path.exists(config.preprocessed_data_path):
+        return
+        
+    all_samples = torch.load(config.preprocessed_data_path)
+    test_samples = [s for s in all_samples if s['year'] == config.test_year]
+    dataset = DataSet(test_samples)
+    test_loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, collate_fn=custom_collate_fn)
+    
+    all_probs = []
+    all_labels = []
+    
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            features = torch.cat([batch['player_a_surface'], batch['player_a_recent'], 
+                                batch['player_b_surface'], batch['player_b_recent']], dim=1).to(device)
+            positions = torch.cat([batch['player_a_surface_pos'], batch['player_a_recent_pos'], 
+                                 batch['player_b_surface_pos'], batch['player_b_recent_pos']], dim=1).to(device)
+            masks = torch.cat([batch['player_a_surface_mask'], batch['player_a_recent_mask'], 
+                             batch['player_b_surface_mask'], batch['player_b_recent_mask']], dim=1).to(device)
+            cls_mask = torch.ones(masks.shape[0], 1, device=masks.device)
+            masks = torch.cat([cls_mask, masks], dim=1)
+            segment_ids = batch['segment_ids'].to(device)
+            
+            outputs = model(features, positions, segment_ids, masks)
+            probs = torch.softmax(outputs, dim=1)[:, 1] # Wahrscheinlichkeit, dass Player A gewinnt
+            labels = batch['label'].to(device)
+            
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+    
+    # Wahrscheinlichkeits-Bins
+    bins = [0.0, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    
+    print(f"{'Confidence':<15} | {'Count':<8} | {'Real Win Rate':<15} | {'Diff':<10}")
+    print("-" * 60)
+    
+    for i in range(len(bins)-1):
+        low, high = bins[i], bins[i+1]
+        
+        mask = (all_probs >= low) & (all_probs < high)
+        if np.sum(mask) == 0: continue
+        
+        subset_labels = all_labels[mask]
+        real_win_rate = np.mean(subset_labels)
+        predicted_mean = np.mean(all_probs[mask])
+        
+        diff = real_win_rate - predicted_mean
+        
+        print(f"{low:.1f} - {high:.1f}      | {len(subset_labels):<8} | {real_win_rate:.2%}        | {diff:+.2%}")
+        
+    print("="*60)
+    print("Hinweis: Negative 'Diff' bedeutet, das Modell ist zu optimistisch (overconfident).")
+
+
+# ======================================================================================
+# 5. BASELINE ACCURACY COMPUTATION
+# ======================================================================================
 def compute_baseline_accuracy(config=default_config):
-    """
-    Compute baseline accuracy: Predict winner based on ranking only.
-    
-    Simple heuristic: The player with better (lower) rank wins.
-    This shows how much the Transformer improves over a naive strategy.
-    
-    Args:
-        config: TrainingConfig instance
-    """
     print("\n" + "="*60)
     print("Computing Baseline Accuracy (Better Ranking Wins)")
     print("="*60)
     
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    # Sicherstellen, dass wir im richtigen Verzeichnis sind
+    if not torch.cuda.is_available(): # Kleiner Hack, um Pfade lokal sauber zu halten
+        os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
-    # Check if preprocessed data exists, if not preprocess it
+    # Preprocessing, falls nötig
     if not os.path.exists(config.preprocessed_data_path):
         print(f"Preprocessed data not found at {config.preprocessed_data_path}")
         print("Running preprocessing pipeline...\n")
@@ -350,28 +453,29 @@ def compute_baseline_accuracy(config=default_config):
         
         years = list(range(config.data_years_start, config.data_years_end + 1))
         raw_data = dl.load_all_matches(years)
+        
+        # ELO berechnen
+        from src.elo import compute_elo_ratings
+        raw_data = compute_elo_ratings(raw_data)
+        
         all_samples = pre.create_training_samples(
             raw_data, 
             n_matches=config.n_surface_matches,
             n_recent=config.n_recent_matches
         )
         
-        print(f"Saving {len(all_samples)} samples to {config.preprocessed_data_path}...")
+        os.makedirs(os.path.dirname(config.preprocessed_data_path), exist_ok=True)
         torch.save(all_samples, config.preprocessed_data_path)
         print(f"Preprocessing complete!\n")
     else:
         all_samples = torch.load(config.preprocessed_data_path)
     
-    # Filter samples to only include test year
     test_samples = [s for s in all_samples if s['year'] == config.test_year]
     print(f"Using {len(test_samples)} test samples from year {config.test_year}")
-    print(f"(Total samples available: {len(all_samples)})\n")
     
     if len(test_samples) == 0:
-        print(f"ERROR: No samples found for test year {config.test_year}")
         return 0.0
     
-    # Create dataset and loader
     dataset = DataSet(test_samples)
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     
@@ -380,10 +484,7 @@ def compute_baseline_accuracy(config=default_config):
     
     with torch.no_grad():
         for batch in loader:
-            # Get ranking features from the last match in recent history
-            # Features: [won, rank, aces, double_faults, first_serve_pct, days_since_match]
-            # Index 1 is rank
-            rank_a = batch['player_a_recent'][:, 0, 1]  # Last match, rank feature
+            rank_a = batch['player_a_recent'][:, 0, 1]
             rank_b = batch['player_b_recent'][:, 0, 1]
             
             rank_a = torch.where(rank_a == 0, torch.tensor(float('inf')), rank_a)
@@ -391,8 +492,7 @@ def compute_baseline_accuracy(config=default_config):
             
             labels = batch['label']
             
-            # Predict: player with better (lower) rank wins
-            # rank_a < rank_b → player A is better → predict 1
+            # Prediction: Player mit niedrigerem Rang gewinnt
             predictions = torch.where(rank_a < rank_b, 1, 0)
             
             correct += (predictions == labels).sum().item()
@@ -401,25 +501,33 @@ def compute_baseline_accuracy(config=default_config):
     baseline_accuracy = 100 * correct / total
     print(f"Total Samples: {total}")
     print(f"Baseline Accuracy (Ranking): {baseline_accuracy:.2f}%")
-    print(f"Correct Predictions: {correct}/{total}")
     print("="*60 + "\n")
     
     return baseline_accuracy
 
 
+# ======================================================================================
+# MAIN EXECUTION
+# ======================================================================================
 def main():
-    """Main entry point: compute baseline, then train model."""
-    baseline_acc = compute_baseline_accuracy()
+    # 1. Baseline Accuracy berechnen (und Daten preprocessen falls nötig)
+    compute_baseline_accuracy()
     
-    # Train model
+    # 2. Modell trainieren
     print("Training Transformer Model...\n")
     train()
     
-    # ROI berechnen
+    # 3. Simulationen & Auswertung
     simulate_betting_baseline()
+    
+    # Strategie 1 mit Filter (z.B. alles unter Quote 1.30 ignorieren)
+    simulate_strategy_filtered(min_odds=1.30)
+    
+    # Strategie 2 (Value Betting)
     simulate_strategy_pure_value()
-    simulate_strategy_always_bet()
-
+    
+    # 4. Diagnose (Calibration Check)
+    check_calibration()
 
 if __name__ == "__main__":
     main()
