@@ -23,28 +23,41 @@ from . import data_loader as dl
 # Updated to include ELO and opponent rank features
 FEATURE_NAMES = [
     'won', 'rank', 'aces', 'double_faults', 'first_serve_pct', 
-    'days_since_match', 'opponent_elo', 'opponent_rank', 'own_elo'
+    'days_since_match', 'opponent_elo', 'opponent_rank', 'own_elo',
+    'bp_convert_pct', 'bp_save_pct', 'return_pts_won_pct', 'service_pts_won_pct',
+    'h2h_win_pct',
+    'surf_hard', 'surf_clay', 'surf_grass', 'surf_other'
 ]
+SURFACE_MAP = {
+    'Hard': [1, 0, 0, 0],
+    'Clay': [0, 1, 0, 0],
+    'Grass': [0, 0, 1, 0],
+    'Carpet': [0, 0, 0, 1]
+}
+DEFAULT_SURF = [1, 0, 0, 0]
 
+def safe_div(a, b):
+    return a / b if b != 0 else 0.0
 
-def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
-    """
-    Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
-    Args:
-        df (pd.DataFrame): Rohdaten
-        out_path (str): Speicherpfad für .pt-Datei
-        n_matches (int): Surface-Matches
-        n_recent (int): Recent-Matches
-    """
-    from .elo import compute_elo_ratings
-    df = compute_elo_ratings(df)
+def get_h2h_pct(p1, p2, h2h_dict):
+    """Gibt die Win% von p1 gegen p2 zurück."""
+    key = tuple(sorted((p1, p2)))
+    stats = h2h_dict.get(key, {'p1': None, 'wins1': 0, 'wins2': 0})
     
-    samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
-    torch.save(samples, out_path)
-    print(f"Saved {len(samples)} samples to {out_path}")
+    if stats['p1'] is None: return 0.5 # Kein H2H bekannt
+    
+    # Wer ist wer im gespeicherten Dict?
+    if p1 == stats['p1']:
+        w, l = stats['wins1'], stats['wins2']
+    else:
+        w, l = stats['wins2'], stats['wins1']
+        
+    total = w + l
+    return w / total if total > 0 else 0.5
 
 
-def extract_match_features(row, player_role):
+
+def extract_match_features(row, player_role, current_h2h_pct):
     """
     Extract relevant features from a match row for a specific player.
     
@@ -66,41 +79,29 @@ def extract_match_features(row, player_role):
     """
     if player_role == "winner":
         prefix = "w_"
+        opp_prefix = "l_"
         rank_col = "winner_rank"
-        won = 1
         opp_rank_col = "loser_rank"
+        won = 1
         opp_elo_col = "loser_elo"
         own_elo_col = "winner_elo"
     else:
         prefix = "l_"
+        opp_prefix = "w_"
         rank_col = "loser_rank"
-        won = 0
         opp_rank_col = "winner_rank"
+        won = 0
         opp_elo_col = "winner_elo"
         own_elo_col = "loser_elo"
     
     # --- Feature Extraction ---
     
-    # 1. Rank (log)
-    rank_value = row[rank_col]
-    if rank_value is None or (isinstance(rank_value, float) and math.isnan(rank_value)) or rank_value < 1:
-        log_rank = 0.0
-    else:
-        log_rank = math.log(rank_value + 1)
-        
-    # 2. Opponent Rank (log)
-    opp_rank_val = row[opp_rank_col]
-    if opp_rank_val is None or (isinstance(opp_rank_val, float) and math.isnan(opp_rank_val)) or opp_rank_val < 1:
-        log_opp_rank = 0.0
-    else:
-        log_opp_rank = math.log(opp_rank_val + 1)
-
-    # 3. ELO Features (Normalized)
-    opp_elo = row.get(opp_elo_col, 1500.0)
-    norm_opp_elo = opp_elo / 2000.0
+    # 1. Basics
+    rank = math.log(row[rank_col] + 1) if row[rank_col] > 0 else 0
+    opp_rank = math.log(row[opp_rank_col] + 1) if row[opp_rank_col] > 0 else 0
     
-    own_elo = row.get(own_elo_col, 1500.0)
-    norm_own_elo = own_elo / 2000.0
+    opp_elo = row.get(opp_elo_col, 1500.0) / 2000.0
+    own_elo = row.get(own_elo_col, 1500.0) / 2000.0
 
     # 4. Stats
     aces = row[prefix + 'ace']
@@ -108,22 +109,49 @@ def extract_match_features(row, player_role):
     svpt = row[prefix + 'svpt']
     first_in = row[prefix + '1stIn']
     first_serve_pct = first_in / svpt if svpt != 0 else 0
+
+    srv_pts_won = row[prefix + '1stWon'] + row[prefix + '2ndWon']
+    service_pts_won_pct = safe_div(srv_pts_won, svpt)
     
-    # 5. Days since match 
-    # Placeholder: days_since_match wird jetzt in pad_sequence dynamisch berechnet
+    opp_svpt = row[opp_prefix + 'svpt']
+    opp_srv_pts_won = row[opp_prefix + '1stWon'] + row[opp_prefix + '2ndWon']
+    return_pts_won = opp_svpt - opp_srv_pts_won
+    return_pts_won_pct = safe_div(return_pts_won, opp_svpt)
+    
+    bp_saved = row[prefix + 'bpSaved']
+    bp_faced = row[prefix + 'bpFaced']
+    bp_save_pct = safe_div(bp_saved, bp_faced)
+    
+    opp_bp_faced = row[opp_prefix + 'bpFaced']
+    opp_bp_saved = row[opp_prefix + 'bpSaved']
+    bp_converted = opp_bp_faced - opp_bp_saved
+    bp_convert_pct = safe_div(bp_converted, opp_bp_faced)
+
+    # 4. Surface One-Hot
+    surf_vec = SURFACE_MAP.get(row['surface'], DEFAULT_SURF)
     
     return {
         'won': won,
-        'rank': log_rank,
+        'rank': rank,
         'aces': aces,
         'double_faults': dfs,
         'first_serve_pct': first_serve_pct,
-        'days_since_match': 0.0, 
-        'opponent_elo': norm_opp_elo,
-        'opponent_rank': log_opp_rank,
-        'own_elo': norm_own_elo,
+        'days_since_match': 0.0, # Wird in pad_sequence gesetzt
+        'opponent_elo': opp_elo,
+        'opponent_rank': opp_rank,
+        'own_elo': own_elo,
+        'bp_convert_pct': bp_convert_pct,
+        'bp_save_pct': bp_save_pct,
+        'return_pts_won_pct': return_pts_won_pct,
+        'service_pts_won_pct': service_pts_won_pct,
+        'h2h_win_pct': current_h2h_pct,
+        'surf_hard': surf_vec[0],
+        'surf_clay': surf_vec[1],
+        'surf_grass': surf_vec[2],
+        'surf_other': surf_vec[3],
+        
         '_date_obj': row.get('match_date_obj', None),
-        '_surface': row['surface'] 
+        '_surface': row['surface']
     }
 
 
@@ -151,8 +179,6 @@ def pad_sequence(sequence, max_len, current_date=None):
     
     for item in sequence:
         new_item = item.copy()
-        
-        # Dynamische Berechnung der Tage (log scale)
         if current_date is not None and item.get('_date_obj') is not None:
             delta = current_date - item['_date_obj']
             days = max(0, delta.days)
@@ -238,127 +264,131 @@ def create_training_samples(df, n_matches=10, n_recent=15):
     
     # 1. Datumskorrektur & Sortierung
     df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
-    
-    if 'match_num' in df.columns:
-        df = df.sort_values(['tourney_date', 'match_num'])
-    else:
-        df = df.sort_values(['tourney_date'])
-    
-    # 2. History Container
-    # history[player_name] = [ match_1, match_2, ... ]
+    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else ['tourney_date'])
+
     player_history = defaultdict(list)
     
+    h2h_tracker = {}
     samples = []
-    stats = {'total': 0, 'kept': 0, 'filtered_rank': 0, 'filtered_activity': 0}
-    
-    count = 0
-    total = len(df)
     
     for index, row in df.iterrows():
-        count += 1
-        if count % 5000 == 0:
-            print(f"Processing match {count}/{total}...")
-            
         winner = row['winner_name']
         loser = row['loser_name']
         surface = row['surface']
         current_date = row['match_date_obj']
-        match_year = int(str(row['tourney_date'])[:4])
+        year = int(str(row['tourney_date'])[:4])
         
-        stats['total'] += 1
-        
-        r_winner = row['winner_rank'] if not pd.isna(row['winner_rank']) else 9999
-        r_loser = row['loser_rank'] if not pd.isna(row['loser_rank']) else 9999
-        
-        is_relevant_match = (r_winner <= 150) and (r_loser <= 150)
-        
-        is_top150 = (r_winner <= 150) and (r_loser <= 150)
-        
-        pA_active = False
-        pB_active = False
-        
-        if is_top150: # Nur prüfen wenn Rank okay ist (spart Zeit)
-            pA_matches = count_matches_in_period(player_history[winner], current_date, days=90)
-            pB_matches = count_matches_in_period(player_history[loser], current_date, days=90)
-            pA_active = pA_matches >= 5
-            pB_active = pB_matches >= 5
-        
-        keep_sample = is_top150 and pA_active and pB_active
-        
-        if not is_top150:
-            stats['filtered_rank'] += 1
-        elif not (pA_active and pB_active):
-            stats['filtered_activity'] += 1
+        # H2H Key
+        h2h_key = tuple(sorted((winner, loser)))
+        if h2h_key not in h2h_tracker:
+            h2h_tracker[h2h_key] = {'p1': h2h_key[0], 'wins1': 0, 'wins2': 0}
             
-        if keep_sample:
-            stats['kept'] += 1
+        win_h2h_pct = get_h2h_pct(winner, loser, h2h_tracker)
+        los_h2h_pct = get_h2h_pct(loser, winner, h2h_tracker)
+        
+        # Sample Erstellung (nur wenn relevant)
+        r_w = row['winner_rank'] if not pd.isna(row['winner_rank']) else 9999
+        r_l = row['loser_rank'] if not pd.isna(row['loser_rank']) else 9999
+        
+        if r_w <= 200 and r_l <= 200: # Top 200 Filter
+            # Check Activity
+            pA_hist = player_history.get(winner, [])
+            pB_hist = player_history.get(loser, [])
             
-            # Label Randomization
-            if random.random() > 0.5:
-                pA, pB = winner, loser
-                label = 1
-                odds_a = row.get('B365W', 0.0)
-                odds_b = row.get('B365L', 0.0)
-            else:
-                pA, pB = loser, winner
-                label = 0
-                odds_a = row.get('B365L', 0.0)
-                odds_b = row.get('B365W', 0.0)
+            has_history = len(pA_hist) >= 5 and len(pB_hist) >= 5
+            
+            pA_active = count_matches_in_period(pA_hist, current_date, days=90) >= 3
+            pB_active = count_matches_in_period(pB_hist, current_date, days=90) >= 3
+            
+            if has_history and pA_active and pB_active:
+                if random.random() > 0.5:
+                    pA, pB = winner, loser
+                    label = 1
+                    odds_a = row.get('B365W', 0.0)
+                    odds_b = row.get('B365L', 0.0)
+                    pA_current_h2h = win_h2h_pct
+                    pB_current_h2h = los_h2h_pct
+                else:
+                    pA, pB = loser, winner
+                    label = 0
+                    odds_a = row.get('B365L', 0.0)
+                    odds_b = row.get('B365W', 0.0)
+                    pA_current_h2h = los_h2h_pct
+                    pB_current_h2h = win_h2h_pct
                 
-            def get_hist(player, surf):
-                full = player_history.get(player, [])
-                recent = full[-n_recent:][::-1]
-                surf_hist = [m for m in full if m['_surface'] == surf]
-                surf_recent = surf_hist[-n_matches:][::-1]
-                return surf_recent, recent
+                def get_hist_with_h2h(p, surf, current_h2h_val):
+                    full = player_history.get(p, [])
+                    
+                    # Kopie erstellen, damit wir das Original nicht ändern!
+                    # Wir brauchen deepcopy, da es eine Liste von Dicts ist
+                    import copy
+                    
+                    # Filtern
+                    rec_matches = full[-n_recent:][::-1]
+                    surf_matches = [m for m in full if m['_surface'] == surf][-n_matches:][::-1]
+                    
+                    def inject(matches, val):
+                        injected = []
+                        for m in matches:
+                            m_copy = m.copy() # Flache Kopie reicht hier für das Dict
+                            m_copy['h2h_win_pct'] = val
+                            injected.append(m_copy)
+                        return injected
 
-            pA_surf_hist, pA_rec_hist = get_hist(pA, surface)
-            pB_surf_hist, pB_rec_hist = get_hist(pB, surface)
-            
-            pA_surf, pA_surf_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
-            pA_rec, pA_rec_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
-            pB_surf, pB_surf_mask = pad_sequence(pB_surf_hist, n_matches, current_date)
-            pB_rec, pB_rec_mask = pad_sequence(pB_rec_hist, n_recent, current_date)
-            
-            seg_ids = [1]*n_matches + [2]*n_recent + [3]*n_matches + [4]*n_recent
-            
-            if pd.isna(odds_a): odds_a = 0.0
-            if pd.isna(odds_b): odds_b = 0.0
+                    return inject(surf_matches, current_h2h_val), inject(rec_matches, current_h2h_val)
+                
+                pA_surf_hist, pA_rec_hist = get_hist_with_h2h(pA, surface, pA_current_h2h)
+                pB_surf_hist, pB_rec_hist = get_hist_with_h2h(pB, surface, pB_current_h2h)
+                
+                pA_surf, pA_s_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
+                pA_rec, pA_r_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
+                pB_surf, pB_s_mask = pad_sequence(pB_surf_hist, n_matches, current_date)
+                pB_rec, pB_r_mask = pad_sequence(pB_rec_hist, n_recent, current_date)
+                
+                seg_ids = [1]*n_matches + [2]*n_recent + [3]*n_matches + [4]*n_recent
+                
+                sample = {
+                    'player_a_surface': pA_surf, 'player_a_surface_mask': pA_s_mask,
+                    'player_a_recent': pA_rec, 'player_a_recent_mask': pA_r_mask,
+                    'player_b_surface': pB_surf, 'player_b_surface_mask': pB_s_mask,
+                    'player_b_recent': pB_rec, 'player_b_recent_mask': pB_r_mask,
+                    'segment_ids': seg_ids, 'label': label,
+                    'year': year,
+                    'odds_a': odds_a if not pd.isna(odds_a) else 0.0,
+                    'odds_b': odds_b if not pd.isna(odds_b) else 0.0
+                }
+                samples.append(sample)
 
-            sample = {
-                'player_a_surface': pA_surf,
-                'player_a_surface_mask': pA_surf_mask,
-                'player_a_recent': pA_rec,
-                'player_a_recent_mask': pA_rec_mask,
-                'player_b_surface': pB_surf,
-                'player_b_surface_mask': pB_surf_mask,
-                'player_b_recent': pB_rec,
-                'player_b_recent_mask': pB_rec_mask,
-                'segment_ids': seg_ids,
-                'label': label,
-                'year': match_year,
-                'odds_a': odds_a,
-                'odds_b': odds_b
-            }
-            samples.append(sample)
-        
-        # --- HISTORY UPDATE (IMMER! Unabhängig vom Filter) ---
-        # Damit die Historie lückenlos bleibt, auch wenn wir auf ein Match nicht wetten würden.
-        
-        w_feats = extract_match_features(row, 'winner')
-        l_feats = extract_match_features(row, 'loser')
+        # Update History & H2H (NACH dem Sample)
+        w_feats = extract_match_features(row, 'winner', win_h2h_pct)
+        l_feats = extract_match_features(row, 'loser', los_h2h_pct)
         
         player_history[winner].append(w_feats)
         player_history[loser].append(l_feats)
-
-    print(f"Preprocessing Done.")
-    print(f"Total Matches: {stats['total']}")
-    print(f"Kept Samples: {stats['kept']} ({(stats['kept']/stats['total'])*100:.1f}%)")
-    print(f"Filtered by Rank: {stats['filtered_rank']}")
-    print(f"Filtered by Activity: {stats['filtered_activity']}")
-    
+        
+        # Update H2H Tracker
+        entry = h2h_tracker[h2h_key]
+        if winner == entry['p1']:
+            entry['wins1'] += 1
+        else:
+            entry['wins2'] += 1
+            
+    print(f"Preprocessing Done. Created {len(samples)} samples.")
     return samples
 
-if __name__ == "__main__":
-    df = dl.load_all_matches()
-    save_preprocessed_samples(df, "data/preprocessed_samples.pt", n_matches=10, n_recent=15)
+def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
+    """
+    Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
+    Args:
+        df (pd.DataFrame): Rohdaten
+        out_path (str): Speicherpfad für .pt-Datei
+        n_matches (int): Surface-Matches
+        n_recent (int): Recent-Matches
+    """
+    from .elo import compute_elo_ratings
+    df = compute_elo_ratings(df)
+    
+    samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
+    torch.save(samples, out_path)
+    print(f"Saved {len(samples)} samples to {out_path}")
+

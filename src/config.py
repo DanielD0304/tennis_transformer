@@ -10,10 +10,10 @@ class TrainingConfig:
     
     dropout: float = 0.3
     # Model architecture
-    d_model: int = 32
+    d_model: int = 64
     num_heads: int = 4
     num_layers: int = 2
-    input_dim: int = 9 # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since, opponent_elo, opponent_rank, own_elo)
+    input_dim: int = 18 # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since, opponent_elo, opponent_rank, own_elo)
     n_surface_matches: int = 10  # Number of surface-specific matches in history
     n_recent_matches: int = 15  # Number of recent matches (any surface)
     max_len: int = 50  # Maximum sequence length (n_surface + n_recent) * 2
@@ -22,10 +22,10 @@ class TrainingConfig:
     # Training parameters
     num_epochs: int = 10
     batch_size: int = 32
-    learning_rate: float = 0.001
+    learning_rate: float = 0.0005
     
     # Early stopping
-    patience: int = 3
+    patience: int = 5
     
     # Data
     train_years_end: int = 2022  # Train on data up to and including this year
@@ -44,5 +44,4 @@ class TrainingConfig:
     attention_sample: int = 0  # Which sample in batch to visualize
 
 
-# Default configuration instance
 default_config = TrainingConfig()

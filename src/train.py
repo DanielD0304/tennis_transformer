@@ -21,7 +21,7 @@ def load_or_preprocess_data(config):
         print("Preprocessed data not found. Processing now...")
         from . import data_loader as dl_module
         years = list(range(config.data_years_start, config.data_years_end + 1))
-        raw_data = dl_module.load_all_matches(years)
+        raw_data = dl_module.load_all_matches(years, source = 'sackmann')
         
         # WICHTIG: ELO berechnen, falls noch nicht geschehen (für neue Features)
         from .elo import compute_elo_ratings
