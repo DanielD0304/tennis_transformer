@@ -548,8 +548,10 @@ def compute_baseline_accuracy(config=default_config):
         from src import data_loader as dl
         from src import preprocessing as pre
         
-        years = list(range(config.data_years_start, config.data_years_end + 1))
-        raw_data = dl.load_all_matches(years)
+        train_years = list(range(config.data_years_start, config.test_year))
+        
+        test_year = config.test_year
+        raw_data = dl.load_merged_data(train_years, test_year)
         
         # ELO berechnen
         from src.elo import compute_elo_ratings
