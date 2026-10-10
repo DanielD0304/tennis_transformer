@@ -31,7 +31,13 @@ tennis_transformer/
 │   ├── dataset.py           # PyTorch Dataset
 │   ├── loss.py              # Focal Loss Implementation
 │   ├── elo.py               # ELO-Rating Berechnung
-│   └── train.py             # Training Loop mit Validation & Early Stopping
+│   ├── train.py             # Training Loop mit Validation & Early Stopping
+│   ├── predict.py           # Live-Vorhersagen für anstehende Matches
+│   └── names.py             # Spielernamen aus verschiedenen Quellen abgleichen
+├── betscraper/              # Django-App: Quoten scrapen & Value Bets anzeigen
+│   ├── scraper/sites.py     # Seiten-Konfiguration (Tipico, bwin) + Playwright-Scraper
+│   ├── dataProcessing/      # Buchmacher-Marge, Value-Bet-Berechnung
+│   └── manage.py
 ├── preprocess_data.py       # Einmaliges Preprocessing (spart Zeit)
 ├── main.py                  # Hauptskript mit Strategien & Simulationen
 ├── requirements.txt
@@ -76,6 +82,26 @@ config = TrainingConfig(
 train(config)
 ```
 
+### 4. Live Value Bets (betscraper)
+Der Scraper holt die aktuellen Tennis-Quoten von Tipico und bwin, nimmt pro Match die beste Quote,
+lässt das trainierte Modell (`models/best_model.pt`) die Siegwahrscheinlichkeit schätzen und zeigt
+alle Tipps mit `Wahrscheinlichkeit × Quote > Mindest-EV` an.
+
+```bash
+playwright install chromium
+cd betscraper
+python manage.py runserver
+```
+Dann http://127.0.0.1:8000/scraper/tennis/ öffnen (Untergrund und Mindest-EV sind wählbar,
+die Quellen liefern keinen Untergrund). Statt des Playwright-Chromiums kann mit
+`PLAYWRIGHT_CHANNEL=msedge` bzw. `chrome` ein installierter Browser genutzt werden.
+
+Hinweise:
+- Die Spieler-Historien für Live-Matches kommen aus den aktuellen tennis-data.co.uk-Dateien. Die
+  enthalten keine Aufschlag-Statistiken, diese Features sind live also 0.
+- Nur ATP-Hauptturniere werden erkannt; WTA, Challenger und Doppel bekommen keine Vorhersage.
+- Die alte Fußball-Ansicht (1X2-Quoten + Marge) gibt es weiter unter `/scraper/scrape-odds/`.
+
 ## Features
 
 ### Daten-Split (Zeitreihen-korrekt)
@@ -105,6 +131,8 @@ Dies verhindert **Data Leakage**, da das Modell nie Zukunftsdaten sieht.
 ## Datenquelle
 
 ATP Match-Daten von [Jeff Sackmann's Tennis ATP Repository](https://github.com/JeffSackmann/tennis_atp) (2015-2024).
+Das Repository ist inzwischen nicht mehr erreichbar. Fehlen die Dateien (auch nicht lokal in `data/`),
+wird automatisch auf [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) ausgewichen (inkl. Quoten, ohne Aufschlag-Stats).
 
 ## Konfiguration
 
