@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tennis Value Bets</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+        table { border-collapse: collapse; margin-bottom: 2rem; }
+        th, td { padding: .35rem .7rem; border-bottom: 1px solid #ddd; text-align: left; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        tr.value td { background: #e6f6e6; }
+        .muted { color: #888; }
+        .error { background: #fde8e8; padding: .7rem 1rem; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>Tennis Value Bets</h1>
+
+    <form method="get">
+        <label>Untergrund
+            <select name="surface">
+                {% for s in surfaces %}<option value="{{ s }}" {% if s == surface %}selected{% endif %}>{{ s }}</option>{% endfor %}
+            </select>
+        </label>
+        <label>Mindest-EV <input name="min_ev" type="number" step="0.01" value="{{ min_ev }}"></label>
+        <button type="submit">Neu laden</button>
+    </form>
+
+    {% if error %}
+        <p class="error">Modell nicht verfügbar, es werden nur Quoten angezeigt.<br><code>{{ error }}</code></p>
+    {% endif %}
+
+    <h2>Value Bets (EV &gt; {{ min_ev }})</h2>
+    {% if bets %}
+    <table>
+        <tr><th>Match</th><th>Tipp</th><th>Quote</th><th>Quelle</th><th>Modell</th><th>EV</th></tr>
+        {% for match, side, odd, prob, ev in bets %}
+        <tr class="value">
+            <td>{{ match.player1.name }} – {{ match.player2.name }}</td>
+            <td>{{ side.name }}</td>
+            <td class="num">{{ odd|floatformat:2 }}</td>
+            <td>{{ side.source }}</td>
+            <td class="num">{% widthratio prob 1 100 %} %</td>
+            <td class="num">{{ ev|floatformat:3 }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+        <p class="muted">Keine Value Bets gefunden.</p>
+    {% endif %}
+
+    <h2>Alle Matches ({{ matches|length }})</h2>
+    <table>
+        <tr><th>Spieler 1</th><th>Quote</th><th>Spieler 2</th><th>Quote</th><th>Buchmacher-Summe</th><th>Modell P1 / P2</th></tr>
+        {% for m in matches %}
+        <tr>
+            <td>{{ m.player1.name }}</td>
+            <td class="num">{{ m.player1.odd|floatformat:2 }} <span class="muted">{{ m.player1.source }}</span></td>
+            <td>{{ m.player2.name }}</td>
+            <td class="num">{{ m.player2.odd|floatformat:2 }} <span class="muted">{{ m.player2.source }}</span></td>
+            <td class="num">{{ m.bet_share|floatformat:3 }}</td>
+            <td class="num">
+                {% if m.prediction %}
+                    {% widthratio m.prediction.prob_a 1 100 %} % / {% widthratio m.prediction.prob_b 1 100 %} %
+                    {% for w in m.prediction.warnings %}<br><span class="muted">{{ w }}</span>{% endfor %}
+                {% else %}<span class="muted">nicht in ATP-Daten</span>{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

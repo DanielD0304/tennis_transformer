@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Data</title>
+</head>
+<body>
+    <h1>Game Data</h1>
+    <ul>
+        {% for game in games %}
+            <li>
+                <strong>Team 1:</strong> {{ game.team1.name }} - Odd: {{ game.team1.odd }} (Source: {{ game.team1.source }})<br>
+                <strong>Draw:</strong> {{ game.draw.name }} - Odd: {{ game.draw.odd }} (Source: {{ game.draw.source }})<br>
+                <strong>Team 2:</strong> {{ game.team2.name }} - Odd: {{ game.team2.odd }} (Source: {{ game.team2.source }})
+            </li>
+        {% endfor %}
+    </ul>
+    
+    <h1>Results</h1>
+    <ul>
+        {% if results %}
+            {% for draw_name, calculation in results.items %}
+                <li>
+                    <strong>{{ draw_name }}:</strong> {{ calculation }}
+                </li>
+            {% endfor %}
+        {% else %}
+            <li>No results found</li>
+        {% endif %}
+    </ul>
+</body>
+</html>

@@ -9,8 +9,10 @@ import pandas as pd
 import requests
 import io
 import os
+import re
 
 DATA_DIR = "data"
+TUK_BASE_URL = "https://www.tennis-data.co.uk"
 
 # Das Ziel-Schema (Sackmann-Style)
 REQUIRED_STATS_COLS = [
@@ -72,6 +74,24 @@ def load_sackmann_year(year):
     df = enforce_schema(df)
     return df
 
+_tuk_links = None
+
+def tuk_url(year):
+    """
+    tennis-data.co.uk legt die Dateien inzwischen unter einem wechselnden Pfad ab
+    (z.B. /hrjk-.../2026/2026.xlsx). Den aktuellen Link holen wir von alldata.php.
+    """
+    global _tuk_links
+    if _tuk_links is None:
+        _tuk_links = {}
+        try:
+            r = requests.get(f"{TUK_BASE_URL}/alldata.php", headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+            for path, y in re.findall(r'href="([^"]*?/(\d{4})/\d{4}\.xlsx?)"', r.text, flags=re.I):
+                _tuk_links.setdefault(int(y), f"{TUK_BASE_URL}/{path.lstrip('/')}")
+        except requests.RequestException:
+            pass
+    return _tuk_links.get(year, f"{TUK_BASE_URL}/{year}/{year}.xlsx")
+
 def load_tuk_year(year):
     extensions = ['.xlsx', '.xls', '.csv']
     file_path = None
@@ -88,7 +108,7 @@ def load_tuk_year(year):
         else:
             df = pd.read_excel(file_path)
     else:
-        url = f"http://www.tennis-data.co.uk/{year}/{year}.xlsx"
+        url = tuk_url(year)
         print(f"Downloading TUK: {year}")
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
@@ -248,6 +268,10 @@ def load_merged_data(train_years, test_year):
     print(f"--- Loading Training Data ---")
     for y in train_years:
         df = load_sackmann_year(y)
+        if df.empty:
+            # Sackmann-Repo ist nicht mehr erreichbar -> TUK (ohne Aufschlag-Stats)
+            print(f"Warning: No Sackmann data for {y}. Using TUK only.")
+            df = enforce_schema(load_tuk_year(y))
         frames.append(df)
         
     # Test: Merged
