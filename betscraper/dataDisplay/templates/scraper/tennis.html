@@ -1,23 +1,11 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tennis Value Bets</title>
-    <style>
-        body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
-        table { border-collapse: collapse; margin-bottom: 2rem; }
-        th, td { padding: .35rem .7rem; border-bottom: 1px solid #ddd; text-align: left; }
-        td.num { text-align: right; font-variant-numeric: tabular-nums; }
-        tr.value td { background: #e6f6e6; }
-        .muted { color: #888; }
-        .error { background: #fde8e8; padding: .7rem 1rem; border-radius: 4px; }
-    </style>
-</head>
-<body>
+{% extends "base.html" %}
+
+{% block title %}Tennis Value Bets{% endblock %}
+
+{% block content %}
     <h1>Tennis Value Bets</h1>
 
-    <form method="get">
+    <form method="get" class="inline card">
         <label>Untergrund
             <select name="surface">
                 {% for s in surfaces %}<option value="{{ s }}" {% if s == surface %}selected{% endif %}>{{ s }}</option>{% endfor %}
@@ -33,7 +21,7 @@
 
     <h2>Value Bets (EV &gt; {{ min_ev }})</h2>
     {% if bets %}
-    <table>
+    <div class="wide"><table>
         <tr><th>Match</th><th>Tipp</th><th>Quote</th><th>Quelle</th><th>Modell</th><th>EV</th></tr>
         {% for match, side, odd, prob, ev in bets %}
         <tr class="value">
@@ -45,13 +33,13 @@
             <td class="num">{{ ev|floatformat:3 }}</td>
         </tr>
         {% endfor %}
-    </table>
+    </table></div>
     {% else %}
         <p class="muted">Keine Value Bets gefunden.</p>
     {% endif %}
 
     <h2>Alle Matches ({{ matches|length }})</h2>
-    <table>
+    <div class="wide"><table>
         <tr><th>Spieler 1</th><th>Quote</th><th>Spieler 2</th><th>Quote</th><th>Buchmacher-Summe</th><th>Modell P1 / P2</th></tr>
         {% for m in matches %}
         <tr>
@@ -68,6 +56,5 @@
             </td>
         </tr>
         {% endfor %}
-    </table>
-</body>
-</html>
+    </table></div>
+{% endblock %}

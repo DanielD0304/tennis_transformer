@@ -1,6 +1,5 @@
-from functools import lru_cache
-
 from betObjekts.footballgame import football_game
+from dataProcessing.predictor import get_predictor
 from dataProcessing.process import process_data
 from dataProcessing.value import add_predictions, aggregate_tennis, value_bets
 from django.shortcuts import render
@@ -28,14 +27,6 @@ def fetch_and_process_odds(request):
     result_dict = processor.process_data()
 
     return render(request, 'scraper/quoten.html', {'games': all_game_data, 'results': result_dict})
-
-
-@lru_cache(maxsize=1)
-def get_predictor():
-    # Import hier, damit die Fußball-Seite auch ohne torch läuft.
-    # Laden dauert (Download + Historie aufbauen), deshalb nur einmal pro Prozess.
-    from src.predict import MatchPredictor
-    return MatchPredictor()
 
 
 def tennis_value_bets(request):

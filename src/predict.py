@@ -20,6 +20,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import get_close_matches
 
 import pandas as pd
 import torch
@@ -103,6 +104,9 @@ class MatchPredictor:
         self.history = defaultdict(list)
         self.h2h = {}
         self.players = {}  # player_key -> Name wie in den Daten
+        self.matches = defaultdict(list)  # Name -> Match-Zusammenfassungen fürs Interface
+        self.ranks = {}
+        self.elo = {}
 
         for _, row in df.iterrows():
             winner, loser = row['winner_name'], row['loser_name']
@@ -127,6 +131,24 @@ class MatchPredictor:
                 if key:
                     self.players[key] = name
 
+            score = " ".join(
+                f"{int(row[f'W{i}'])}-{int(row[f'L{i}'])}"
+                for i in range(1, 6) if pd.notna(row.get(f'W{i}')) and pd.notna(row.get(f'L{i}'))
+            )
+            for name, opp, won, rank, elo in ((winner, loser, True, row['winner_rank'], row['winner_elo']),
+                                              (loser, winner, False, row['loser_rank'], row['loser_elo'])):
+                self.matches[name].append({
+                    'date': row['match_date_obj'].date(), 'opponent': opp, 'won': won,
+                    'surface': row['surface'], 'tournament': _text(row.get('Tournament')),
+                    'round': _text(row.get('Round')), 'score': score if won else _flip_score(score),
+                })
+                self.ranks[name] = int(rank) if rank < 9999 else None
+
+            # ELO nach dem Match (in df steht der Stand davor)
+            expected_w = 1 / (1 + 10 ** ((row['loser_elo'] - row['winner_elo']) / 400))
+            self.elo[winner] = row['winner_elo'] + 32 * (1 - expected_w)
+            self.elo[loser] = row['loser_elo'] - 32 * (1 - expected_w)
+
         self.last_match_date = df['match_date_obj'].max()
 
     def resolve(self, name):
@@ -142,6 +164,36 @@ class MatchPredictor:
         # Ohne Initial: nur Nachname, wenn eindeutig
         same_surname = [n for k, n in self.players.items() if k[0] == key[0]]
         return same_surname[0] if len(same_surname) == 1 else None
+
+    def search(self, query, n=8):
+        """Ähnliche Spielernamen, z.B. für Vorschläge bei Tippfehlern."""
+        names = sorted(set(self.players.values()))
+        q = query.strip().lower()
+        hits = [name for name in names if q and q in name.lower()]
+        return (hits + [m for m in get_close_matches(query, names, n=n, cutoff=0.5) if m not in hits])[:n]
+
+    def player_info(self, name, surface=None, n_last=10):
+        """Form, Ranking, ELO und letzte Matches eines Spielers (Name wie in den Daten)."""
+        matches = self.matches.get(name, [])
+        last = matches[-n_last:][::-1]
+        on_surface = [m for m in matches if m['surface'] == surface] if surface else []
+        return {
+            'name': name,
+            'rank': self.ranks.get(name),
+            'elo': round(self.elo.get(name, 1500)),
+            'n_matches': len(matches),
+            'last': last,
+            'last_wins': sum(m['won'] for m in last),
+            'surface_wins': sum(m['won'] for m in on_surface),
+            'surface_matches': len(on_surface),
+        }
+
+    def h2h_record(self, a, b):
+        """(Siege a, Siege b) in den geladenen Daten."""
+        stats = self.h2h.get(tuple(sorted((a, b))))
+        if stats is None:
+            return 0, 0
+        return (stats['wins1'], stats['wins2']) if stats['p1'] == a else (stats['wins2'], stats['wins1'])
 
     # ------------------------------------------------------------ Vorhersage
 
@@ -203,3 +255,11 @@ class MatchPredictor:
         n_a, n_b = len(self.history[pA]), len(self.history[pB])
         warnings = [f"{p}: nur {n} Matches in der Historie" for p, n in ((pA, n_a), (pB, n_b)) if n < MIN_HISTORY]
         return Prediction(pA, pB, prob_a, 1 - prob_a, n_a, n_b, warnings)
+
+
+def _flip_score(score):
+    return " ".join("-".join(reversed(s.split("-"))) for s in score.split())
+
+
+def _text(value):
+    return str(value) if pd.notna(value) else ''

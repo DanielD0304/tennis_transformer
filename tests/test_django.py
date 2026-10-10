@@ -11,6 +11,7 @@ from django.test.utils import setup_test_environment  # noqa: E402
 # Sonst ist response.context leer
 setup_test_environment()
 
+from predictor import views as predictor_views  # noqa: E402
 from scraper import views  # noqa: E402
 from src.predict import Prediction  # noqa: E402
 
@@ -65,3 +66,77 @@ def test_football_page(client, monkeypatch):
 
     assert r.status_code == 200
     assert "Bayern - Dortmund" in r.context['results']
+
+
+class FakeMatchPredictor:
+    players = {("medvedev", "d"): "Medvedev D.", ("struff", "j"): "Struff J.L."}
+
+    class last_match_date:
+        @staticmethod
+        def date():
+            return __import__("datetime").date(2026, 10, 6)
+
+    def resolve(self, name):
+        from src.names import player_key
+        return self.players.get(player_key(name))
+
+    def search(self, query, n=8):
+        return ["Struff J.L."]
+
+    def predict(self, a, b, surface="Hard", match_date=None):
+        return Prediction(a, b, 0.75, 0.25, 30, 3, [f"{b}: nur 3 Matches in der Historie"])
+
+    def h2h_record(self, a, b):
+        return (2, 1)
+
+    def player_info(self, name, surface=None, n_last=10):
+        return {'name': name, 'rank': 5, 'elo': 2000, 'n_matches': 30, 'last': [],
+                'last_wins': 0, 'surface_wins': 0, 'surface_matches': 0}
+
+
+def test_predict_page_empty_form(client, monkeypatch):
+    monkeypatch.setattr(predictor_views, "get_predictor", lambda: FakeMatchPredictor())
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.context['result'] is None
+    assert r.context['players'] == ["Medvedev D.", "Struff J.L."]
+
+
+def test_predict_page_shows_prediction(client, monkeypatch):
+    monkeypatch.setattr(predictor_views, "get_predictor", lambda: FakeMatchPredictor())
+    r = client.get("/?a=D.+Medvedev+RUS&b=Struff%2C+J.&surface=Clay&date=2026-10-12")
+
+    assert r.status_code == 200
+    res = r.context['result']
+    assert (res['pct_a'], res['pct_b']) == (75.0, 25.0)
+    assert res['fair_a'] == 1 / 0.75
+    assert res['h2h'] == (2, 1)
+    html = r.content.decode()
+    assert "Medvedev D." in html and "12.10.2026" in html and "nur 3 Matches" in html
+
+
+def test_predict_page_unknown_player_suggests(client, monkeypatch):
+    monkeypatch.setattr(predictor_views, "get_predictor", lambda: FakeMatchPredictor())
+    r = client.get("/?a=Strufff&b=Medvedev+D.")
+
+    assert r.context['result'] is None
+    assert r.context['errors'] == [{'name': "Strufff", 'suggestions': ["Struff J.L."]}]
+
+
+def test_predict_page_same_player(client, monkeypatch):
+    monkeypatch.setattr(predictor_views, "get_predictor", lambda: FakeMatchPredictor())
+    r = client.get("/?a=Medvedev+D.&b=D.+Medvedev")
+    assert r.context['result'] is None
+    assert r.context['errors'][0]['same'] is True
+
+
+def test_predict_page_without_model(client, monkeypatch):
+    def no_model():
+        raise FileNotFoundError("kein Modell")
+    monkeypatch.setattr(predictor_views, "get_predictor", no_model)
+
+    r = client.get("/?a=Medvedev+D.&b=Struff+J.L.&date=kaputt")
+
+    assert r.status_code == 200
+    assert "kein Modell" in r.context['model_error']
+    assert "python main.py" in r.content.decode()
