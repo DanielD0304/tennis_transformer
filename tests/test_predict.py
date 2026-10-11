@@ -1,6 +1,7 @@
 """
-Smoke-Test für MatchPredictor mit synthetischen TUK-Daten und zufällig initialisiertem Modell.
-Prüft, dass die Pipeline (Historie -> Features -> Modell) durchläuft und konsistente Werte liefert.
+Smoke-Test für MatchPredictor mit synthetischen Matchdaten (Schema von data/matches.csv)
+und zufällig initialisiertem Modell. Prüft, dass die Pipeline (Historie -> Features -> Modell)
+durchläuft und konsistente Werte liefert.
 """
 import random
 
@@ -8,26 +9,38 @@ import pandas as pd
 import pytest
 import torch
 
-from src import data_loader as dl
 from src.config import default_config
 from src.model import Model
 from src.predict import MatchPredictor
 
-PLAYERS = ["Medvedev D.", "Struff J.L.", "Lehecka J.", "Borges N.", "Carreno Busta P.", "Tabilo A."]
+PLAYERS = ["Daniil Medvedev", "Jan-Lennard Struff", "Jiri Lehecka", "Nuno Borges",
+           "Pablo Carreno Busta", "Juan Manuel Cerundolo"]
 
 
-def fake_tuk_year(year):
-    rng = random.Random(year)
+def fake_matches(years=(2024, 2025), with_stats_until=2024):
+    rng = random.Random(0)
     rows = []
-    for i in range(40):
-        w, l = rng.sample(PLAYERS, 2)
-        rows.append({
-            'winner_name': w, 'loser_name': l,
-            'winner_rank': rng.randint(1, 150), 'loser_rank': rng.randint(1, 150),
-            'surface': rng.choice(['Hard', 'Clay', 'Grass']),
-            'tourney_date': f"{year}{1 + i // 4:02d}{1 + i % 28:02d}",
-            'B365W': 1.5, 'B365L': 2.5,
-        })
+    for year in years:
+        for i in range(40):
+            w, l = rng.sample(PLAYERS, 2)
+            stats = {}
+            if year <= with_stats_until:
+                stats = {'w_ace': 8, 'w_df': 2, 'w_svpt': 70, 'w_1stIn': 45, 'w_1stWon': 35, 'w_2ndWon': 14,
+                         'w_SvGms': 10, 'w_bpSaved': 3, 'w_bpFaced': 4, 'l_ace': 4, 'l_df': 3, 'l_svpt': 72,
+                         'l_1stIn': 40, 'l_1stWon': 28, 'l_2ndWon': 12, 'l_SvGms': 10, 'l_bpSaved': 4, 'l_bpFaced': 7}
+            rows.append({
+                'tourney_name': rng.choice(['Shanghai Masters', 'Roland Garros', 'Wimbledon']),
+                'winner_name': w, 'loser_name': l,
+                'winner_rank': rng.randint(1, 150), 'loser_rank': rng.randint(1, 150),
+                'surface': rng.choice(['Hard', 'Clay', 'Grass']),
+                'tourney_date': f"{year}{1 + i // 4:02d}{1 + i % 28:02d}",
+                'match_date': f"{year}{1 + i // 4:02d}{1 + i % 28:02d}",
+                'match_num': i, 'round': 'R32', 'score': '6-4 6-7(1) 7-5',
+                'status': 'completed', 'B365W': 1.5, 'B365L': 2.5, **stats,
+            })
+    # Ein Walkover: darf weder in die Historie noch ins H2H
+    rows.append({**rows[-1], 'match_num': 999, 'score': 'W/O', 'status': 'W/O',
+                 'winner_name': PLAYERS[0], 'loser_name': PLAYERS[1]})
     return pd.DataFrame(rows)
 
 
@@ -38,24 +51,36 @@ def predictor(tmp_path_factory):
     model = Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len, cfg.output_dim)
     model_path = tmp_path_factory.mktemp("model") / "best_model.pt"
     torch.save(model.state_dict(), model_path)
-
-    mp = pytest.MonkeyPatch()
-    mp.setattr(dl, "load_tuk_year", fake_tuk_year)
-    try:
-        yield MatchPredictor(years=[2024, 2025], model_path=str(model_path))
-    finally:
-        mp.undo()
+    return MatchPredictor(matches=fake_matches(), model_path=str(model_path))
 
 
 def test_history_built(predictor):
-    assert set(predictor.players.values()) == set(PLAYERS)
+    assert set(predictor.history) == set(PLAYERS)
+    # 80 gespielte Matches, der Walkover zählt nicht
     assert sum(len(h) for h in predictor.history.values()) == 2 * 80
 
 
-def test_resolves_bookie_names(predictor):
-    assert predictor.resolve("D. Medvedev RUS") == "Medvedev D."
-    assert predictor.resolve("Carreno-Busta, P.") == "Carreno Busta P."
-    assert predictor.resolve("Sramkova, R.") is None
+def test_has_stats_feature(predictor):
+    hist = predictor.history["Daniil Medvedev"]
+    with_stats = [m['has_stats'] for m in hist if m['_date_obj'].year == 2024]
+    without = [m['has_stats'] for m in hist if m['_date_obj'].year == 2025]
+    assert with_stats and set(with_stats) == {1}
+    assert without and set(without) == {0}
+    assert all(m['aces'] == 0 for m in hist if m['_date_obj'].year == 2025)
+
+
+@pytest.mark.parametrize("name, expected", [
+    ("D. Medvedev RUS", "Daniil Medvedev"),
+    ("Medvedev D.", "Daniil Medvedev"),
+    ("Carreno-Busta, P.", "Pablo Carreno Busta"),
+    ("Struff J.L.", "Jan-Lennard Struff"),
+    ("Cerundolo, J. M.", "Juan Manuel Cerundolo"),
+    ("Cerundolo J.M.", "Juan Manuel Cerundolo"),
+    ("Daniil Medvedev", "Daniil Medvedev"),
+    ("Sramkova, R.", None),
+])
+def test_resolves_names(predictor, name, expected):
+    assert predictor.resolve(name) == expected
 
 
 def test_prediction_is_valid_and_symmetric(predictor):
@@ -69,31 +94,34 @@ def test_prediction_is_valid_and_symmetric(predictor):
 
 
 def test_unknown_player_gives_none(predictor):
-    assert predictor.predict("Medvedev D.", "Unbekannt X.") is None
-    assert predictor.predict("Medvedev D.", "Medvedev D.") is None
+    assert predictor.predict("Daniil Medvedev", "Unbekannt X.") is None
+    assert predictor.predict("Daniil Medvedev", "Medvedev D.") is None
 
 
-def test_missing_model_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(dl, "load_tuk_year", fake_tuk_year)
+def test_missing_model_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        MatchPredictor(years=[2025], model_path=str(tmp_path / "fehlt.pt"))
+        MatchPredictor(matches=fake_matches(), model_path=str(tmp_path / "fehlt.pt"))
 
 
 def test_player_info(predictor):
-    info = predictor.player_info("Medvedev D.", surface="Hard", n_last=5)
+    info = predictor.player_info("Daniil Medvedev", surface="Hard", n_last=5)
 
-    assert info['name'] == "Medvedev D."
-    assert info['n_matches'] == len(predictor.history["Medvedev D."])
+    assert info['name'] == "Daniil Medvedev"
+    assert info['n_matches'] == len(predictor.history["Daniil Medvedev"])
     assert len(info['last']) == 5
     # neuestes Match zuerst
     assert info['last'][0]['date'] >= info['last'][-1]['date']
     assert info['last_wins'] == sum(m['won'] for m in info['last'])
     assert 0 <= info['surface_wins'] <= info['surface_matches']
     assert isinstance(info['elo'], int)
+    assert info['last'][0]['tournament'] in ('Shanghai Masters', 'Roland Garros', 'Wimbledon')
+    # Ergebnis aus Sicht des Spielers
+    for m in info['last']:
+        assert m['score'] == ('6-4 6-7(1) 7-5' if m['won'] else '4-6 7-6(1) 5-7')
 
 
 def test_h2h_record_is_consistent(predictor):
-    a, b = "Medvedev D.", "Struff J.L."
+    a, b = "Daniil Medvedev", "Jan-Lennard Struff"
     wins_a, wins_b = predictor.h2h_record(a, b)
     assert predictor.h2h_record(b, a) == (wins_b, wins_a)
 
@@ -104,5 +132,22 @@ def test_h2h_record_is_consistent(predictor):
 
 
 def test_search(predictor):
-    assert predictor.search("medv")[0] == "Medvedev D."
-    assert "Struff J.L." in predictor.search("Strufff")
+    assert predictor.search("medv")[0] == "Daniil Medvedev"
+    assert "Jan-Lennard Struff" in predictor.search("Jan-Lennard Strufff")
+
+
+def test_stats_dropout(predictor):
+    import pandas as pd
+    from src.dataset import DataSet
+    from src.preprocessing import FEATURE_NAMES, STAT_FEATURES
+
+    sample = predictor._sample("Daniil Medvedev", "Jan-Lennard Struff", "Hard", pd.Timestamp("2026-01-01"))
+    cols = [FEATURE_NAMES.index(f) for f in STAT_FEATURES + ['has_stats']]
+    won = FEATURE_NAMES.index('won')
+
+    full = DataSet([sample])[0]['player_a_recent']
+    dropped = DataSet([sample], stats_dropout=1.0)[0]['player_a_recent']
+    assert full[:, cols].abs().sum() > 0
+    assert dropped[:, cols].abs().sum() == 0
+    # nur die Stats verschwinden, Ergebnis/ELO usw. bleiben
+    assert torch.equal(full[:, won], dropped[:, won])

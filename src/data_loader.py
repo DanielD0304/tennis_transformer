@@ -9,10 +9,11 @@ import pandas as pd
 import requests
 import io
 import os
-import re
+
+from .sources import tuk as tuk_source
+from .sources.common import MATCHES_PATH
 
 DATA_DIR = "data"
-TUK_BASE_URL = "https://www.tennis-data.co.uk"
 
 # Das Ziel-Schema (Sackmann-Style)
 REQUIRED_STATS_COLS = [
@@ -74,23 +75,7 @@ def load_sackmann_year(year):
     df = enforce_schema(df)
     return df
 
-_tuk_links = None
-
-def tuk_url(year):
-    """
-    tennis-data.co.uk legt die Dateien inzwischen unter einem wechselnden Pfad ab
-    (z.B. /hrjk-.../2026/2026.xlsx). Den aktuellen Link holen wir von alldata.php.
-    """
-    global _tuk_links
-    if _tuk_links is None:
-        _tuk_links = {}
-        try:
-            r = requests.get(f"{TUK_BASE_URL}/alldata.php", headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-            for path, y in re.findall(r'href="([^"]*?/(\d{4})/\d{4}\.xlsx?)"', r.text, flags=re.I):
-                _tuk_links.setdefault(int(y), f"{TUK_BASE_URL}/{path.lstrip('/')}")
-        except requests.RequestException:
-            pass
-    return _tuk_links.get(year, f"{TUK_BASE_URL}/{year}/{year}.xlsx")
+tuk_url = tuk_source.url
 
 def load_tuk_year(year):
     extensions = ['.xlsx', '.xls', '.csv']
@@ -261,22 +246,33 @@ def merge_sources(year):
     df_sack = df_sack.drop(columns=['_search_name_w', '_search_name_l'])
     return df_sack
 
+def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24):
+    """
+    Gemeinsamer Datensatz aus data/matches.csv (Sackmann + tennis-data + ESPN, siehe src/update_data.py).
+    Ist er älter als max_age_hours oder fehlt, wird er vorher aktualisiert.
+    """
+    from . import update_data
+    if refresh and update_data.is_stale(max_age_hours):
+        try:
+            update_data.update()
+        except Exception as e:
+            if not os.path.exists(MATCHES_PATH):
+                raise
+            print(f"Warning: Update fehlgeschlagen ({e}), nutze vorhandene Daten.")
+
+    df = pd.read_csv(MATCHES_PATH, dtype={'tourney_date': str, 'match_date': str}, low_memory=False)
+    year = df['tourney_date'].str[:4].astype(int)
+    if first_year is not None:
+        df = df[year >= first_year]
+    if last_year is not None:
+        df = df[year <= last_year]
+    df = enforce_schema(df.reset_index(drop=True))
+    for col in ['B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
+
+
 def load_merged_data(train_years, test_year):
-    frames = []
-    
-    # Training: Sackmann pur
-    print(f"--- Loading Training Data ---")
-    for y in train_years:
-        df = load_sackmann_year(y)
-        if df.empty:
-            # Sackmann-Repo ist nicht mehr erreichbar -> TUK (ohne Aufschlag-Stats)
-            print(f"Warning: No Sackmann data for {y}. Using TUK only.")
-            df = enforce_schema(load_tuk_year(y))
-        frames.append(df)
-        
-    # Test: Merged
-    print(f"--- Loading Test Data (Merged) for {test_year} ---")
-    df_test = merge_sources(test_year)
-    frames.append(df_test)
-    
-    return pd.concat(frames, ignore_index=True)
+    """Trainings- und Testdaten (inkl. Quoten) aus dem gemeinsamen Datensatz."""
+    print(f"--- Loading matches {min(train_years)}-{test_year} ---")
+    return load_matches(first_year=min(train_years), last_year=test_year)

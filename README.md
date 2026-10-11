@@ -33,7 +33,9 @@ tennis_transformer/
 │   ├── elo.py               # ELO-Rating Berechnung
 │   ├── train.py             # Training Loop mit Validation & Early Stopping
 │   ├── predict.py           # Live-Vorhersagen für anstehende Matches
-│   └── names.py             # Spielernamen aus verschiedenen Quellen abgleichen
+│   ├── names.py             # Spielernamen aus verschiedenen Quellen abgleichen
+│   ├── update_data.py       # Daten laden & data/matches.csv bauen (täglicher Refresh)
+│   └── sources/             # Sackmann-Archiv, tennis-data.co.uk, ESPN + Zusammenführung
 ├── betscraper/              # Django-App: Quoten scrapen & Value Bets anzeigen
 │   ├── scraper/sites.py     # Seiten-Konfiguration (Tipico, bwin) + Playwright-Scraper
 │   ├── dataProcessing/      # Buchmacher-Marge, Value-Bet-Berechnung
@@ -56,9 +58,9 @@ pip install -r requirements.txt
 
 ### 1. Daten vorverarbeiten (einmalig)
 ```bash
-python -m tennis_transformer.preprocess_data
+python preprocess_data.py
 ```
-Dies lädt die ATP-Daten (2015-2024), verarbeitet sie und speichert sie als `preprocessed_samples.pt`. Dadurch sparst du bei jedem Training mehrere Minuten!
+Dies lädt die Matchdaten (2015-2025, siehe Datenquellen), verarbeitet sie und speichert sie als `preprocessed_samples.pt`. Dadurch sparst du bei jedem Training mehrere Minuten!
 
 ### 2. Modell trainieren mit automatischer Baseline-Berechnung
 ```bash
@@ -108,17 +110,17 @@ die Quellen liefern keinen Untergrund). Statt des Playwright-Chromiums kann mit
 `PLAYWRIGHT_CHANNEL=msedge` bzw. `chrome` ein installierter Browser genutzt werden.
 
 Hinweise:
-- Die Spieler-Historien für Live-Matches kommen aus den aktuellen tennis-data.co.uk-Dateien. Die
-  enthalten keine Aufschlag-Statistiken, diese Features sind live also 0.
+- Die Spieler-Historien kommen aus `data/matches.csv` (siehe „Datenquellen“), inklusive aller
+  bereits gespielten Runden eines laufenden Turniers.
 - Nur ATP-Hauptturniere werden erkannt; WTA, Challenger und Doppel bekommen keine Vorhersage.
 - Die alte Fußball-Ansicht (1X2-Quoten + Marge) gibt es weiter unter `/scraper/scrape-odds/`.
 
 ## Features
 
 ### Daten-Split (Zeitreihen-korrekt)
-- **Training**: 2015-2022 (älteste Daten)
-- **Validation**: 2023 (für Hyperparameter-Tuning)
-- **Test**: 2024 (finale Evaluation)
+- **Training**: 2015-2023 (älteste Daten)
+- **Validation**: 2024 (für Hyperparameter-Tuning)
+- **Test**: 2025 (finale Evaluation)
 
 Dies verhindert **Data Leakage**, da das Modell nie Zukunftsdaten sieht.
 
@@ -138,12 +140,35 @@ Dies verhindert **Data Leakage**, da das Modell nie Zukunftsdaten sieht.
 - `opponent_elo`: Gegner ELO-Rating (normalisiert: elo/2000). Das ELO-Rating wird dynamisch basierend auf Spielergebissen berechnet (Start: 1500, K-Faktor: 32)
 - `opponent_rank`: log(opponent_rank+1) - Ranking des Gegners bei diesem Match
 - `own_elo`: Spieler-eigenes ELO-Rating (normalisiert: elo/2000) - zeigt die historische Stärke des Spielers
+- `has_stats`: 1, wenn für das Match Aufschlag-Stats vorliegen (sonst sind die Stat-Features 0)
 
-## Datenquelle
+## Datenquellen
 
-ATP Match-Daten von [Jeff Sackmann's Tennis ATP Repository](https://github.com/JeffSackmann/tennis_atp) (2015-2024).
-Das Repository ist inzwischen nicht mehr erreichbar. Fehlen die Dateien (auch nicht lokal in `data/`),
-wird automatisch auf [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) ausgewichen (inkl. Quoten, ohne Aufschlag-Stats).
+Alle Matchdaten landen in `data/matches.csv` (Sackmann-Schema plus `match_date`, `status`, `source`).
+Die Rohdaten liegen unter `data/raw/`, nichts davon ist im Repo.
+
+| Quelle | Inhalt | Aktualität |
+|---|---|---|
+| [Sackmann-Archiv](https://github.com/Aneeshers/tennis-sackmann-archive) (fester Commit) | Ergebnisse **mit Aufschlag-Stats** | bis Turnierstart 25.05.2026 (Original-Repo ist offline) |
+| [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) | Ergebnisse, Rankings, Untergrund, Quoten (Bet365, Pinnacle, Ø) | wöchentlich nach Turnierende |
+| ESPN-Scoreboard | jedes beendete Match, auch im laufenden Turnier | täglich |
+
+```bash
+python -m src.update_data          # täglicher Refresh, lädt nur Neues (~1 Minute)
+python -m src.update_data --full   # alles neu laden (~4 Minuten)
+```
+
+Training, `preprocess_data.py` und der `MatchPredictor` laden die Daten automatisch neu, wenn der
+letzte Refresh älter als 24 Stunden ist. Beim Zusammenführen werden Spielernamen vereinheitlicht
+(„Medvedev D.“, „Wu Yibing“, „Aleksandr Shevchenko“ → ein Name pro Spieler), Duplikate über
+Zeitfenster + Spielerpaar erkannt und die Quoten von tennis-data an alle Matches gehängt.
+
+Für Matches ohne Stats (tennis-data, ESPN) sind die Stat-Features 0 und `has_stats` ist 0. Im
+Training werden die Stats zufällig bei 15 % der Historien-Matches entfernt (`stats_dropout`), damit
+das Modell damit umgehen kann. Die ATP-Seite selbst blockt automatisierte Abrufe (Cloudflare) und
+wird deshalb nicht genutzt.
+
+Lizenz der Sackmann-Daten: CC BY-NC-SA 4.0 (nur nicht-kommerziell), Daten von Jeff Sackmann.
 
 ## Konfiguration
 

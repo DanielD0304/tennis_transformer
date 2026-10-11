@@ -41,7 +41,7 @@
     <button type="submit">Vorhersagen</button>
     <datalist id="players">{% for p in players %}<option value="{{ p }}">{% endfor %}</datalist>
 </form>
-{% if data_until %}<p class="muted">{{ players|length }} ATP-Spieler, Daten bis {{ data_until|date:"d.m.Y" }} (tennis-data.co.uk). Namen in jedem Format, z.B. „Medvedev D.“, „D. Medvedev“ oder „Medvedev, D.“.</p>{% endif %}
+{% if data_until %}<p class="muted">{{ players|length }} ATP-Spieler, Daten bis {{ data_until|date:"d.m.Y" }} (Sackmann, tennis-data.co.uk, ESPN – täglich aktualisiert). Namen in jedem Format, z.B. „Medvedev D.“, „D. Medvedev“ oder „Medvedev, D.“.</p>{% endif %}
 
 {% if model_error %}
     <div class="error">

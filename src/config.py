@@ -13,7 +13,7 @@ class TrainingConfig:
     d_model: int = 64
     num_heads: int = 4
     num_layers: int = 2
-    input_dim: int = 18 # Number of features per match (won, rank, aces, df, 1st_serve_pct, days_since, opponent_elo, opponent_rank, own_elo)
+    input_dim: int = 19  # Anzahl Features pro Match, siehe preprocessing.FEATURE_NAMES
     n_surface_matches: int = 10  # Number of surface-specific matches in history
     n_recent_matches: int = 15  # Number of recent matches (any surface)
     max_len: int = 50  # Maximum sequence length (n_surface + n_recent) * 2
@@ -24,15 +24,18 @@ class TrainingConfig:
     batch_size: int = 32
     learning_rate: float = 0.0005
     
+    # Anteil der Historien-Matches, deren Aufschlag-Stats im Training zufällig entfernt werden
+    stats_dropout: float = 0.15
+    
     # Early stopping
     patience: int = 5
     
     # Data
-    train_years_end: int = 2022  # Train on data up to and including this year
-    val_year: int = 2023  # Validation year
-    test_year: int = 2024  # Test year
+    train_years_end: int = 2023  # Train on data up to and including this year
+    val_year: int = 2024  # Validation year
+    test_year: int = 2025  # Test year
     data_years_start: int = 2015  # Start loading data from this year
-    data_years_end: int = 2024  # Load data up to this year
+    data_years_end: int = 2025  # Load data up to this year
     
     # Paths
     preprocessed_data_path: str = "data/preprocessed_samples.pt"
