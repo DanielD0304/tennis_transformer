@@ -75,6 +75,9 @@ def _int(v):
 
 STATUS = {'Completed': 'completed', 'Retired': 'RET', 'Walkover': 'W/O', 'Awarded': 'DEF', 'Disqualified': 'DEF'}
 GRAND_SLAMS = ('Australian Open', 'French Open', 'Wimbledon', 'US Open')
+# tennis-data 'Series' -> Sackmann tourney_level
+LEVELS = {'Grand Slam': 'G', 'Masters 1000': 'M', 'Masters': 'M', 'Masters Cup': 'F', 'ATP500': 'A', 'ATP250': 'A',
+          'International Gold': 'A', 'International': 'A'}
 
 
 def _round(tuk_round, max_round):
@@ -124,7 +127,7 @@ def load(years):
                     'tourney_id': f"tuk-{year}-{location}",
                     'tourney_name': tournament,
                     'surface': r.get('Surface') or "",
-                    'tourney_level': r.get('Series') or "",
+                    'tourney_level': LEVELS.get(r.get('Series'), 'A'),
                     'tourney_date': start,
                     'match_date': yyyymmdd(r['Date']),
                     'match_num': ROUND_ORDER.get(rnd, 0) * 1000 + i,

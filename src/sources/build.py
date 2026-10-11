@@ -22,6 +22,17 @@ from functools import lru_cache
 from ..names import candidate_keys
 from .common import ODDS_COLUMNS
 
+# Fälle, die sich automatisch nicht sicher zuordnen lassen (andere Vornamen/Abkürzungen je Quelle).
+# Schreibweise links -> Name im Datensatz rechts. Bei neuen Funden einfach ergänzen.
+MANUAL_ALIASES = {
+    'Barrios M.': 'Tomas Barrios Vera',          # Marcelo Tomas Barrios Vera
+    'Schwaerzler J.J.': 'Joel Schwaerzler',      # Joel Josef Schwaerzler
+}
+
+VALID_SURFACES = ('Hard', 'Clay', 'Grass', 'Carpet')
+VALID_LEVELS = ('G', 'M', 'A', 'F', 'D', 'O')
+GRAND_SLAMS = ('australian open', 'roland garros', 'french open', 'wimbledon', 'us open')
+
 STOPWORDS = {'open', 'masters', 'championships', 'championship', 'tennis', 'international', 'atp',
              'cup', 'rolex', 'bnp', 'paribas', 'the', 'and', 'tour', 'classic', 'trophy', 'mens', 'men'}
 
@@ -38,7 +49,7 @@ def _date(s):
 
 def _is_full(name):
     """Voller Name ('Daniil Medvedev') statt Kurzform ('Medvedev D.')."""
-    return not re.search(r"(^|\s)[A-Z][a-z]?\.", str(name))
+    return not re.search(r"(^|\s)(?!Jr\.|Sr\.)[A-Z][a-z]?\.", str(name))
 
 
 class NameRegistry:
@@ -185,24 +196,24 @@ class MatchIndex:
         return None, None
 
 
-def _surface_lookup(rows):
-    """Turniername-Wörter und Orte -> Untergrund (der jeweils neueste Eintrag gewinnt)."""
+def _tourney_lookup(rows, field, valid, default):
+    """Turniername-Wörter und Orte -> Wert von field, z.B. Untergrund (der neueste Eintrag gewinnt)."""
     by_word, by_location = {}, {}
     for r in sorted(rows, key=lambda r: r['tourney_date']):
-        surface = r.get('surface')
-        if surface not in ('Hard', 'Clay', 'Grass', 'Carpet'):
+        value = r.get(field)
+        if value not in valid:
             continue
         for w in re.findall(r"[a-z]+", _norm_words(r.get('tourney_name', ''))):
             if len(w) > 3 and w not in STOPWORDS:
-                by_word[w] = surface
+                by_word[w] = value
         if r.get('location'):
-            by_location[_norm(r['location'])] = surface
+            by_location[_norm(r['location'])] = value
 
     def lookup(name, location):
         for w in re.findall(r"[a-z]+", _norm_words(name)):
             if w in by_word:
                 return by_word[w]
-        return by_location.get(_norm(location or ''), 'Hard')
+        return by_location.get(_norm(location or ''), default)
     return lookup
 
 
@@ -245,8 +256,8 @@ def build(sackmann_rows, tuk_rows, espn_rows):
         registry.add_full(r['winner_name'])
         registry.add_full(r['loser_name'])
     for r in sackmann_rows + tuk_rows + espn_rows:
-        r['winner_name'] = registry.canonical(r['winner_name'])
-        r['loser_name'] = registry.canonical(r['loser_name'])
+        r['winner_name'] = registry.canonical(MANUAL_ALIASES.get(r['winner_name'], r['winner_name']))
+        r['loser_name'] = registry.canonical(MANUAL_ALIASES.get(r['loser_name'], r['loser_name']))
 
     cutoff = max((r['tourney_date'] for r in sackmann_rows), default="00000000")
 
@@ -307,16 +318,56 @@ def build(sackmann_rows, tuk_rows, espn_rows):
         r['loser_name'] = rename.get(r['loser_name'], r['loser_name'])
     stats['renamed_players'] = len(rename)
 
-    # ESPN: Untergrund und Ranking ergänzen
-    surface = _surface_lookup(sackmann_rows + tuk_rows)
+    # ESPN: Untergrund, Turnierstufe und Ranking ergänzen
+    surface = _tourney_lookup(sackmann_rows + tuk_rows, 'surface', VALID_SURFACES, 'Hard')
+    level = _tourney_lookup(sackmann_rows + tuk_rows, 'tourney_level', VALID_LEVELS, 'A')
     rank = _rank_lookup(out)
     for r in out:
         if r['source'] != 'espn':
             continue
         r['surface'] = surface(r['tourney_name'], r.get('location'))
+        r['tourney_level'] = 'G' if any(g in _norm_words(r['tourney_name']) for g in GRAND_SLAMS)             else level(r['tourney_name'], r.get('location'))
         r['winner_rank'] = rank(r['winner_name'], r['match_date'])
         r['loser_rank'] = rank(r['loser_name'], r['match_date'])
 
+    out = clean(out, stats)
     stats['with_odds'] = sum(1 for r in out if r.get('B365W') not in (None, ""))
     out.sort(key=lambda r: (str(r['tourney_date']), int(float(r.get('match_num') or 0))))
     return out, dict(stats)
+
+
+def _odd(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def clean(rows, stats):
+    """
+    Letzte Bereinigung, Zähler landen in stats (und in data/update_state.json):
+      - exakte Doppel-Einträge (gleiches Turnier, Paar, Runde, Ergebnis) entfernen
+      - fehlender Untergrund -> Hard (so behandelt das Modell unbekannten Untergrund ohnehin)
+      - unplausible Quoten leeren (<= 1.0, ohne Gegenquote oder Buchmacher-Marge außerhalb 95-135 %)
+    """
+    seen, out = set(), []
+    for r in rows:
+        key = (r.get('tourney_id') or r.get('tourney_name'), r['tourney_date'], frozenset((r['winner_name'], r['loser_name'])), r.get('round'), r.get('score'))
+        if key in seen:
+            stats['clean_duplicates'] += 1
+            continue
+        seen.add(key)
+        out.append(r)
+
+    for r in out:
+        if r.get('surface') not in VALID_SURFACES:
+            r['surface'] = 'Hard'
+            stats['clean_surface_filled'] += 1
+        for w, l in (('B365W', 'B365L'), ('PSW', 'PSL'), ('AvgW', 'AvgL')):
+            ow, ol = _odd(r.get(w)), _odd(r.get(l))
+            if ow is None and ol is None:
+                continue
+            if ow is None or ol is None or min(ow, ol) <= 1.0 or not 0.95 <= 1 / ow + 1 / ol <= 1.35:
+                r[w] = r[l] = None
+                stats['clean_odds_removed'] += 1
+    return out

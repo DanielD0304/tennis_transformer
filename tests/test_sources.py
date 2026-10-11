@@ -176,3 +176,27 @@ def test_same_player_rules():
     assert not sp('Eduardo Nava', 'Emilio Nava')
     assert not sp('Alexander Zverev', 'Alexander Bublik')
     assert not sp('Daniel Altmaier', 'Adolfo Daniel Vallejo')
+
+
+def test_clean():
+    from collections import Counter
+    base = dict(source='sackmann', tourney_id='t1', tourney_date='20240101', round='R32', score='6-4 6-4')
+    rows = [
+        {**base, 'winner_name': 'A', 'loser_name': 'B', 'surface': 'Clay', 'B365W': 1.5, 'B365L': 2.6, 'PSW': 0.97, 'PSL': 29.0},
+        {**base, 'winner_name': 'A', 'loser_name': 'B', 'surface': 'Clay'},          # exaktes Duplikat
+        {**base, 'winner_name': 'C', 'loser_name': 'D', 'surface': '', 'AvgW': 1.2}, # Quote ohne Gegenquote
+    ]
+    stats = Counter()
+    out = build.clean(rows, stats)
+    assert len(out) == 2
+    assert (out[0]['B365W'], out[0]['PSW'], out[0]['PSL']) == (1.5, None, None)
+    assert out[1]['surface'] == 'Hard' and out[1]['AvgW'] is None
+    assert stats == Counter(clean_duplicates=1, clean_surface_filled=1, clean_odds_removed=2)
+
+
+def test_manual_alias_and_jr():
+    sackmann = [_row('sackmann', 'Tomas Barrios Vera', 'Eric Jr. Olivarez', '20260101', surface='Hard', tourney_name='X')]
+    tuk_rows = [_row('tuk', 'Barrios M.', 'Alexander Blockx', '20260901', '20260901', surface='Hard', tourney_name='US Open')]
+    rows, _ = build.build(sackmann, tuk_rows, [])
+    assert rows[-1]['winner_name'] == 'Tomas Barrios Vera'
+    assert build._is_full('Eric Jr. Olivarez') and not build._is_full('Zhang Zh.')

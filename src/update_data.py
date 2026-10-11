@@ -78,6 +78,9 @@ def update(full=False, first_year=FIRST_YEAR, log=print):
     log(f"{len(rows)} Matches gespeichert in {MATCHES_PATH} "
         f"(Sackmann {stats['sackmann']}, tennis-data {stats['tuk']}, ESPN {stats['espn']}, "
         f"Duplikate {stats['duplicates']}, mit Quoten {stats['with_odds']}), letztes Match {last}, "
+        f"bereinigt: {stats.get('renamed_players', 0)} Namen vereinheitlicht, "
+        f"{stats.get('clean_duplicates', 0)} Doppel-Einträge, {stats.get('clean_odds_removed', 0)} Quoten, "
+        f"{stats.get('clean_surface_filled', 0)} Untergründe; "
         f"{time.time() - t0:.0f}s")
     return state
 
