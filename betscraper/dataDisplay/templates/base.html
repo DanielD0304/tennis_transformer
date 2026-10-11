@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Tennis Transformer{% endblock %}</title>
+    <style>
+        :root {
+            --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #6b7280; --line: #e3e6eb;
+            --a: #2563eb; --b: #d97706; --win: #16a34a; --loss: #dc2626; --value: #e8f6ec; --err: #fdecec; --on-accent: #fff;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #12151b; --card: #1b2029; --text: #e6e8ec; --muted: #9aa3b2; --line: #2c333f;
+                --a: #60a5fa; --b: #fbbf24; --win: #4ade80; --loss: #f87171; --value: #17301f; --err: #3a1d1d; --on-accent: #10131a;
+            }
+        }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, sans-serif; }
+        nav { display: flex; gap: 1.5rem; align-items: center; padding: .8rem 1.5rem; background: var(--card); border-bottom: 1px solid var(--line); }
+        nav strong { margin-right: auto; }
+        nav a { color: var(--muted); text-decoration: none; white-space: nowrap; }
+        a { color: var(--a); }
+        nav a.active, nav a:hover { color: var(--text); }
+        main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+        h1 { margin: .2rem 0 1rem; font-size: 1.6rem; }
+        h2 { font-size: 1.15rem; margin: 1.8rem 0 .6rem; }
+        .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.3rem; }
+        .muted { color: var(--muted); }
+        .error { background: var(--err); border-radius: 8px; padding: .8rem 1rem; margin: 1rem 0; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { padding: .4rem .6rem; border-bottom: 1px solid var(--line); text-align: left; }
+        th { font-weight: 600; color: var(--muted); font-size: .85rem; }
+        td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        tr.value td { background: var(--value); }
+        form.inline { display: flex; flex-wrap: wrap; gap: .8rem; align-items: end; }
+        label { display: flex; flex-direction: column; gap: .2rem; font-size: .85rem; color: var(--muted); }
+        input, select, button { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); }
+        button { background: var(--a); color: var(--on-accent); border: 0; cursor: pointer; padding: .5rem 1.1rem; }
+        @media (max-width: 640px) { main { padding: 1rem; } nav { flex-wrap: wrap; gap: .3rem 1.2rem; padding: .7rem 1rem; } nav strong { flex-basis: 100%; } .wide { overflow-x: auto; } }
+        {% block style %}{% endblock %}
+    </style>
+</head>
+<body>
+    <nav>
+        <strong>🎾 Tennis Transformer</strong>
+        <a href="{% url 'predict_match' %}" {% if request.resolver_match.url_name == 'predict_match' %}class="active"{% endif %}>Vorhersage</a>
+        <a href="{% url 'tennis_value_bets' %}" {% if request.resolver_match.url_name == 'tennis_value_bets' %}class="active"{% endif %}>Value Bets</a>
+        <a href="{% url 'fetch_and_process_odds' %}" {% if request.resolver_match.url_name == 'fetch_and_process_odds' %}class="active"{% endif %}>Fußball</a>
+    </nav>
+    <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

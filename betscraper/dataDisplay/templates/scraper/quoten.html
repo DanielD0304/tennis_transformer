@@ -1,11 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Game Data</title>
-</head>
-<body>
+{% extends "base.html" %}
+
+{% block title %}Fußball-Quoten{% endblock %}
+
+{% block content %}
     <h1>Game Data</h1>
     <ul>
         {% for game in games %}
@@ -29,5 +26,4 @@
             <li>No results found</li>
         {% endif %}
     </ul>
-</body>
-</html>
+{% endblock %}
