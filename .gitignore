@@ -59,12 +59,14 @@ coverage.xml
 # Data, models, logs
 data/
 models/
+# Checkpoints und Plots gehören nicht ins Repo
+*.pt
+attention_epoch_*.png
 *.log
 
 # Ignore OS files
 .DS_Store
 Thumbs.db
-src/__pycache__/data_loader.cpython-312.pyc
 
 # betscraper (Django)
 db.sqlite3

@@ -30,6 +30,10 @@ def compute_elo_ratings(df, k_factor=32, start_elo=1500):
         # Speichern für dieses Match (Status VOR dem Ergebnis)
         winner_elos.append(w_elo)
         loser_elos.append(l_elo)
+
+        # Walkover: kein gespieltes Match, ELO bleibt unverändert
+        if str(row.get('status', '')) == 'W/O' or 'W/O' in str(row.get('score', '')):
+            continue
         
         # Erwartungswert berechnen (Standard ELO Formel)
         expected_w = 1 / (1 + 10 ** ((l_elo - w_elo) / 400))
