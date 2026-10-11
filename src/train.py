@@ -66,7 +66,7 @@ def train(config=default_config):
     print(f"Train: {len(train_samples)}, Val: {len(val_samples)}, Test: {len(test_samples)}")
 
     # Create datasets
-    train_dataset = DataSet(train_samples)
+    train_dataset = DataSet(train_samples, stats_dropout=config.stats_dropout)
     val_dataset = DataSet(val_samples)
     test_dataset = DataSet(test_samples)
 

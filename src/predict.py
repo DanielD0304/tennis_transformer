@@ -5,10 +5,9 @@ Baut für alle Spieler die Match-Historie bis heute auf (gleiche Features wie in
 preprocessing.create_training_samples) und lässt das trainierte Modell für ein
 beliebiges Paar (Spieler A, Spieler B, Untergrund) die Siegwahrscheinlichkeit schätzen.
 
-Datenbasis sind die tennis-data.co.uk-Dateien der letzten Jahre, weil nur die bis heute
-aktuell sind. Die haben keine Aufschlag-Statistiken (Aces, 1st Serve %, Breakpoints ...),
-diese Features sind für die Live-Historie also 0. Das Modell wurde mit Sackmann-Stats
-trainiert, die Vorhersagen sind deshalb vorsichtig zu genießen.
+Datenbasis ist data/matches.csv (siehe src/update_data.py): Sackmann mit Aufschlag-Stats,
+danach tennis-data.co.uk und ESPN (jedes beendete Match, auch im laufenden Turnier, ohne Stats).
+Die Daten werden beim Start automatisch aktualisiert, wenn sie älter als 24 Stunden sind.
 
 Nutzung:
     from src.predict import MatchPredictor
@@ -17,6 +16,7 @@ Nutzung:
 """
 
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
@@ -30,8 +30,8 @@ from .config import default_config
 from .dataset import DataSet
 from .elo import compute_elo_ratings
 from .model import Model
-from .names import player_key
-from .preprocessing import extract_match_features, get_h2h_pct, pad_sequence
+from .names import candidate_keys, player_key
+from .preprocessing import extract_match_features, get_h2h_pct, is_walkover, pad_sequence
 from .train import custom_collate_fn
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,17 +53,17 @@ class Prediction:
 
 
 class MatchPredictor:
-    def __init__(self, config=default_config, years=None, model_path=None):
+    def __init__(self, config=default_config, matches=None, model_path=None):
+        """
+        matches: DataFrame im Schema von data/matches.csv (für Tests). Standard: dl.load_matches()
+        ab config.data_years_start, damit ELO dieselbe Basis hat wie im Training.
+        """
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # data_loader arbeitet mit relativem "data"-Pfad, hier unabhängig vom Arbeitsverzeichnis
-        dl.DATA_DIR = os.path.join(REPO_ROOT, "data")
-
-        if years is None:
-            this_year = date.today().year
-            years = range(this_year - 3, this_year + 1)
-        self._build_history(years)
+        if matches is None:
+            matches = dl.load_matches(first_year=config.data_years_start)
+        self._build_history(matches)
 
         model_path = model_path or os.path.join(REPO_ROOT, config.best_model_path)
         if not os.path.exists(model_path):
@@ -83,32 +83,31 @@ class MatchPredictor:
 
     # ------------------------------------------------------------------ Daten
 
-    def _build_history(self, years):
-        frames = []
-        for y in years:
-            df = dl.load_tuk_year(y)
-            if not df.empty:
-                frames.append(df)
-        if not frames:
-            raise RuntimeError("Keine Matchdaten von tennis-data.co.uk geladen.")
-
-        df = pd.concat(frames, ignore_index=True)
+    def _build_history(self, df):
         df = df.dropna(subset=['winner_name', 'loser_name', 'tourney_date'])
-        df = dl.enforce_schema(df)
-        # Reihenfolge innerhalb eines Tages beibehalten (TUK-Dateien sind chronologisch)
-        df['match_num'] = range(len(df))
+        df = dl.enforce_schema(df.copy())
+        if 'match_num' not in df.columns:
+            df['match_num'] = range(len(df))
         df = compute_elo_ratings(df)
         df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
         df = df.dropna(subset=['match_date_obj'])
+        if 'match_date' not in df.columns:
+            df['match_date'] = df['tourney_date']
+        # Echtes Matchdatum (fürs Interface); die Features rechnen wie im Training mit dem Turnierdatum
+        played_on = pd.to_datetime(df['match_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce')
+        df['played_on'] = played_on.fillna(df['match_date_obj'])
 
         self.history = defaultdict(list)
         self.h2h = {}
         self.players = {}  # player_key -> Name wie in den Daten
+        self._index = defaultdict(set)  # alle Kandidaten-Schlüssel -> Namen
         self.matches = defaultdict(list)  # Name -> Match-Zusammenfassungen fürs Interface
         self.ranks = {}
         self.elo = {}
 
         for _, row in df.iterrows():
+            if is_walkover(row):
+                continue
             winner, loser = row['winner_name'], row['loser_name']
 
             h2h_key = tuple(sorted((winner, loser)))
@@ -130,40 +129,43 @@ class MatchPredictor:
                 key = player_key(name)
                 if key:
                     self.players[key] = name
+                for k in candidate_keys(name, reverse=False):
+                    self._index[k].add(name)
 
-            score = " ".join(
-                f"{int(row[f'W{i}'])}-{int(row[f'L{i}'])}"
-                for i in range(1, 6) if pd.notna(row.get(f'W{i}')) and pd.notna(row.get(f'L{i}'))
-            )
-            for name, opp, won, rank, elo in ((winner, loser, True, row['winner_rank'], row['winner_elo']),
-                                              (loser, winner, False, row['loser_rank'], row['loser_elo'])):
+            score = _text(row.get('score'))
+            for name, opp, won, rank in ((winner, loser, True, row['winner_rank']),
+                                         (loser, winner, False, row['loser_rank'])):
                 self.matches[name].append({
-                    'date': row['match_date_obj'].date(), 'opponent': opp, 'won': won,
-                    'surface': row['surface'], 'tournament': _text(row.get('Tournament')),
-                    'round': _text(row.get('Round')), 'score': score if won else _flip_score(score),
+                    'date': row['played_on'].date(), 'opponent': opp, 'won': won,
+                    'surface': row['surface'], 'tournament': _text(row.get('tourney_name')),
+                    'round': _text(row.get('round')), 'score': score if won else _flip_score(score),
+                    'has_stats': row['w_svpt'] > 0,
                 })
-                self.ranks[name] = int(rank) if rank < 9999 else None
+                if rank < 9999:
+                    self.ranks[name] = int(rank)
 
             # ELO nach dem Match (in df steht der Stand davor)
             expected_w = 1 / (1 + 10 ** ((row['loser_elo'] - row['winner_elo']) / 400))
             self.elo[winner] = row['winner_elo'] + 32 * (1 - expected_w)
             self.elo[loser] = row['loser_elo'] - 32 * (1 - expected_w)
 
-        self.last_match_date = df['match_date_obj'].max()
+        self.last_match_date = df['played_on'].max()
 
     def resolve(self, name):
-        """Bookie-Name -> Name in den Daten (oder None, z.B. bei WTA/Doppel)."""
-        key = player_key(name)
-        if key is None:
-            return None
-        if key in self.players:
-            return self.players[key]
-        if key[1]:
-            # Initial passt nicht -> anderer Spieler (oft WTA-Spielerin mit gleichem Nachnamen)
-            return None
-        # Ohne Initial: nur Nachname, wenn eindeutig
-        same_surname = [n for k, n in self.players.items() if k[0] == key[0]]
-        return same_surname[0] if len(same_surname) == 1 else None
+        """Name in beliebigem Format (Bookie, Kurzform) -> Name in den Daten, oder None (z.B. WTA/Doppel)."""
+        if name in self.history:
+            return name
+        keys = candidate_keys(name)
+        for key in keys:
+            names = self._index.get(key)
+            if names and len(names) == 1:
+                return next(iter(names))
+        if keys and not keys[0][1]:
+            # Ohne Initial: nur Nachname, wenn eindeutig
+            same_surname = {n for k, ns in self._index.items() if k[0] == keys[0][0] for n in ns}
+            if len(same_surname) == 1:
+                return same_surname.pop()
+        return None
 
     def search(self, query, n=8):
         """Ähnliche Spielernamen, z.B. für Vorschläge bei Tippfehlern."""
@@ -258,7 +260,15 @@ class MatchPredictor:
 
 
 def _flip_score(score):
-    return " ".join("-".join(reversed(s.split("-"))) for s in score.split())
+    """Ergebnis aus Sicht des Verlierers: '6-4 6-7(1) RET' -> '4-6 7(1)-6 RET'."""
+    def flip(token):
+        m = re.fullmatch(r"(\d+)-(\d+)(\(\d+\))?", token)
+        if not m:
+            return token
+        a, b, tb = m.group(1), m.group(2), m.group(3) or ""
+        # Tiebreak-Punkte des Satzverlierers stehen immer am Satzende: 7-6(3) -> 6-7(3)
+        return f"{b}-{a}{tb}"
+    return " ".join(flip(t) for t in score.split())
 
 
 def _text(value):

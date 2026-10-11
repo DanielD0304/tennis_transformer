@@ -26,7 +26,14 @@ FEATURE_NAMES = [
     'days_since_match', 'opponent_elo', 'opponent_rank', 'own_elo',
     'bp_convert_pct', 'bp_save_pct', 'return_pts_won_pct', 'service_pts_won_pct',
     'h2h_win_pct',
-    'surf_hard', 'surf_clay', 'surf_grass', 'surf_other'
+    'surf_hard', 'surf_clay', 'surf_grass', 'surf_other',
+    'has_stats'
+]
+# Features, die aus der Aufschlag-Statistik kommen. Fehlen die Stats (tennis-data, ESPN),
+# sind sie 0 und has_stats ist 0, damit das Modell "keine Daten" von "0 Aces" unterscheiden kann.
+STAT_FEATURES = [
+    'aces', 'double_faults', 'first_serve_pct',
+    'bp_convert_pct', 'bp_save_pct', 'return_pts_won_pct', 'service_pts_won_pct'
 ]
 SURFACE_MAP = {
     'Hard': [1, 0, 0, 0],
@@ -35,6 +42,11 @@ SURFACE_MAP = {
     'Carpet': [0, 0, 0, 1]
 }
 DEFAULT_SURF = [1, 0, 0, 0]
+
+def is_walkover(row):
+    """Kampflose Siege sind keine gespielten Matches und fließen nicht in Historie/ELO ein."""
+    return str(row.get('status', '')) == 'W/O' or 'W/O' in str(row.get('score', ''))
+
 
 def safe_div(a, b):
     return a / b if b != 0 else 0.0
@@ -149,6 +161,7 @@ def extract_match_features(row, player_role, current_h2h_pct):
         'surf_clay': surf_vec[1],
         'surf_grass': surf_vec[2],
         'surf_other': surf_vec[3],
+        'has_stats': 1 if svpt > 0 else 0,
         
         '_date_obj': row.get('match_date_obj', None),
         '_surface': row['surface']
@@ -228,7 +241,7 @@ def count_matches_in_period(history, current_date, days=90):
         
     return count
 
-def create_training_samples(df, n_matches=10, n_recent=15):
+def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
     """
     Create training samples from match data for the Transformer model.
     
@@ -270,8 +283,11 @@ def create_training_samples(df, n_matches=10, n_recent=15):
     
     h2h_tracker = {}
     samples = []
+    rng = random.Random(seed)  # reproduzierbare A/B-Zuordnung
     
     for index, row in df.iterrows():
+        if is_walkover(row):
+            continue
         winner = row['winner_name']
         loser = row['loser_name']
         surface = row['surface']
@@ -301,7 +317,7 @@ def create_training_samples(df, n_matches=10, n_recent=15):
             pB_active = count_matches_in_period(pB_hist, current_date, days=90) >= 3
             
             if has_history and pA_active and pB_active:
-                if random.random() > 0.5:
+                if rng.random() > 0.5:
                     pA, pB = winner, loser
                     label = 1
                     odds_a = row.get('B365W', 0.0)
