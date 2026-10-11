@@ -3,7 +3,6 @@ from torch.utils.data import DataLoader as dl
 from torch.nn.utils.rnn import pad_sequence
 from .dataset import DataSet
 from .model import Model
-import matplotlib.pyplot as plt
 from . import preprocessing as pre
 from .config import TrainingConfig, default_config
 import os
@@ -66,7 +65,7 @@ def train(config=default_config):
     print(f"Train: {len(train_samples)}, Val: {len(val_samples)}, Test: {len(test_samples)}")
 
     # Create datasets
-    train_dataset = DataSet(train_samples)
+    train_dataset = DataSet(train_samples, stats_dropout=config.stats_dropout)
     val_dataset = DataSet(val_samples)
     test_dataset = DataSet(test_samples)
 
