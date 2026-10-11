@@ -82,7 +82,18 @@ config = TrainingConfig(
 train(config)
 ```
 
-### 4. Live Value Bets (betscraper)
+### 4. Web-Interface
+```bash
+cd betscraper
+python manage.py runserver
+```
+Dann http://127.0.0.1:8000/ öffnen. Unter **Vorhersage** zwei Spieler wählen (Autovervollständigung,
+Namen in jedem Format wie „Medvedev D.“ oder „D. Medvedev“), dazu Untergrund und Datum. Die Seite zeigt
+die Siegwahrscheinlichkeit des Transformers, faire Quoten, Head-to-Head sowie Ranking, ELO, Form und
+die letzten Matches beider Spieler. Bei Tippfehlern gibt es Namensvorschläge. Voraussetzung ist ein
+trainiertes Modell unter `models/best_model.pt`.
+
+### 5. Live Value Bets (betscraper)
 Der Scraper holt die aktuellen Tennis-Quoten von Tipico und bwin, nimmt pro Match die beste Quote,
 lässt das trainierte Modell (`models/best_model.pt`) die Siegwahrscheinlichkeit schätzen und zeigt
 alle Tipps mit `Wahrscheinlichkeit × Quote > Mindest-EV` an.

@@ -1,0 +1,28 @@
+<div class="card {{ cls }}">
+    <h3>{{ info.name }}</h3>
+    <div class="stats" style="margin-top: 0">
+        <div><span>Ranking</span>{{ info.rank|default:"–" }}</div>
+        <div><span>ELO</span>{{ info.elo }}</div>
+        <div><span>Letzte {{ info.last|length }}</span>{{ info.last_wins }} Siege</div>
+        <div><span>Auf {{ surface }}</span>{{ info.surface_wins }} / {{ info.surface_matches }}</div>
+    </div>
+    <div class="form" aria-label="Form, neuestes zuerst">
+        {% for m in info.last %}<i class="{% if m.won %}w{% else %}l{% endif %}" title="{{ m.date|date:'d.m.Y' }} vs. {{ m.opponent }}">{% if m.won %}S{% else %}N{% endif %}</i>{% endfor %}
+    </div>
+    <div class="wide">
+    <table>
+        <tr><th>Datum</th><th>Gegner</th><th></th><th>Ergebnis</th><th>Turnier</th></tr>
+        {% for m in info.last %}
+        <tr>
+            <td class="muted">{{ m.date|date:"d.m.y" }}</td>
+            <td>{{ m.opponent }}</td>
+            <td class="{% if m.won %}w{% else %}l{% endif %}">{% if m.won %}S{% else %}N{% endif %}</td>
+            <td>{{ m.score|default:"–" }}</td>
+            <td class="muted">{{ m.tournament }}{% if m.round %} · {{ m.round }}{% endif %} <small>({{ m.surface }})</small></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="muted">Keine Matches in den Daten.</td></tr>
+        {% endfor %}
+    </table>
+    </div>
+</div>

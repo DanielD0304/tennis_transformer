@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Match-Vorhersage{% endblock %}
+
+{% block style %}
+    .bar { display: flex; height: 2.4rem; border-radius: 8px; overflow: hidden; margin: .8rem 0 .4rem; font-weight: 600; color: var(--on-accent); }
+    .bar div { display: flex; align-items: center; padding: 0 .8rem; min-width: 3.5rem; white-space: nowrap; }
+    .bar .pa { background: var(--a); }
+    .bar .pb { background: var(--b); justify-content: flex-end; }
+    .vs { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .vs .name { font-size: 1.25rem; font-weight: 600; }
+    .vs .meta { order: 3; flex-basis: 100%; text-align: center; margin-top: -.4rem; }
+    .suggest a { font-weight: 600; }
+    .stats { display: flex; gap: 2rem; flex-wrap: wrap; margin-top: .8rem; }
+    .stats div span { display: block; font-size: .8rem; color: var(--muted); }
+    .players { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+    @media (max-width: 800px) { .players { grid-template-columns: 1fr; } }
+    .players h3 { margin: 0 0 .3rem; }
+    .players .a h3 { color: var(--a); }
+    .players .b h3 { color: var(--b); }
+    .form { display: flex; gap: 3px; margin: .5rem 0 .8rem; }
+    .form i { width: 1.3rem; height: 1.3rem; border-radius: 4px; font-style: normal; font-size: .7rem; font-weight: 700; color: #fff; display: grid; place-items: center; }
+    .form .w { background: var(--win); } .form .l { background: var(--loss); }
+    td.w { color: var(--win); font-weight: 600; } td.l { color: var(--loss); font-weight: 600; }
+    .suggest a { margin-right: .6rem; }
+    .warn { color: var(--b); font-size: .9rem; }
+{% endblock %}
+
+{% block content %}
+<h1>Match-Vorhersage</h1>
+
+<form method="get" class="inline card">
+    <label>Spieler A <input name="a" value="{{ a }}" list="players" placeholder="z.B. Sinner J." required autocomplete="off"></label>
+    <label>Spieler B <input name="b" value="{{ b }}" list="players" placeholder="z.B. Alcaraz C." required autocomplete="off"></label>
+    <label>Untergrund
+        <select name="surface">
+            {% for s in surfaces %}<option value="{{ s }}" {% if s == surface %}selected{% endif %}>{{ s }}</option>{% endfor %}
+        </select>
+    </label>
+    <label>Datum <input type="date" name="date" value="{{ date }}"></label>
+    <button type="submit">Vorhersagen</button>
+    <datalist id="players">{% for p in players %}<option value="{{ p }}">{% endfor %}</datalist>
+</form>
+{% if data_until %}<p class="muted">{{ players|length }} ATP-Spieler, Daten bis {{ data_until|date:"d.m.Y" }} (tennis-data.co.uk). Namen in jedem Format, z.B. „Medvedev D.“, „D. Medvedev“ oder „Medvedev, D.“.</p>{% endif %}
+
+{% if model_error %}
+    <div class="error">
+        <strong>Modell nicht verfügbar.</strong> Erst trainieren mit <code>python main.py</code> (im Repo-Root), dann Server neu starten.<br>
+        <code class="muted">{{ model_error }}</code>
+    </div>
+{% endif %}
+
+{% for e in errors %}
+    <div class="error">
+        {% if e.same %}Bitte zwei verschiedene Spieler wählen.
+        {% else %}
+            <strong>„{{ e.name }}“</strong> nicht gefunden (nur ATP-Hauptturniere sind in den Daten).
+            {% if e.suggestions %}<div class="suggest">Meintest du:
+                {% for s in e.suggestions %}<a href="?a={% if e.name == a %}{{ s|urlencode }}{% else %}{{ a|urlencode }}{% endif %}&b={% if e.name == a %}{{ b|urlencode }}{% else %}{{ s|urlencode }}{% endif %}&surface={{ surface }}&date={{ date }}">{{ s }}</a>{% endfor %}
+            </div>{% endif %}
+        {% endif %}
+    </div>
+{% endfor %}
+
+{% if result %}
+{% with p=result.pred %}
+<div class="card" style="margin-top: 1.2rem">
+    <div class="vs">
+        <span class="name" style="color: var(--a)">{{ p.player_a }}</span>
+        <span class="muted meta">{{ surface }} · {{ match_date|date:"d.m.Y" }}</span>
+        <span class="name" style="color: var(--b)">{{ p.player_b }}</span>
+    </div>
+    <div class="bar" role="img" aria-label="{{ p.player_a }} {{ result.pct_a }} Prozent, {{ p.player_b }} {{ result.pct_b }} Prozent">
+        <div class="pa" style="flex: {{ result.pct_a|stringformat:'f' }}">{{ result.pct_a }} %</div>
+        <div class="pb" style="flex: {{ result.pct_b|stringformat:'f' }}">{{ result.pct_b }} %</div>
+    </div>
+    <div class="stats">
+        <div><span>Faire Quote A</span>{{ result.fair_a|floatformat:2 }}</div>
+        <div><span>Faire Quote B</span>{{ result.fair_b|floatformat:2 }}</div>
+        <div><span>Head-to-Head</span>{{ result.h2h.0 }} : {{ result.h2h.1 }}</div>
+    </div>
+    <p class="muted" style="margin-bottom: 0">Wette lohnt sich laut Modell, wenn die angebotene Quote über der fairen Quote liegt.</p>
+    {% for w in p.warnings %}<p class="warn">⚠ {{ w }} – Vorhersage wenig belastbar.</p>{% endfor %}
+</div>
+
+<div class="players">
+    {% include "predictor/player.html" with info=result.info_a cls="a" surface=surface %}
+    {% include "predictor/player.html" with info=result.info_b cls="b" surface=surface %}
+</div>
+{% endwith %}
+{% endif %}
+{% endblock %}

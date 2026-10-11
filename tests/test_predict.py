@@ -77,3 +77,32 @@ def test_missing_model_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(dl, "load_tuk_year", fake_tuk_year)
     with pytest.raises(FileNotFoundError):
         MatchPredictor(years=[2025], model_path=str(tmp_path / "fehlt.pt"))
+
+
+def test_player_info(predictor):
+    info = predictor.player_info("Medvedev D.", surface="Hard", n_last=5)
+
+    assert info['name'] == "Medvedev D."
+    assert info['n_matches'] == len(predictor.history["Medvedev D."])
+    assert len(info['last']) == 5
+    # neuestes Match zuerst
+    assert info['last'][0]['date'] >= info['last'][-1]['date']
+    assert info['last_wins'] == sum(m['won'] for m in info['last'])
+    assert 0 <= info['surface_wins'] <= info['surface_matches']
+    assert isinstance(info['elo'], int)
+
+
+def test_h2h_record_is_consistent(predictor):
+    a, b = "Medvedev D.", "Struff J.L."
+    wins_a, wins_b = predictor.h2h_record(a, b)
+    assert predictor.h2h_record(b, a) == (wins_b, wins_a)
+
+    played = [m for m in predictor.matches[a] if m['opponent'] == b]
+    assert wins_a == sum(m['won'] for m in played)
+    assert wins_a + wins_b == len(played)
+    assert predictor.h2h_record(a, "Unbekannt X.") == (0, 0)
+
+
+def test_search(predictor):
+    assert predictor.search("medv")[0] == "Medvedev D."
+    assert "Struff J.L." in predictor.search("Strufff")
