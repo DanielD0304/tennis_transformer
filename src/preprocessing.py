@@ -17,7 +17,6 @@ import math
 import random
 import pandas as pd
 from collections import defaultdict
-from . import data_loader as dl
 
 # Feature names used for each match in the history
 # Updated to include ELO and opponent rank features

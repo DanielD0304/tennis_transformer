@@ -22,7 +22,7 @@ tennis_transformer/
 ├── data/                    # Gespeicherte Daten
 ├── src/
 │   ├── config.py            # Zentrale Konfiguration (Hyperparameter, Pfade)
-│   ├── data_loader.py       # ATP-Daten von GitHub laden
+│   ├── data_loader.py       # data/matches.csv lesen, Schema für die Features
 │   ├── preprocessing.py     # Features & Match-Historie erstellen
 │   ├── attention.py         # Self-Attention (from scratch)
 │   ├── encoderlayer.py      # Transformer Encoder Layer
@@ -127,7 +127,6 @@ Dies verhindert **Data Leakage**, da das Modell nie Zukunftsdaten sieht.
 ### Training Features
 - **Best Model Checkpointing**: Speichert nur das beste Modell basierend auf Validation Accuracy
 - **Early Stopping**: Stoppt Training automatisch bei Overfitting (nach 3 Epochen ohne Verbesserung)
-- **Attention Visualization**: Speichert Attention-Maps nach jeder Epoche
 - **Validation & Test Evaluation**: Separate Evaluation auf ungesehenen Daten
 
 ### Model Features (pro Spieler)
