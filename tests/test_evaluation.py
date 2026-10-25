@@ -102,6 +102,27 @@ def test_market_fallback_to_avg():
     assert np.isfinite(p).all()
 
 
+def test_market_fallback_chain_pinnacle_betfair_avg():
+    raw = synthetic_matches(years=(2020,), per_month=5).head(30).copy()
+    raw['BFEW'], raw['BFEL'] = raw['PSW'] * 1.04, raw['PSL'] * 1.04
+    raw.loc[10:19, ['PSW', 'PSL']] = np.nan                      # nur Betfair + Avg
+    raw.loc[20:, ['PSW', 'PSL', 'BFEW', 'BFEL']] = np.nan         # nur Avg
+    raw.loc[20:, ['AvgW', 'AvgL']] = [[1.4, 3.0]] * 10
+    m = prepare_matches(raw, with_elo=False).set_index('match_id')
+    src = m['market_source']
+    assert (src == 'ps').sum() == 10 and (src == 'bfe').sum() == 10 and (src == 'avg').sum() == 10
+    p = pd.Series(make_predictors(['market'])[0].predict(m), index=m.index)
+    for book in ('ps', 'bfe', 'avg'):
+        rows = m[src == book]
+        np.testing.assert_allclose(p[rows.index], remove_margin(rows[f'{book}_a'], rows[f'{book}_b']))
+    # Betfair-Quoten werden mit A/B getauscht wie alle anderen
+    won = m['label'] == 1
+    np.testing.assert_allclose(np.where(won, m['BFEW'], m['BFEL'])[src == 'bfe'], m.loc[src == 'bfe', 'bfe_a'])
+    # Vergleichs-Stichprobe: Pinnacle und Betfair sind scharf, Avg nicht
+    preds = m.reset_index().assign(p_market=p.to_numpy())
+    assert len(metrics.common_sample(preds, ['market'])) == int((m['status'] != 'W/O')[src != 'avg'].sum())
+
+
 # ----------------------------------------------------------------- Metriken
 
 def test_metrics_by_hand():
@@ -212,9 +233,13 @@ def test_blend_falls_back_to_market(matches):
 
 def test_unknown_model():
     with pytest.raises(ValueError):
-        make_predictors(['market', 'gbdt'])
+        make_predictors(['market', 'xgboost'])
     with pytest.raises(ValueError):
         make_predictors(['market', 'blend_transformer'])
+    with pytest.raises(ValueError):
+        make_predictors(['market', 'stack'])  # ohne Basismodell
+    with pytest.raises(ValueError):
+        make_predictors(['market', 'elo2', 'stack_tf'])  # Transformer fehlt
 
 
 def test_report_runs(predictions):
@@ -224,10 +249,11 @@ def test_report_runs(predictions):
 
 # ------------------------------------------------------------------- Venues
 
-def _one(status='completed', label=1, ps=(2.0, 2.0), b365=(2.0, 2.0)):
+def _one(status='completed', label=1, ps=(2.0, 2.0), b365=(2.0, 2.0), bfe=(2.1, 1.95)):
     return pd.DataFrame([{
         'match_id': 'x', 'date': pd.Timestamp('2021-01-01'), 'label': label, 'status': status,
         'rank_a': 1, 'rank_b': 2, 'ps_a': ps[0], 'ps_b': ps[1], 'b365_a': b365[0], 'b365_b': b365[1],
+        'bfe_a': bfe[0], 'bfe_b': bfe[1],
         'avg_a': b365[0], 'avg_b': b365[1], 'fair_ps': remove_margin(ps[0], ps[1]), 'p_m': 0.9,
     }])
 
@@ -244,12 +270,25 @@ def test_german_tax():
 
 
 def test_betfair_commission():
-    venue = VENUES['betfair']
+    venue = VENUES['betfair_proxy']
     # Preis = faire Pinnacle-Wahrscheinlichkeit 0.5 -> Quote 2.0; 5 % auf den Nettogewinn
     summary, _ = betting.simulate(_one(), betting.Favorite('m', 1.0), venue, betting.Flat(10))
     assert summary['profit'] == pytest.approx(10 * 1.0 * 0.95)
     assert venue.with_(commission=0.02).net_odds_from_gross(3.0) == pytest.approx(1 + 2 * 0.98)
-    assert venue.proxy and venue.label == 'betfair (Proxy)'
+    assert venue.proxy and venue.label == 'betfair_proxy (Proxy)'
+
+
+def test_betfair_real_odds():
+    venue = VENUES['betfair']
+    assert not venue.proxy and venue.price == 'bfe'
+    # Echter Exchange-Kurs 2.1 für A, 5 % Kommission nur auf den Gewinn
+    summary, _ = betting.simulate(_one(), betting.Favorite('m', 1.0), venue, betting.Flat(10))
+    assert summary['profit'] == pytest.approx(10 * 1.1 * 0.95)
+    lost, _ = betting.simulate(_one(label=0), betting.Favorite('m', 1.0), venue, betting.Flat(10))
+    assert lost['profit'] == pytest.approx(-10)
+    # Ohne BFE-Kurs (vor August 2025) keine Wette
+    none, _ = betting.simulate(_one(bfe=(np.nan, np.nan)), betting.Favorite('m', 1.0), venue, betting.Flat(10))
+    assert none['n_bets'] == 0
 
 
 def test_kalshi_fee():
@@ -322,11 +361,13 @@ def test_transformer_adapter_symmetric(tmp_path):
     from src.model import Model
     from src.evaluation.predictors import TransformerPredictor
 
-    cfg = TrainingConfig(train_years_end=2019)
+    from src.model import save_checkpoint
+
+    cfg = TrainingConfig(train_years_end=2018, val_year=2019)
     torch.manual_seed(0)
     model_path = tmp_path / "best_model.pt"
-    torch.save(Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len,
-                     cfg.output_dim).state_dict(), model_path)
+    save_checkpoint(Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len,
+                          cfg.output_dim, cfg.extra_dim), str(model_path), temperature=1.7, extra_dim=cfg.extra_dim)
 
     raw = synthetic_matches(years=(2019, 2020), per_month=30)
     results = []
@@ -336,7 +377,8 @@ def test_transformer_adapter_symmetric(tmp_path):
         tf.prepare(m)
         window = m[m['year'] == 2020]
         with pytest.raises(AssertionError):
-            tf.predict(m[m['year'] == 2019])  # Trainingsjahre sind tabu
+            tf.predict(m[m['year'] == 2019])  # Trainings- und Validierungsjahre sind tabu
+        assert tf.temperature == pytest.approx(1.7)
         results.append(window.assign(p=tf.predict(window)).set_index('match_id'))
     a, b = results[0], results[1].loc[results[0].index]
     ok = a['p'].notna()

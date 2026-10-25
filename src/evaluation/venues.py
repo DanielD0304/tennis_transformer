@@ -4,9 +4,10 @@ Venue-Profile: woher der Preis kommt, welche Steuer/Gebühr anfällt, wie RET ab
 Alles wird auf eine Netto-Dezimalquote pro Seite zurückgeführt: Gewinn bei Treffer =
 Einsatz * (netto - 1), bei Niederlage = -Einsatz, bei void = 0.
 
-Für Betfair, Kalshi und Polymarket gibt es historisch noch keine echten Preise (kommt in Phase 2).
-Als Proxy dient die faire Pinnacle-Wahrscheinlichkeit (ohne Marge), plus optionalem Spread.
-Diese Venues sind im Output als „Proxy“ markiert.
+Betfair Exchange hat echte historische Kurse (tennis-data BFEW/BFEL, ab August 2025), 'betfair' rechnet
+damit. Für Kalshi und Polymarket (und Betfair vor August 2025: 'betfair_proxy') dient die faire
+Pinnacle-Wahrscheinlichkeit (ohne Marge) als Preis, plus optionalem Spread. Diese Venues sind im
+Output als „Proxy“ markiert.
 
 Die RET-Regeln sind Annahmen und unterscheiden sich je Buchmacher/Markt (vor echtem Einsatz in den
 AGB prüfen). W/O ist immer void.
@@ -32,7 +33,7 @@ def kalshi_fee(price, contracts=1):
 @dataclass(frozen=True)
 class Venue:
     name: str
-    price: str  # Quotenkürzel aus predictions ('ps', 'b365', 'avg') oder 'fair_ps' (Proxy)
+    price: str  # Quotenkürzel aus predictions ('ps', 'b365', 'avg', 'max', 'bfe') oder 'fair_ps' (Proxy)
     stake_tax: float = 0.0  # Anteil des Einsatzes, der als Steuer einbehalten wird (DE: 5,3 %)
     commission: float = 0.0  # Anteil des Nettogewinns (Exchange)
     fee_model: str = 'none'  # 'none' | 'kalshi' | 'polymarket'
@@ -59,6 +60,9 @@ class Venue:
             half = self.spread / 2
             qa, qb = np.clip(p + half, 1e-6, 1), np.clip(1 - p + half, 1e-6, 1)
             return 1 / qa, 1 / qb
+        if f'{self.price}_a' not in predictions.columns:  # z.B. ältere predictions.parquet ohne BFE
+            nan = np.full(len(predictions), np.nan)
+            return nan, nan.copy()
         return predictions[f'{self.price}_a'].to_numpy(float), predictions[f'{self.price}_b'].to_numpy(float)
 
     def net_odds_from_gross(self, odds):
@@ -92,7 +96,8 @@ VENUES = {
     'pinnacle': Venue('pinnacle', price='ps'),
     'bet365_de': Venue('bet365_de', price='b365', stake_tax=DE_BET_TAX),
     'avg_de': Venue('avg_de', price='avg', stake_tax=DE_BET_TAX),
-    'betfair': Venue('betfair', price='fair_ps', commission=0.05, proxy=True),
+    'betfair': Venue('betfair', price='bfe', commission=0.05),  # echte Exchange-Kurse, 5 % auf Gewinne
+    'betfair_proxy': Venue('betfair_proxy', price='fair_ps', commission=0.05, proxy=True),
     'kalshi': Venue('kalshi', price='fair_ps', fee_model='kalshi', proxy=True),
     'polymarket': Venue('polymarket', price='fair_ps', fee_model='polymarket', taker_fee=0.0, spread=0.02, proxy=True),
 }

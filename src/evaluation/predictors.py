@@ -16,10 +16,14 @@ import numpy as np
 import pandas as pd
 
 from ..chronology import chronological, match_dates
-from ..elo import compute_elo_ratings
+from ..elo import compute_elo_ratings, elo2_features
 
 # Quoten-Spalten im Sieger/Verlierer-Format (tennis-data) -> Kürzel in A/B-Sicht
-BOOKS = {'b365': ('B365W', 'B365L'), 'ps': ('PSW', 'PSL'), 'avg': ('AvgW', 'AvgL')}
+BOOKS = {'b365': ('B365W', 'B365L'), 'ps': ('PSW', 'PSL'), 'avg': ('AvgW', 'AvgL'), 'max': ('MaxW', 'MaxL'),
+         'bfe': ('BFEW', 'BFEL')}
+# Markt-Benchmark: Pinnacle, sonst Betfair Exchange (Pinnacle fehlt bei tennis-data seit Februar 2026),
+# sonst Durchschnittsquote. Die gewählte Quelle steht in market_source.
+MARKET_SOURCES = ('ps', 'bfe', 'avg')
 ORIENTATION_SEED = 42
 MISSING_RANK = 9999
 
@@ -47,12 +51,13 @@ def _valid_odds(a, b):
     return np.isfinite(a) & np.isfinite(b) & (a > 1.0) & (b > 1.0)
 
 
-def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
+def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
     """
     Rohdaten (Schema data/matches.csv) -> Matches in A/B-Sicht, chronologisch sortiert.
     Behält alle Originalspalten (der Transformer-Adapter braucht sie) und ergänzt:
     match_id, date, year, tour, player_a, player_b, label (1 = A gewinnt), status,
-    rank_a/b, elo_a/b, <book>_a/<book>_b für b365, ps, avg.
+    rank_a/b, elo_a/b, elo2_* (siehe elo.elo2_features), <book>_a/<book>_b für b365, ps, avg, max, bfe,
+    market_source und p_market_fair (faire Wahrscheinlichkeit aus der Quelle laut MARKET_SOURCES).
     """
     df = df.dropna(subset=['winner_name', 'loser_name', 'tourney_date']).copy()
     if 'match_num' not in df.columns:
@@ -62,6 +67,7 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
         df[col] = pd.to_numeric(df.get(col), errors='coerce').fillna(MISSING_RANK)
     if with_elo:
         df = compute_elo_ratings(df)  # Stand VOR dem Match, pro Tour, in echter Reihenfolge
+        df = df.join(elo2_features(df, elo2_params))
     else:
         df = chronological(df).reset_index(drop=True)
 
@@ -85,6 +91,11 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
     if 'winner_elo' in df.columns:
         df['elo_a'] = np.where(a_win, df['winner_elo'], df['loser_elo'])
         df['elo_b'] = np.where(a_win, df['loser_elo'], df['winner_elo'])
+    if 'winner_elo2' in df.columns:
+        for col in ('elo2', 'elo2_surf', 'elo2_mix', 'elo2_n'):
+            df[f'{col}_a'] = np.where(a_win, df[f'winner_{col}'], df[f'loser_{col}'])
+            df[f'{col}_b'] = np.where(a_win, df[f'loser_{col}'], df[f'winner_{col}'])
+        df['elo2_prob_a'] = np.where(a_win, df['elo2_p_winner'], 1 - df['elo2_p_winner'])
     for book, (w, l) in BOOKS.items():
         missing = pd.Series(np.nan, index=df.index)
         ow = pd.to_numeric(df[w] if w in df.columns else missing, errors='coerce').to_numpy(float)
@@ -94,12 +105,23 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
         df[f'{book}_a'] = np.where(a_win, ow, ol)
         df[f'{book}_b'] = np.where(a_win, ol, ow)
 
-    p_ps = remove_margin(df['ps_a'], df['ps_b'])
-    p_avg = remove_margin(df['avg_a'], df['avg_b'])
-    df['market_source'] = np.where(np.isfinite(p_ps), 'ps', np.where(np.isfinite(p_avg), 'avg', 'none'))
+    df['p_market_fair'], df['market_source'] = market_probability(df)
     # Faire Pinnacle-Wahrscheinlichkeit (nur PS, ohne Fallback): Preis-Proxy für Exchange/PM-Venues
-    df['fair_ps'] = p_ps
+    df['fair_ps'] = remove_margin(df['ps_a'], df['ps_b'])
     return chronological(df).reset_index(drop=True)
+
+
+def market_probability(df, sources=MARKET_SOURCES):
+    """Faire Markt-Wahrscheinlichkeit für A aus der ersten Quelle mit gültigen Quoten -> (p, Quelle)."""
+    p = np.full(len(df), np.nan)
+    source = np.full(len(df), 'none', dtype=object)
+    for book in sources:
+        if f'{book}_a' not in df.columns:
+            continue
+        fair = remove_margin(df[f'{book}_a'], df[f'{book}_b'])
+        take = np.isnan(p) & np.isfinite(fair)
+        p[take], source[take] = fair[take], book
+    return p, source
 
 
 # ----------------------------------------------------------------- Hilfen
@@ -154,13 +176,11 @@ class Predictor:
 
 
 class MarketPredictor(Predictor):
-    """Pinnacle ohne Marge, Fallback Durchschnittsquote (market_source = 'avg')."""
+    """Markt ohne Marge: Pinnacle -> Betfair Exchange -> Durchschnittsquote (Quelle in market_source)."""
     name = "market"
 
     def predict(self, window):
-        p_ps = remove_margin(window['ps_a'], window['ps_b'])
-        p_avg = remove_margin(window['avg_a'], window['avg_b'])
-        return np.where(np.isfinite(p_ps), p_ps, p_avg)
+        return market_probability(window)[0]
 
 
 class RankPredictor(Predictor):
@@ -193,6 +213,17 @@ class EloPredictor(Predictor):
 
     def predict(self, window):
         return 1.0 / (1.0 + 10 ** ((window['elo_b'].to_numpy(float) - window['elo_a'].to_numpy(float)) / 400))
+
+
+class Elo2Predictor(Predictor):
+    """
+    Elo2 aus src/elo.py (K im 538-Stil, Mix aus Gesamt- und Untergrund-Elo, Parameter pro Tour aus
+    elo.ELO2_PARAMS, gewählt nur auf Daten vor 2020). Stand vor dem Match, braucht keinen Fit.
+    """
+    name = "elo2"
+
+    def predict(self, window):
+        return window['elo2_prob_a'].to_numpy(float)
 
 
 class BlendPredictor(Predictor):
@@ -232,13 +263,14 @@ class BlendPredictor(Predictor):
 
 class TransformerPredictor(Predictor):
     """
-    Adapter um das bestehende Modell (models/best_model.pt). Es wird nicht neu trainiert,
-    sondern nur auf Matches nach config.train_years_end angewendet. Achtung: val_year wurde
-    fürs Checkpointing benutzt, streng out-of-sample sind erst die Jahre danach.
+    Adapter um das trainierte Modell (models/best_model.pt). Es wird nicht neu trainiert, sondern nur
+    auf Matches ab first_year angewendet: val_year dient dem Checkpointing und dem Temperature Scaling,
+    streng out-of-sample sind erst die Jahre danach.
 
     Features wie im Training (preprocessing.create_training_samples, also auch dessen Filter:
     beide Spieler bis config.max_rank, >= 5 Matches Historie, aktiv). Matches außerhalb davon bekommen NaN.
-    Beide Reihenfolgen werden gerechnet und gemittelt (Symmetrie wie in predict.py).
+    Beide Reihenfolgen werden gerechnet, die Logits gemittelt (Symmetrie wie in predict.py), dann
+    durch die Temperatur aus dem Checkpoint geteilt.
     """
     name = "transformer"
 
@@ -248,7 +280,13 @@ class TransformerPredictor(Predictor):
         self.config = config or default_config
         self.model_path = model_path or self.config.best_model_path
         self.batch_size = batch_size
+        self.temperature = 1.0
         self._p = None  # match_id -> p(A gewinnt), einmal für alle Matches berechnet
+
+    @property
+    def first_year(self):
+        """Erstes Jahr, für das der Transformer vorhersagen darf (davor: Training und Validierung)."""
+        return self.config.val_year + 1
 
     def fit(self, history):
         # Kein Training im Walk-forward. Der Leakage-Check prüft stattdessen die Trainingsjahre.
@@ -256,59 +294,29 @@ class TransformerPredictor(Predictor):
 
     def _compute(self, matches):
         import torch
-        from torch.utils.data import DataLoader
 
-        from ..dataset import DataSet
-        from ..model import Model
+        from ..data_loader import enforce_schema
+        from ..model import load_model
         from ..preprocessing import create_training_samples
-        from ..train import custom_collate_fn
+        from ..train import symmetric_logits
 
         cfg = self.config
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f"Kein trainiertes Modell unter {self.model_path} (erst 'python main.py').")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len, cfg.output_dim).to(device)
-        model.load_state_dict(torch.load(self.model_path, map_location=device))
-        model.eval()
+        model, self.temperature = load_model(self.model_path, cfg, device)
 
-        from ..data_loader import enforce_schema
         raw = enforce_schema(matches.copy())  # Stats-Spalten fehlen evtl. (z.B. Tests)
         samples = create_training_samples(raw, n_matches=cfg.n_surface_matches, n_recent=cfg.n_recent_matches,
                                           max_rank=cfg.max_rank)
-        samples = [s for s in samples if s['year'] > cfg.train_years_end]
-
-        def swapped(s):
-            out = dict(s)
-            for part in ('surface', 'recent'):
-                for suffix in ('', '_mask'):
-                    a, b = f'player_a_{part}{suffix}', f'player_b_{part}{suffix}'
-                    out[a], out[b] = s[b], s[a]
-            out['label'] = 1 - s['label']
-            return out
-
-        keys = ['player_a_surface', 'player_a_recent', 'player_b_surface', 'player_b_recent']
-
-        def run(batch_samples):
-            loader = DataLoader(DataSet(batch_samples), batch_size=self.batch_size, shuffle=False,
-                                collate_fn=custom_collate_fn)
-            out = []
-            with torch.no_grad():
-                for batch in loader:
-                    features = torch.cat([batch[k] for k in keys], dim=1).to(device)
-                    positions = torch.cat([batch[k + '_pos'] for k in keys], dim=1).to(device)
-                    masks = torch.cat([batch[k + '_mask'] for k in keys], dim=1).to(device)
-                    masks = torch.cat([torch.ones(masks.shape[0], 1, device=device), masks], dim=1)
-                    logits = model(features, positions, batch['segment_ids'].to(device), masks)
-                    out.append(torch.softmax(logits, dim=1)[:, 1].cpu().numpy())
-            return np.concatenate(out) if out else np.array([])
-
-        p_first = run(samples)  # P(Sample-Spieler A gewinnt)
-        p_second = run([swapped(s) for s in samples])  # P(Sample-Spieler B gewinnt)
+        samples = [s for s in samples if s['year'] >= self.first_year]
+        # Symmetrisch (beide Reihenfolgen) und mit der Temperatur aus dem Validierungsjahr
+        z = symmetric_logits(model, samples, device, self.batch_size) / self.temperature
+        p_sample_a = sigmoid(z)
         result = {}
-        for s, p1, p2 in zip(samples, p_first, p_second):
-            p_sample_a = (p1 + (1 - p2)) / 2
+        for s, p in zip(samples, p_sample_a):
             # label 1: Sample-Spieler A ist der Sieger
-            p_winner = p_sample_a if s['label'] == 1 else 1 - p_sample_a
+            p_winner = p if s['label'] == 1 else 1 - p
             row = matches.loc[s['match_index']]
             result[row['match_id']] = p_winner if row['label'] == 1 else 1 - p_winner
         return result
@@ -318,39 +326,68 @@ class TransformerPredictor(Predictor):
 
     def predict(self, window):
         if len(window):
-            assert window['date'].min().year > self.config.train_years_end, \
-                f"transformer: Testfenster ab {window['date'].min()} liegt in den Trainingsjahren"
+            assert window['date'].min().year >= self.first_year, \
+                f"transformer: Testfenster ab {window['date'].min()} liegt in Trainings- oder Validierungsjahren"
         if self._p is None:
             raise RuntimeError("TransformerPredictor.prepare(matches) zuerst aufrufen")
         return np.array([self._p.get(m, np.nan) for m in window['match_id']], dtype=float)
 
 
-BASE_PREDICTORS = {'market': MarketPredictor, 'rank': RankPredictor, 'elo': EloPredictor,
+BASE_PREDICTORS = {'market': MarketPredictor, 'rank': RankPredictor, 'elo': EloPredictor, 'elo2': Elo2Predictor,
                    'transformer': TransformerPredictor}
 
 
-def make_predictors(names, config=None, model_path=None):
+STACK_BASES = ('elo2', 'gbdt')
+
+
+def _stack(n, names):
+    """'stack' (elo2 + gbdt), 'stack_bands' (mit Quotenbereichen), 'stack_tf' (+ Transformer), 'stack_tf_bands'
+    oder explizit 'stack_<m1>+<m2>'."""
+    from ..models.stack import DEFAULT_BANDS, StackPredictor
+    rest = n[len('stack'):].lstrip('_')
+    flags = set(rest.split('_')) if rest else set()
+    if '+' in rest:
+        bases = [b for b in rest.split('+') if b]
+    else:
+        bases = [b for b in STACK_BASES if b in names] + (['transformer'] if 'tf' in flags else [])
+        if not flags <= {'tf', 'bands'}:
+            raise ValueError(f"Unbekanntes Stacking {n!r} (stack, stack_bands, stack_tf, stack_<m1>+<m2>)")
+    if not bases:
+        raise ValueError(f"{n} braucht mindestens ein Basismodell (z.B. elo2, gbdt) in --models")
+    return StackPredictor(bases, bands=DEFAULT_BANDS if 'bands' in flags else None, name=n)
+
+
+def make_predictors(names, config=None, model_path=None, gbdt_refit='quarter'):
     """
-    'market,rank,elo,transformer,blend' -> Predictor-Objekte in Rechenreihenfolge.
+    'market,rank,elo,elo2,gbdt,transformer,blend,stack' -> Predictor-Objekte in Rechenreihenfolge.
     'blend' nimmt den Transformer, falls angefordert, sonst Elo. 'blend_<modell>' wählt explizit.
-    Der Markt wird für den Blend und die Vergleiche immer mitgerechnet.
+    'stack*' siehe _stack. Der Markt wird für Blend, Stack und die Vergleiche immer mitgerechnet.
     """
     names = [n.strip() for n in names if n.strip()]
     if 'market' not in names:
         names = ['market'] + names
-    base, blends = [], []
+    base, combos = [], []
     for n in names:
         if n == 'blend':
-            blends.append(BlendPredictor('transformer' if 'transformer' in names else 'elo', name='blend'))
+            combos.append(BlendPredictor('transformer' if 'transformer' in names else 'elo', name='blend'))
         elif n.startswith('blend_'):
-            blends.append(BlendPredictor(n[len('blend_'):], name=n))
+            combos.append(BlendPredictor(n[len('blend_'):], name=n))
+        elif n.startswith('stack'):
+            combos.append(_stack(n, names))
         elif n == 'transformer':
             base.append(TransformerPredictor(config, model_path))
+        elif n == 'gbdt':
+            from ..models.gbdt import GBDTPredictor
+            base.append(GBDTPredictor(refit=gbdt_refit))
         elif n in BASE_PREDICTORS:
             base.append(BASE_PREDICTORS[n]())
         else:
-            raise ValueError(f"Unbekanntes Modell: {n} (bekannt: {', '.join(BASE_PREDICTORS)}, blend, blend_<modell>)")
-    for b in blends:
-        if b.base not in {p.name for p in base}:
-            raise ValueError(f"{b.name} braucht das Modell '{b.base}' in --models")
-    return base + blends
+            raise ValueError(f"Unbekanntes Modell: {n} (bekannt: {', '.join(BASE_PREDICTORS)}, gbdt, blend, "
+                             f"blend_<modell>, stack, stack_bands, stack_tf)")
+    known = {p.name for p in base}
+    for c in combos:
+        needed = [c.base] if isinstance(c, BlendPredictor) else list(c.bases)
+        missing = [m for m in needed if m not in known]
+        if missing:
+            raise ValueError(f"{c.name} braucht die Modelle {', '.join(missing)} in --models")
+    return base + combos

@@ -2,8 +2,9 @@
 Metriken für Wahrscheinlichkeiten und der Vergleich gegen den Markt.
 
 Für Wetten zählt die Kalibrierung, deshalb ist Log Loss die Hauptmetrik (Accuracy nur zur Info).
-Verglichen wird immer auf derselben Stichprobe: Matches mit Pinnacle-Quote, ohne W/O und mit
-einer Vorhersage von jedem Modell (common_sample).
+Verglichen wird immer auf derselben Stichprobe: Matches mit scharfem Marktpreis (Pinnacle, seit
+Februar 2026 Betfair Exchange, siehe SHARP_SOURCES), ohne W/O und mit einer Vorhersage von jedem Modell
+(common_sample).
 """
 import math
 
@@ -11,6 +12,8 @@ import numpy as np
 import pandas as pd
 
 EPS = 1e-15
+# Marktquellen, gegen die verglichen wird (Durchschnittsquoten sind zu weich für den Benchmark)
+SHARP_SOURCES = ('ps', 'bfe')
 
 
 def _arrays(y, p):
@@ -113,16 +116,21 @@ def diebold_mariano(loss_model, loss_ref):
 
 # --------------------------------------------------------- Vergleich
 
-def common_sample(predictions, models):
-    """Gleiche Stichprobe für alle: Pinnacle-Quote vorhanden, kein W/O, p von jedem Modell."""
+def common_sample(predictions, models, sources=SHARP_SOURCES):
+    """
+    Gleiche Stichprobe für alle: scharfer Marktpreis vorhanden (sources=None: egal), kein W/O,
+    p von jedem Modell.
+    """
     cols = [f'p_{m}' for m in models]
-    mask = (predictions['market_source'] == 'ps') & (predictions['status'] != 'W/O')
+    mask = predictions['status'] != 'W/O'
+    if sources is not None:
+        mask &= predictions['market_source'].isin(sources)
     return predictions[mask & predictions[cols].notna().all(axis=1)]
 
 
-def metric_table(predictions, models, by='year'):
+def metric_table(predictions, models, by='year', sources=SHARP_SOURCES):
     """Log Loss, Brier, Accuracy, ECE pro Modell und Gruppe (Standard: Jahr) plus 'Gesamt'."""
-    sample = common_sample(predictions, models)
+    sample = common_sample(predictions, models, sources)
     groups = [(str(k), g) for k, g in sample.groupby(by)] if by else []
     groups.append(('Gesamt', sample))
     rows = []
@@ -134,13 +142,16 @@ def metric_table(predictions, models, by='year'):
     return pd.DataFrame(rows)
 
 
-def significance_vs_market(predictions, models, n_boot=2000, seed=0):
-    """Log-Loss-Differenz jedes Modells gegen den Markt: Bootstrap-KI, Bootstrap- und DM-p-Wert."""
-    sample = common_sample(predictions, models)
-    ref = pointwise_log_loss(sample['label'], sample['p_market'])
+def significance_vs_market(predictions, models, n_boot=2000, seed=0, ref_model='market', sources=SHARP_SOURCES):
+    """
+    Log-Loss-Differenz jedes Modells gegen den Markt (oder ref_model): Bootstrap-KI, Bootstrap- und
+    DM-p-Wert. Negativ = besser als die Referenz.
+    """
+    sample = common_sample(predictions, models, sources)
+    ref = pointwise_log_loss(sample['label'], sample[f'p_{ref_model}'])
     rows = []
     for m in models:
-        if m == 'market':
+        if m == ref_model:
             continue
         loss = pointwise_log_loss(sample['label'], sample[f'p_{m}'])
         boot = paired_bootstrap(loss, ref, n_boot=n_boot, seed=seed)
@@ -153,11 +164,47 @@ def significance_vs_market(predictions, models, n_boot=2000, seed=0):
 
 def go_no_go(significance, model='blend', alpha=0.05):
     """
-    Go nur, wenn der Blend den Log Loss des Markts signifikant senkt:
-    obere KI-Grenze der Differenz < 0 und p-Wert < alpha.
+    Go nur, wenn das Modell (Blend, Stack) den Log Loss des Markts signifikant senkt:
+    obere KI-Grenze der Differenz < 0 und beide p-Werte (Bootstrap, Diebold-Mariano) < alpha.
     """
     row = significance[significance['model'] == model]
     if row.empty:
         return False
     r = row.iloc[0]
-    return bool(r['ci_high'] < 0 and r['p_boot'] < alpha)
+    p_dm = r['p_dm'] if 'p_dm' in r and pd.notna(r['p_dm']) else 0.0
+    return bool(r['ci_high'] < 0 and r['p_boot'] < alpha and p_dm < alpha)
+
+
+def segments(predictions, odds_edges=(0.6, 0.75)):
+    """Segment-Spalten für den Vergleich: Quotenbereich (Favoriten-p des Markts), Turnierstufe, Untergrund."""
+    p = predictions['p_market'].to_numpy(float)
+    fav = np.maximum(p, 1 - p)
+    edges = [0.5, *odds_edges, 1.0]
+    labels = [f"Fav {lo:.2f}-{hi:.2f}" for lo, hi in zip(edges[:-1], edges[1:])]
+    band = pd.Series(np.array(labels, dtype=object)[np.clip(np.digitize(fav, odds_edges), 0, len(labels) - 1)],
+                     index=predictions.index)
+    unknown = pd.Series('unbekannt', index=predictions.index)
+    level = predictions['tourney_level'].astype(str) if 'tourney_level' in predictions else unknown
+    surface = predictions['surface'].astype(str) if 'surface' in predictions else unknown
+    return {'Quotenbereich': band, 'Turnierstufe': level, 'Untergrund': surface}
+
+
+def segment_table(predictions, model, models=None, ref_model='market', n_boot=500, seed=0, min_n=200):
+    """
+    Log-Loss-Differenz Modell - Referenz je Segment (Quotenbereich, Turnierstufe, Untergrund) auf der
+    gemeinsamen Stichprobe, mit Bootstrap-KI. Segmente mit weniger als min_n Matches fallen weg.
+    """
+    sample = common_sample(predictions, models or [ref_model, model])
+    loss_m = pointwise_log_loss(sample['label'], sample[f'p_{model}'])
+    loss_r = pointwise_log_loss(sample['label'], sample[f'p_{ref_model}'])
+    rows = []
+    for kind, values in segments(sample).items():
+        for key in sorted(values.unique()):
+            m = (values == key).to_numpy()
+            if m.sum() < min_n:
+                continue
+            boot = paired_bootstrap(loss_m[m], loss_r[m], n_boot=n_boot, seed=seed)
+            rows.append({'segment': kind, 'value': key, 'n': int(m.sum()), f'll_{model}': float(loss_m[m].mean()),
+                         f'll_{ref_model}': float(loss_r[m].mean()), 'mean_diff': boot['mean_diff'],
+                         'ci_low': boot['ci_low'], 'ci_high': boot['ci_high'], 'p_boot': boot['p_value']})
+    return pd.DataFrame(rows)

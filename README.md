@@ -29,8 +29,9 @@ tennis_transformer/
 │   ├── transformer.py       # Transformer-Block
 │   ├── model.py             # Gesamtarchitektur
 │   ├── dataset.py           # PyTorch Dataset
-│   ├── loss.py              # Focal Loss Implementation
-│   ├── elo.py               # ELO-Rating Berechnung
+│   ├── loss.py              # Cross-Entropy (Standard) und Focal Loss
+│   ├── elo.py               # ELO-Rating (alt) und Elo2 (538-K, Untergrund-Mix, Tuning)
+│   ├── models/              # LightGBM (gbdt.py), Stacking (stack.py), Kalibrierung (calibration.py)
 │   ├── train.py             # Training Loop mit Validation & Early Stopping
 │   ├── predict.py           # Live-Vorhersagen für anstehende Matches
 │   ├── names.py             # Spielernamen aus verschiedenen Quellen abgleichen
@@ -237,54 +238,54 @@ Dieses Projekt entstand als Lern- und Portfolio-Projekt. Im Verlauf gab es zahlr
 
 ## Loss Function
 
-Das Projekt verwendet **Focal Loss** statt der Standard CrossEntropyLoss:
+Standard ist **Cross-Entropy** (`config.loss = 'ce'`). Für Wetten zählen kalibrierte
+Wahrscheinlichkeiten, und Cross-Entropy ist genau der Log Loss, an dem das Modell gemessen wird.
+Der früher verwendete **Focal Loss** (gamma 2) gewichtet sichere Matches herunter und hat das Modell
+systematisch untertreiben lassen (ECE 0,07 auf 2025). Er bleibt als Option (`config.loss = 'focal'`).
 
-```python
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-        return focal_loss.mean()
-```
-
-**Vorteile von Focal Loss:**
-- Reduziert den Einfluss von leicht klassifizierbaren Samples
-- Fokussiert das Training auf schwierige Fälle
-- Verbessert die Kalibrierung der Wahrscheinlichkeiten
+Nach dem Training wird auf dem Validierungsjahr eine Temperatur gefittet (Temperature Scaling auf den
+symmetrischen Logits `(z(A,B) - z(B,A)) / 2`). Sie steht mit im Checkpoint und wird in Backtest und
+`predict.py` angewendet.
 
 ## Evaluation
 
 Alle Auswertungen laufen über `src/evaluation/`. Messlatte ist der **Markt**: die Pinnacle-Quote ohne
-Marge. Ein Modell, das den Markt nicht verbessert, liefert keinen Wett-Edge, egal wie hoch seine
-Accuracy ist.
+Marge, seit Februar 2026 (tennis-data hat dort keine Pinnacle-Quoten mehr) die Betfair-Exchange-Quote.
+Ein Modell, das den Markt nicht verbessert, liefert keinen Wett-Edge, egal wie hoch seine Accuracy ist.
 
 ```bash
-python -m src.evaluation.backtest --start 2020 --end 2025 --models market,rank,elo,blend
-python -m src.evaluation.backtest --start 2024 --end 2025 --models market,rank,elo,transformer,blend
+python -m src.evaluation.backtest --start 2020 --end 2026 --tour atp --models market,rank,elo,elo2,gbdt,transformer,stack
+python -m src.evaluation.backtest --start 2020 --end 2026 --tour wta --models rank,elo,elo2,gbdt,transformer
 python -m src.evaluation.backtest --start 2023 --end 2025 --kelly 0.25 --kelly-cap 0.02 --venues pinnacle,bet365_de
 ```
 
+**Modell-Leiter** (Phase 3, jede Stufe muss die vorige im Walk-forward schlagen):
+
+| Predictor | Datei | Modell |
+|---|---|---|
+| `elo2` | `src/elo.py` | K im 538-Stil `c/(n+o)^s`, Mix aus Gesamt- und Untergrund-Elo, optional Best-of-5 über die Satz-Wahrscheinlichkeit, pro Tour. Parameter (`ELO2_PARAMS`) nur auf Daten vor 2020 gewählt: `python -m src.elo --tour atp` |
+| `gbdt` | `src/models/gbdt.py` | LightGBM auf `features.feature_table` + Elo2. Walk-forward neu gefittet (`--gbdt-refit quarter`/`year`), Early Stopping und Platt-Kalibrierung auf den letzten 12 Monaten vor dem Fenster, Training mit gespiegelten Zeilen, Vorhersage symmetrisiert. Live-Modell: `python -m src.models.gbdt --tour atp` |
+| `transformer` | `src/train.py` | Cross-Entropy (Focal Loss per `config.loss='focal'`), Elo2-Logit als zusätzlicher Input, symmetrische Logits, Temperature Scaling auf `val_year` (Temperatur im Checkpoint) |
+| `stack`, `stack_bands`, `stack_tf` | `src/models/stack.py` | Logistische Regression ohne Intercept auf `logit(p_market)` und die Logits von `elo2` + `gbdt` (`_tf`: + Transformer, `_bands`: Interaktion mit dem Quotenbereich), walk-forward auf out-of-sample-Vorhersagen |
+
+`--warmup 1` (Standard) lässt den Walk-forward ein Jahr vor `--start` beginnen, damit Stack und Blend
+von Anfang an Trainingsdaten haben. Live nutzt `predict.MatchPredictor` das Modell aus
+`config.live_model` (`transformer`, `gbdt` oder `elo2`) über `predict_proba(match) -> p`.
+
 | Datei | Inhalt |
 |---|---|
-| `predictors.py` | Pro Match `p` = P(Spieler A gewinnt). A ist per Hash der `match_id` (fester Seed) Sieger oder Verlierer, Quoten werden mitgedreht. Predictor: `market` (Pinnacle ohne Marge, Fallback Ø-Quote, Spalte `market_source`), `rank` (logistisch auf log-Rang-Differenz), `elo` (bestehendes Elo), `transformer` (Adapter um `models/best_model.pt`), `blend` (logistische Regression auf `logit(p_market)` + `logit(p_model)`) |
+| `predictors.py` | Pro Match `p` = P(Spieler A gewinnt). A ist per Hash der `match_id` (fester Seed) Sieger oder Verlierer, Quoten werden mitgedreht. Predictor: `market` (ohne Marge: Pinnacle → Betfair Exchange → Ø-Quote, Quelle in `market_source`), `rank` (logistisch auf log-Rang-Differenz), `elo` (bestehendes Elo), `elo2`, `gbdt`, `transformer` (Adapter um `models/best_model.pt`), `blend` (logistische Regression auf `logit(p_market)` + `logit(p_model)`), `stack` (siehe oben) |
 | `backtest.py` | Walk-forward (Standard monatlich, `--freq week/quarter/year`). Ein Predictor sieht beim Fit nur Matches mit Datum < Testfenster (Assert im Code). Ergebnis: `data/eval/predictions.parquet` |
 | `metrics.py` | Log Loss (Hauptmetrik), Brier, Accuracy, ECE, Kalibrierungstabelle, gepaarter Bootstrap und Diebold-Mariano-Test auf Log-Loss-Differenzen gegen den Markt |
 | `venues.py` | Venue-Profile: Preisquelle, Steuer/Gebühr, RET-Regel, max. Einsatz |
 | `betting.py` | `simulate(predictions, strategy, venue, staking)`: Strategien und Staking als Parameter-Objekte |
 
-**Metriken** werden immer auf derselben Stichprobe verglichen: Matches mit Pinnacle-Quote, ohne W/O
-und mit einer Vorhersage von jedem angeforderten Modell. Mit `transformer` schrumpft die Stichprobe,
-weil der Transformer nur Matches im Trainings-Filter (`config.max_rank`, Standard Top 500, genug Historie,
-aktiv) und nur Jahre nach
-`train_years_end` vorhersagt. Achtung: `val_year` wurde fürs Checkpointing benutzt, streng
-out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward (noch) nicht neu trainiert.
+**Metriken** werden immer auf derselben Stichprobe verglichen: Matches mit scharfem Marktpreis
+(Pinnacle oder Betfair Exchange), ohne W/O und mit einer Vorhersage von jedem angeforderten Modell.
+Modelle, die nur einen Teil der Jahre vorhersagen (der Transformer erst nach `val_year`, nur Matches im
+Trainings-Filter `config.max_rank`, genug Historie, aktiv), bekommen eine eigene Teilstichprobe, damit die
+Hauptstichprobe nicht schrumpft. `val_year` dient dem Checkpointing und dem Temperature Scaling, streng
+out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward nicht neu trainiert.
 
 **Venues** (Steuer und Gebühr stecken in der Netto-Quote, mit der auch EV und Kelly rechnen):
 
@@ -293,14 +294,15 @@ out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward (no
 | `pinnacle` | `PSW/PSL` | keine | gewertet |
 | `bet365_de` | `B365W/B365L` | 5,3 % Wettsteuer auf den Einsatz | gewertet |
 | `avg_de` | `AvgW/AvgL` | 5,3 % Wettsteuer auf den Einsatz | gewertet |
-| `betfair` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | 5 % Kommission auf den Nettogewinn | gewertet |
+| `betfair` | `BFEW/BFEL` (Betfair Exchange, ab August 2025) | 5 % Kommission auf den Nettogewinn | gewertet |
+| `betfair_proxy` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | 5 % Kommission auf den Nettogewinn | gewertet |
 | `kalshi` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | Fee pro Kontrakt = ceil_to_cent(0,07 · p · (1−p)) | gewertet |
 | `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Fee (Standard 0) | gewertet |
 
 W/O ist immer void. Alle Werte sind per `Venue.with_(...)` änderbar (z. B. `ret_rule='void'`,
 `max_stake=50`). Die RET-Regeln unterscheiden sich je Anbieter und müssen vor echtem Einsatz in den
-AGB geprüft werden. Für Betfair, Kalshi und Polymarket gibt es historisch noch keine echten Preise.
-Ihr Preis ist ein Proxy aus Pinnacle, deshalb sind sie im Output als „Proxy“ markiert. Die
+AGB geprüft werden. Für Kalshi und Polymarket (und Betfair vor August 2025) gibt es historisch keine
+echten Preise. Ihr Preis ist ein Proxy aus Pinnacle, deshalb sind sie im Output als „Proxy“ markiert. Die
 tennis-data-Quoten sind Schlussquoten, was den erreichbaren Preis überschätzt. CLV ist im Output
 vorgesehen, bleibt aber leer, bis es Quoten-Snapshots mit Zeitstempel gibt.
 
@@ -318,13 +320,14 @@ Staking: `Flat(10)` oder `Kelly(fraction=0.25, cap=0.02)` (fraktionales Kelly au
 Bankroll, gedeckelt). Kennzahlen: Anzahl Wetten (und voids), Trefferquote, Ø-Quote, Yield mit
 **Bootstrap-95-%-KI**, ROI auf die Bankroll, Max Drawdown.
 
-**Go/No-Go:** Ein Modell darf erst dann live Wetten auslösen, wenn sein Blend mit dem Markt den Log
-Loss von Pinnacle allein **signifikant senkt** (obere KI-Grenze der Log-Loss-Differenz < 0 und
-Bootstrap-p < 0,05). Die CLI gibt das Urteil pro Blend aus. Ein Yield ohne KI oder auf wenigen hundert
+**Go/No-Go:** Ein Modell darf erst dann live Wetten auslösen, wenn sein Stack (oder Blend) mit dem
+Markt den Log Loss des Markts allein **signifikant senkt** (obere KI-Grenze der Log-Loss-Differenz < 0,
+Bootstrap-p und Diebold-Mariano-p < 0,05). Die CLI gibt das Urteil pro Modell aus und bei einem GO die
+Segmente (Quotenbereich, Turnierstufe, Untergrund). Ein Yield ohne KI oder auf wenigen hundert
 Wetten ist kein Beleg.
 
 `python main.py` trainiert den Transformer und ruft danach dieselbe Auswertung auf (Baseline-Accuracy,
-Metriken und Signifikanz gegen den Markt, Strategien auf `bet365_de` und `pinnacle`, Kalibrierung).
+Metriken und Signifikanz gegen den Markt, Strategien auf `bet365_de`, `pinnacle` und `betfair`, Kalibrierung).
 `python main.py --eval-only` überspringt das Training.
 
 ## Ergebnisse

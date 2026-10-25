@@ -10,7 +10,7 @@ import os
 
 import pandas as pd
 
-from .sources.common import MATCHES_PATH
+from .sources.common import MATCHES_PATH, ODDS_COLUMNS
 
 # Das Ziel-Schema (Sackmann-Style)
 REQUIRED_STATS_COLS = [
@@ -65,8 +65,9 @@ def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24
     df = enforce_schema(df.reset_index(drop=True))
     if tour is not None:
         df = df[df['tour'] == tour].reset_index(drop=True)
-    for col in ['B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    for col in ODDS_COLUMNS:
+        # Ältere matches.csv haben noch keine BFE/Max-Spalten
+        df[col] = pd.to_numeric(df[col], errors='coerce') if col in df.columns else float('nan')
     return df
 
 

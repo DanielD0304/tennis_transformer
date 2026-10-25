@@ -1,6 +1,6 @@
 """
 tennis-data.co.uk: ATP- und WTA-Ergebnisse mit Rankings, Untergrund, Indoor/Outdoor und Quoten
-(u.a. Bet365, Pinnacle). Wird etwa einmal pro Woche nach Turnierende aktualisiert. Keine Aufschlag-Stats.
+(Bet365, Pinnacle, Durchschnitt, Maximum, ab August 2025 Betfair Exchange). Wird etwa einmal pro Woche nach Turnierende aktualisiert. Keine Aufschlag-Stats.
 
 Dateien: ATP unter data/raw/tuk/{jahr}.xlsx, WTA unter data/raw/tuk_wta/{jahr}.xlsx. Auf der Seite
 liegen die WTA-Dateien in einem eigenen Ordner mit 'w' ({jahr}w/{jahr}.xlsx), sonst gleiches Format
@@ -14,7 +14,7 @@ from collections import defaultdict
 
 import requests
 
-from .common import RAW_DIR, ROUND_ORDER, USER_AGENT, http_get, round_code, yyyymmdd
+from .common import ODDS_COLUMNS, RAW_DIR, ROUND_ORDER, USER_AGENT, http_get, round_code, yyyymmdd
 
 BASE_URL = "https://www.tennis-data.co.uk"
 DIR = os.path.join(RAW_DIR, "tuk")
@@ -166,7 +166,7 @@ def load(years, tour='atp'):
                     'loser_rank': _int(r.get('LRank')),
                     'score': score.strip(),
                     'status': status,
-                    **{c: _num(r.get(c)) for c in ('B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL')},
+                    **{c: _num(r.get(c)) for c in ODDS_COLUMNS},
                     'location': location,
                     'source': 'tuk',
                 })

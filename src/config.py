@@ -19,11 +19,13 @@ class TrainingConfig:
     max_len: int = 50  # Maximum sequence length (n_surface + n_recent) * 2
     max_rank: int = 500  # Trainings-Samples nur, wenn beide Spieler mindestens so gut gerankt sind
     output_dim: int = 2  # Binary classification (player A wins / player B wins)
+    extra_dim: int = 1  # Match-Features außerhalb der Sequenzen: Elo2-Logit (preprocessing.EXTRA_FEATURES)
     
     # Training parameters
     num_epochs: int = 10
     batch_size: int = 32
     learning_rate: float = 0.0005
+    loss: str = 'ce'  # 'ce' (Cross-Entropy) oder 'focal' (Focal Loss, früherer Standard)
     
     # Anteil der Historien-Matches, deren Aufschlag-Stats im Training zufällig entfernt werden
     stats_dropout: float = 0.15
@@ -38,6 +40,9 @@ class TrainingConfig:
     data_years_start: int = 2015  # Start loading data from this year
     data_years_end: int = 2025  # Load data up to this year
     
+    # Live-Modell für predict.MatchPredictor.predict_proba: transformer, gbdt, elo2 (Wahl laut Backtest)
+    live_model: str = 'transformer'
+
     # Paths
     preprocessed_data_path: str = "data/preprocessed_samples.pt"
     best_model_path: str = "models/best_model.pt"
