@@ -198,6 +198,8 @@ def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS,
         a, b = pair
         start = utc(milestone['start_date'])
         lo = max(utc(a.get('open_time')) or start - MAX_WINDOW, start - MAX_WINDOW)
+        if lo >= start:  # Markt erst nach der geplanten Startzeit eröffnet: kein Preis vor Start
+            return None
         params = {'start_ts': int(lo.timestamp()), 'end_ts': int(start.timestamp()), 'period_interval': 60}
         if a['historical']:
             url = f"{kalshi.API}/historical/markets/{a['ticker']}/candlesticks"
