@@ -54,7 +54,8 @@ def link_matches(df, matches):
     """
     df = df.copy()
     index = build_index(matches)
-    found, a_won, dates, tourneys, status, ps_a, ps_b = [], [], [], [], [], [], []
+    found, a_won, dates, tourneys, status = [], [], [], [], []
+    odds = {f'{k}_{side}': [] for k in ('ps', 'avg') for side in 'ab'}
     for row in df.to_dict('records'):
         q = _odds_row(row)
         other, same = index.find(q) if q['match_date'] else (None, None)
@@ -63,12 +64,14 @@ def link_matches(df, matches):
         dates.append((other or {}).get('match_date') or (other or {}).get('tourney_date'))
         tourneys.append((other or {}).get('tourney_name'))
         status.append((other or {}).get('status'))
-        psw, psl = _odd((other or {}).get('PSW')), _odd((other or {}).get('PSL'))
-        ps_a.append(psw if same else psl)
-        ps_b.append(psl if same else psw)
+        for key, col in (('ps', 'PS'), ('avg', 'Avg')):
+            w, l = _odd((other or {}).get(f'{col}W')), _odd((other or {}).get(f'{col}L'))
+            odds[f'{key}_a'].append(w if same else l)
+            odds[f'{key}_b'].append(l if same else w)
     df['match_found'], df['a_won'], df['match_date'] = found, a_won, dates
     df['match_tourney'], df['match_status'] = tourneys, status
-    df['ps_a'], df['ps_b'] = ps_a, ps_b
+    for col, values in odds.items():
+        df[col] = values
     return df
 
 

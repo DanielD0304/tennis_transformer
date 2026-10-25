@@ -296,7 +296,7 @@ MATCHES = [
      'winner_name': 'Matteo Berrettini', 'loser_name': 'Tomas Martin Etcheverry', 'status': 'completed'},
     {'source': 'espn', 'tourney_date': '20261019', 'match_date': '20261025', 'tourney_name': 'Basel',
      'winner_name': 'Arthur Rinderknech', 'loser_name': 'Jerome Kym', 'status': 'completed',
-     'PSW': '1.50', 'PSL': '2.70'},
+     'PSW': '1.50', 'PSL': '2.70', 'AvgW': '1.45', 'AvgL': '2.60'},
     {'source': 'espn', 'tourney_date': '20261019', 'match_date': '20261025', 'tourney_name': 'Basel',
      'winner_name': 'Felix Auger-Aliassime', 'loser_name': 'Juan Manuel Cerundolo', 'status': 'RET'},
 ]
@@ -393,12 +393,14 @@ def test_vs_pinnacle():
     assert r['n'] == 2
     p_pin = (1 / 2.7) / (1 / 2.7 + 1 / 1.5)
     assert r['mittel_abs_dp'] == pytest.approx((abs(0.30 - p_pin) + abs(0.35 - p_pin)) / 2)
-    assert r['ll_pinnacle'] == pytest.approx(-math.log(1 - p_pin))
+    assert r['ll_bench'] == pytest.approx(-math.log(1 - p_pin))
     # Pinnacle fair für Kym: 0.357. K0: Ask 0.31 + Fee 0.02 = 0.33 -> Edge +8 %, Kym verliert -> -100 %.
     # K2: Ask 0.36 + 0.02 = 0.38 zu teuer, Rinderknech 1 - 0.34 + 0.02 = 0.68 > 0.643 auch -> keine Wette
     assert r['wetten'] == 1 and r['yield_flat'] == -1.0
     assert r['edge_mittel'] == pytest.approx(p_pin / 0.33 - 1)
     assert report.vs_pinnacle(df, 'kalshi', []) is None
+    avg = report.vs_pinnacle(df, 'kalshi', MATCHES, bench='avg')
+    assert avg['gegen'] == 'avg' and avg['ll_bench'] == pytest.approx(-math.log(1 - (1 / 2.6) / (1 / 2.6 + 1 / 1.45)))
 
 
 def test_polymarket_itf_tour_and_level():
