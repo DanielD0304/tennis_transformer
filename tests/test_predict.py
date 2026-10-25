@@ -51,7 +51,7 @@ def predictor(tmp_path_factory):
     model = Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len, cfg.output_dim)
     model_path = tmp_path_factory.mktemp("model") / "best_model.pt"
     torch.save(model.state_dict(), model_path)
-    return MatchPredictor(matches=fake_matches(), model_path=str(model_path))
+    return MatchPredictor(matches=fake_matches(), model_path=str(model_path), model="transformer")
 
 
 def test_history_built(predictor):
@@ -100,7 +100,7 @@ def test_unknown_player_gives_none(predictor):
 
 def test_missing_model_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        MatchPredictor(matches=fake_matches(), model_path=str(tmp_path / "fehlt.pt"))
+        MatchPredictor(matches=fake_matches(), model_path=str(tmp_path / "fehlt.pt"), model="transformer")
 
 
 def test_player_info(predictor):
@@ -197,7 +197,7 @@ def test_transformer_checkpoint_with_temperature(tmp_path):
     for t in (1.0, 4.0):
         path = tmp_path / f"m{t}.pt"
         save_checkpoint(model, str(path), temperature=t, extra_dim=cfg.extra_dim)
-        pred = MatchPredictor(matches=fake_matches(), model_path=str(path))
+        pred = MatchPredictor(matches=fake_matches(), model_path=str(path), model="transformer")
         assert pred.temperature == t
         probs.append(pred.predict("Daniil Medvedev", "Jan-Lennard Struff", surface="Hard").prob_a)
     assert abs(probs[1] - 0.5) == pytest.approx(abs(probs[0] - 0.5) / 4, rel=0.05)

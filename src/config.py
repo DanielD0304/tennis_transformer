@@ -40,8 +40,10 @@ class TrainingConfig:
     data_years_start: int = 2015  # Start loading data from this year
     data_years_end: int = 2025  # Load data up to this year
     
-    # Live-Modell für predict.MatchPredictor.predict_proba: transformer, gbdt, elo2 (Wahl laut Backtest)
-    live_model: str = 'transformer'
+    # Live-Modell für predict.MatchPredictor.predict_proba: transformer, gbdt, elo2. Laut Backtest 2020-2026
+    # (PR #10) ist gbdt das beste Einzelmodell auf allen Matches (ATP 0,6089, WTA 0,6093 Log Loss). Braucht
+    # models/gbdt_<tour>.pkl: python -m src.models.gbdt --tour atp (und --tour wta)
+    live_model: str = 'gbdt'
 
     # Paths
     preprocessed_data_path: str = "data/preprocessed_samples.pt"

@@ -270,7 +270,13 @@ python -m src.evaluation.backtest --start 2023 --end 2025 --kelly 0.25 --kelly-c
 
 `--warmup 1` (Standard) lässt den Walk-forward ein Jahr vor `--start` beginnen, damit Stack und Blend
 von Anfang an Trainingsdaten haben. Live nutzt `predict.MatchPredictor` das Modell aus
-`config.live_model` (`transformer`, `gbdt` oder `elo2`) über `predict_proba(match) -> p`.
+`config.live_model` (`transformer`, `gbdt` oder `elo2`) über `predict_proba(match) -> p`. Standard ist
+`gbdt`, das beste Einzelmodell im Backtest 2020–2026. Vorher einmal `python -m src.models.gbdt --tour atp`
+und `--tour wta` ausführen (schreibt `models/gbdt_<tour>.pkl`).
+
+**Stand (Backtest 2020–2026, PR #10):** Jede Stufe schlägt die vorige (ATP-Log-Loss: rank 0,6320 →
+elo 0,6283 → elo2 0,6232 → gbdt 0,6089). Kein Modell und kein Stack senkt den Log Loss des Markts
+(0,5891) signifikant, das Go/No-Go lautet überall **NO-GO**.
 
 | Datei | Inhalt |
 |---|---|
