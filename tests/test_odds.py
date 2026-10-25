@@ -399,3 +399,21 @@ def test_vs_pinnacle():
     assert r['wetten'] == 1 and r['yield_flat'] == -1.0
     assert r['edge_mittel'] == pytest.approx(p_pin / 0.33 - 1)
     assert report.vs_pinnacle(df, 'kalshi', []) is None
+
+
+def test_polymarket_itf_tour_and_level():
+    m = {'id': '9', 'question': 'W15 Monastir: Lan Mi vs Elza Tomase', 'sportsMarketType': 'moneyline',
+         'outcomes': '["Lan Mi", "Elza Tomase"]', 'outcomePrices': '["1", "0"]', 'clobTokenIds': '["1", "2"]',
+         'closed': True, 'gameStartTime': '2026-09-30 10:30:00+00'}
+    info = polymarket.match_info({'slug': 'itf-mi1-tomase-2026-09-30', 'title': m['question'], 'markets': [m]})
+    assert (info['tour'], info['level']) == ('wta', 'itf')
+
+
+def test_report_drops_stale_closing():
+    start = utc('2026-10-25T12:00:00Z')
+    df = pd.DataFrame([{'winner': 'a', 'close_price_a': 0.6, 'start_time_utc': start,
+                        'close_ts': start - timedelta(minutes=10), 'volume': 1.0},
+                       # Markt schon Stunden vor der (verschobenen) Startzeit aufgelöst
+                       {'winner': 'a', 'close_price_a': 0.99, 'start_time_utc': start,
+                        'close_ts': start - timedelta(hours=9), 'volume': 1.0}])
+    assert list(report.evaluable(df)['close_price_a']) == [0.6]

@@ -24,10 +24,18 @@ from .schema import SNAPSHOT_DIR, load_snapshots
 
 VENUES = ('polymarket', 'kalshi')
 EXTREME = 0.03  # Closing-Preis unter 3 % oder über 97 %: Verdacht auf Live-Handel vor der geplanten Startzeit
+# Liegt der letzte Preis mehr als 2 h vor der geplanten Startzeit, wurde der Markt meist schon vorher
+# aufgelöst (Startzeit nachträglich verschoben): Preis ist dann das Ergebnis, nicht die Prognose
+MAX_STALE = pd.Timedelta(hours=2)
+
+
+def stale(df):
+    lag = pd.to_datetime(df['start_time_utc'], utc=True) - pd.to_datetime(df['close_ts'], utc=True)
+    return lag > MAX_STALE  # ohne close_ts (NaT): nicht veraltet
 
 
 def evaluable(df, min_volume=0.0):
-    df = df[df['winner'].isin(['a', 'b']) & df['close_price_a'].notna()]
+    df = df[df['winner'].isin(['a', 'b']) & df['close_price_a'].notna() & ~stale(df)]
     if min_volume:
         df = df[df['volume'].fillna(0) >= min_volume]
     return df.assign(y=(df['winner'] == 'a').astype(float))
@@ -39,7 +47,9 @@ def overview(df, venue):
     return {
         'venue': venue,
         'märkte': len(df),
-        'mit_sieger': len(ev),
+        'mit_sieger': int(df['winner'].isin(['a', 'b']).sum()),
+        'ausgewertet': len(ev),
+        'closing_veraltet': int(stale(df).sum()),
         'von': df['start_time_utc'].min(),
         'bis': df['start_time_utc'].max(),
         'volumen_median': float(df['volume'].median()) if df['volume'].notna().any() else np.nan,
@@ -111,8 +121,11 @@ def vs_pinnacle(df, venue, matches, min_volume=0.0, price_col='close_price_a'):
     boot = metrics.paired_bootstrap(loss_v, loss_p)
 
     profile = get_venue(venue)
-    cost_a = np.where(m['close_ask_a'].notna(), m['close_ask_a'], p) if price_col == 'close_price_a' else p
-    cost_b = np.where(m['close_bid_a'].notna(), 1 - m['close_bid_a'], 1 - p) if price_col == 'close_price_a' else 1 - p
+    # Kauf zum Ask, wo es eins gibt (Kalshi-Closing), sonst Mitte plus halber Spread des Venue-Profils
+    half = profile.spread / 2 if profile.spread else 0.01
+    has_ba = (m['close_ask_a'].notna() & m['close_bid_a'].notna()).to_numpy() if price_col == 'close_price_a' else False
+    cost_a = np.where(has_ba, m['close_ask_a'], p + half)
+    cost_b = np.where(has_ba, 1 - m['close_bid_a'], 1 - p + half)
     ok = (cost_a > 0.01) & (cost_a < 0.99) & (cost_b > 0.01) & (cost_b < 0.99)
     net_a = profile.net_odds_from_gross(1 / np.clip(cost_a, 0.01, 0.99))
     net_b = profile.net_odds_from_gross(1 / np.clip(cost_b, 0.01, 0.99))
@@ -191,7 +204,7 @@ def report(min_volume=0.0, history_root=HISTORY_DIR, snapshot_root=SNAPSHOT_DIR,
         log("\n=== Gegen Pinnacle-Closing ohne Marge (gleiche Matches, ATP aus tennis-data) ===")
         log(_fmt(out['pinnacle']))
         log("ll_diff < 0: Venue besser als Pinnacle. anteil_edge/yield_flat: Kauf zum Ask (Kalshi) bzw. zur "
-            "Mitte (Polymarket, historisch kein Ask) nach Gebühren, wenn Pinnacle-fair × Netto-Quote > 1. "
+            "Mitte + 1 Cent (Polymarket, historisch kein Ask) nach Gebühren, wenn Pinnacle-fair × Netto-Quote > 1. "
             "Pinnacle-Closing ist zeitlich später als der PM-Preis vor der geplanten Startzeit.")
     else:
         log("\n(data/matches.csv fehlt, kein Abgleich. Erst python -m src.update_data)")

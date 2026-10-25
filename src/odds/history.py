@@ -115,7 +115,7 @@ def polymarket_row(info, history, loaded):
     if oc is None:
         return None
     return {'venue': polymarket.VENUE, 'event_id': info['event_id'], 'market_id': info['token_a'],
-            'tour': info['tour'], 'level': None, 'tourney': info['tourney'], 'start_time_utc': start,
+            'tour': info['tour'], 'level': info['level'], 'tourney': info['tourney'], 'start_time_utc': start,
             'player_a': info['player_a'], 'player_b': info['player_b'], **oc, 'close_last_a': oc['close_price_a'],
             'volume': info['volume'], 'winner': info['winner'], 'source_url': info['source_url'], 'loaded_utc': loaded}
 

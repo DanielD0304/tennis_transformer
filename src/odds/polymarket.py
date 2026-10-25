@@ -93,6 +93,11 @@ def tour_of(event):
     prefix = str(event.get('slug') or '').split('-')[0]
     if prefix in SERIES:  # 'atp-mayot-cassone-2026-09-26'
         return prefix
+    league = str((event.get('eventMetadata') or {}).get('league') or event.get('title') or '')
+    if prefix == 'itf' and re.match(r"W\d", league):  # ITF 'W15 Monastir' (Frauen), 'M15 Baku' (Männer)
+        return 'wta'
+    if prefix == 'itf' and re.match(r"M\d", league):
+        return 'atp'
     for tag in event.get('tags') or []:
         if str(tag.get('id')) in TAG_TOURS:
             return TAG_TOURS[str(tag['id'])]
@@ -134,6 +139,7 @@ def match_info(event):
         'player_a': players[0],
         'player_b': players[1],
         'tour': tour_of(event),
+        'level': 'itf' if str(event.get('slug') or '').startswith('itf-') else None,
         'tourney': meta.get('league') or (title.rsplit(": ", 1)[0] if ": " in title else None),
         'start_time_utc': utc(m.get('gameStartTime') or event.get('startTime')),
         'created_utc': utc(m.get('startDate') or event.get('startDate') or m.get('createdAt')),
