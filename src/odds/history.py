@@ -120,7 +120,7 @@ def polymarket_row(info, history, loaded):
             'volume': info['volume'], 'winner': info['winner'], 'source_url': info['source_url'], 'loaded_utc': loaded}
 
 
-def load_polymarket(client, known=(), since=None, limit=None, workers=6, log=print):
+def load_polymarket(client, known=(), since=None, limit=None, workers=24, log=print, save=None):
     log("Polymarket: geschlossene Tennis-Events laden ...")
     events = polymarket_events(client, log)
     infos = [i for i in map(polymarket.match_info, events) if i and i['closed'] and i['start_time_utc']]
@@ -140,7 +140,7 @@ def load_polymarket(client, known=(), since=None, limit=None, workers=6, log=pri
             'endTs': int((start + timedelta(hours=1)).timestamp()), 'fidelity': POLY_FIDELITY})
         return polymarket_row(info, history, loaded)
 
-    return _run(one, todo, workers, log)
+    return _run(one, todo, workers, log, save)
 
 
 # -------------------------------------------------------------------- Kalshi
@@ -172,7 +172,7 @@ def kalshi_row(event, milestone, market_a, market_b, candles, loaded):
             'source_url': f"{kalshi.API}/events/{event}", 'loaded_utc': loaded}
 
 
-def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=6, log=print):
+def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=8, log=print, save=None):
     since = since or datetime(2024, 1, 1, tzinfo=timezone.utc)
     log("Kalshi: Milestones laden ...")
     cutoff = now_utc() - SETTLE_DELAY
@@ -207,13 +207,14 @@ def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS,
             url = f"{kalshi.API}/series/{event.split('-')[0]}/markets/{a['ticker']}/candlesticks"
         return kalshi_row(event, milestone, a, b, client.get_json(url, params), loaded)
 
-    return _run(one, todo, workers, log)
+    return _run(one, todo, workers, log, save)
 
 
 # --------------------------------------------------------------- Ablauf
 
-def _run(fn, items, workers, log):
-    rows, errors = [], 0
+def _run(fn, items, workers, log, save=None, every=2000):
+    """fn parallel auf items anwenden. save(rows) sichert alle `every` Zeilen und am Ende (Abbruch kostet wenig)."""
+    rows, errors, saved = [], 0, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(fn, x) for x in items]
         for i, f in enumerate(as_completed(futures), 1):
@@ -226,8 +227,13 @@ def _run(fn, items, workers, log):
                 continue
             if row:
                 rows.append(row)
+            if save and len(rows) - saved >= every:
+                save(rows[saved:])
+                saved = len(rows)
             if i % 1000 == 0:
                 log(f"    {i}/{len(items)} geladen, {len(rows)} mit Preis vor Start")
+    if save and len(rows) > saved:
+        save(rows[saved:])
     if errors:
         log(f"  {errors} Märkte mit Fehler übersprungen")
     return rows
@@ -261,7 +267,7 @@ def save_history(venue, rows, root=HISTORY_DIR):
 
 
 LOADERS = {'polymarket': load_polymarket, 'kalshi': load_kalshi}
-RATE = {'polymarket': 8, 'kalshi': 4}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
+RATE = {'polymarket': 15, 'kalshi': 4}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
 
 
 def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAULT_LEVELS, refresh=False,
@@ -273,8 +279,9 @@ def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAU
         try:
             known = set() if refresh else set(read_history(venue, root)['event_id'])
             kwargs = {'levels': levels} if venue == 'kalshi' else {}
-            rows = LOADERS[venue](client, known=known, since=since, limit=limit, log=log, **kwargs)
-            df = save_history(venue, rows, root)
+            rows = LOADERS[venue](client, known=known, since=since, limit=limit, log=log,
+                                  save=lambda chunk, v=venue: save_history(v, chunk, root), **kwargs)
+            df = read_history(venue, root)
             log(f"  {venue}: {len(rows)} neue Matches, insgesamt {len(df)} in {history_path(venue, root)} "
                 f"({sum(client.calls.values())} Anfragen)")
             result[venue] = df
