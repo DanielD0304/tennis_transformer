@@ -7,6 +7,8 @@ from django.shortcuts import render
 from .sites import FOOTBALL_SITES, TENNIS_SITES, scrape_all_sites
 
 SURFACES = ['Hard', 'Clay', 'Grass', 'Carpet']
+# Auto: pro Match aus dem laufenden Turnier der Spieler (MatchPredictor.surface_for), sonst Override
+AUTO = 'Auto'
 
 
 def scrape_football():
@@ -30,9 +32,9 @@ def fetch_and_process_odds(request):
 
 
 def tennis_value_bets(request):
-    surface = request.GET.get('surface', 'Hard')
+    surface = request.GET.get('surface', AUTO)
     if surface not in SURFACES:
-        surface = 'Hard'
+        surface = AUTO
     try:
         min_ev = float(request.GET.get('min_ev', 1.05))
     except ValueError:
@@ -42,7 +44,7 @@ def tennis_value_bets(request):
 
     error = None
     try:
-        add_predictions(matches, get_predictor(), surface)
+        add_predictions(matches, get_predictor(), None if surface == AUTO else surface)
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
 
@@ -50,7 +52,7 @@ def tennis_value_bets(request):
         'matches': matches,
         'bets': value_bets(matches, min_ev),
         'surface': surface,
-        'surfaces': SURFACES,
+        'surfaces': [AUTO] + SURFACES,
         'min_ev': min_ev,
         'error': error,
     })

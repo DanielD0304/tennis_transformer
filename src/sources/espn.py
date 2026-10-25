@@ -1,6 +1,6 @@
 """
 ESPN-Scoreboard (öffentliche, aber undokumentierte JSON-Schnittstelle): jedes beendete
-ATP-Match innerhalb von Stunden, auch im laufenden Turnier. Keine Aufschlag-Stats,
+ATP- bzw. WTA-Match innerhalb von Stunden, auch im laufenden Turnier. Keine Aufschlag-Stats,
 kein Ranking und kein Untergrund – das ergänzt build.py aus den anderen Quellen.
 
 Ein Abruf für ein Datum liefert alle an dem Tag laufenden Turniere mit allen Runden.
@@ -14,8 +14,10 @@ from datetime import timedelta
 
 from .common import RAW_DIR, ROUND_ORDER, http_get, round_code, yyyymmdd
 
-SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard?dates={}"
+SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/tennis/{tour}/scoreboard?dates={day}"
 DIR = os.path.join(RAW_DIR, "espn")
+DIRS = {'atp': DIR, 'wta': os.path.join(RAW_DIR, "espn_wta")}
+SINGLES = {'atp': "Men's Singles", 'wta': "Women's Singles"}
 
 FINISHED = {'Final': 'completed', 'Retired': 'RET', 'Walkover': 'W/O', 'Default': 'DEF'}
 GRAND_SLAMS = ('Australian Open', 'Roland Garros', 'French Open', 'Wimbledon', 'US Open')
@@ -23,22 +25,22 @@ GRAND_SLAMS = ('Australian Open', 'Roland Garros', 'French Open', 'Wimbledon', '
 EXCLUDED_EVENTS = ('Laver Cup', 'Six Kings Slam', 'Exhibition')
 
 
-def path(day):
-    return os.path.join(DIR, f"{day:%Y%m%d}.json")
+def path(day, tour='atp'):
+    return os.path.join(DIRS[tour], f"{day:%Y%m%d}.json")
 
 
-def download(start, end, refresh_from=None, pause=0.5):
+def download(start, end, refresh_from=None, pause=0.5, tour='atp'):
     """
     Lädt die Scoreboards von start bis end (inklusive). Vorhandene Tage werden übersprungen,
     außer sie liegen ab refresh_from (die letzten Tage ändern sich noch).
     """
-    os.makedirs(DIR, exist_ok=True)
+    os.makedirs(DIRS[tour], exist_ok=True)
     loaded = []
     day = start
     while day <= end:
-        p = path(day)
+        p = path(day, tour)
         if not os.path.exists(p) or (refresh_from and day >= refresh_from):
-            r = http_get(SCOREBOARD_URL.format(f"{day:%Y%m%d}"))
+            r = http_get(SCOREBOARD_URL.format(tour=tour, day=f"{day:%Y%m%d}"))
             if r is not None:
                 with open(p, "w", encoding="utf-8") as f:
                     f.write(r.text)
@@ -60,8 +62,8 @@ def _score(winner, loser):
     return " ".join(sets)
 
 
-def parse(scoreboard):
-    """ESPN-JSON -> Zeilen im gemeinsamen Schema (nur Herren-Einzel Hauptfeld, nur beendete Matches)."""
+def parse(scoreboard, tour='atp'):
+    """ESPN-JSON -> Zeilen im gemeinsamen Schema (nur Einzel der Tour im Hauptfeld, nur beendete Matches)."""
     rows = []
     for event in scoreboard.get('events', []):
         name = event.get('name', '')
@@ -70,7 +72,7 @@ def parse(scoreboard):
         venue = (event.get('venue') or {}).get('displayName', '')
         start = yyyymmdd(event.get('date'))
         for grouping in event.get('groupings', []):
-            if grouping.get('grouping', {}).get('displayName') != "Men's Singles":
+            if grouping.get('grouping', {}).get('displayName') != SINGLES[tour]:
                 continue
             comps = [c for c in grouping.get('competitions', [])
                      if 'qualifying' not in c.get('round', {}).get('displayName', '').lower()]
@@ -95,24 +97,26 @@ def parse(scoreboard):
 
                 score = "W/O" if status == 'W/O' else _score(winner, loser) + (" RET" if status == 'RET' else "")
                 rows.append({
+                    'tour': tour,
                     'espn_id': c.get('id'),
                     'tourney_id': f"espn-{event.get('id')}",
                     'tourney_name': name,
                     'tourney_date': start,
                     'match_date': yyyymmdd(c.get('date')),
                     'round': rnd,
-                    'best_of': 5 if any(s in name for s in GRAND_SLAMS) else 3,
+                    'best_of': 5 if tour == 'atp' and any(s in name for s in GRAND_SLAMS) else 3,
                     'winner_name': winner['athlete'].get('displayName', '').strip(),
                     'loser_name': loser['athlete'].get('displayName', '').strip(),
                     'score': score.strip(),
                     'status': status,
                     'location': venue.split(',')[0].strip(),
+                    'country': venue.split(',')[-1].strip() if ',' in venue else '',
                     'source': 'espn',
                 })
     return rows
 
 
-def load(start, end):
+def load(start, end, tour='atp'):
     """
     Alle Matches aus den gespeicherten Tagen. Ein Match taucht an mehreren Tagen auf,
     es zählt der neueste Stand.
@@ -120,11 +124,11 @@ def load(start, end):
     by_id = {}
     day = start
     while day <= end:
-        p = path(day)
+        p = path(day, tour)
         if os.path.exists(p):
             try:
                 with open(p, encoding="utf-8") as f:
-                    for row in parse(json.load(f)):
+                    for row in parse(json.load(f), tour):
                         by_id[row['espn_id']] = row
             except (OSError, ValueError):
                 pass

@@ -9,14 +9,26 @@ import os
 from .loss import FocalLoss
 
 
+def _has_current_features(samples):
+    """Passen gespeicherte Samples zu preprocessing.FEATURE_NAMES (z.B. nach neuen Features)?"""
+    for s in samples[:50]:
+        for item in s['player_a_recent']:
+            return set(pre.FEATURE_NAMES) <= set(item)
+    return True
+
+
 def load_or_preprocess_data(config):
     """
     Load preprocessed data if available, otherwise preprocess and save.
     """
+    all_samples = None
     if os.path.exists(config.preprocessed_data_path):
         print(f"Loading preprocessed data from {config.preprocessed_data_path}...")
         all_samples = torch.load(config.preprocessed_data_path)
-    else:
+        if not _has_current_features(all_samples):
+            print("Gespeicherte Samples haben einen alten Feature-Satz, werden neu erzeugt.")
+            all_samples = None
+    if all_samples is None:
         print("Preprocessed data not found. Processing now...")
         from . import data_loader as dl_module
         train_years = list(range(config.data_years_start, config.test_year))
@@ -32,7 +44,8 @@ def load_or_preprocess_data(config):
         all_samples = pre.create_training_samples(
             raw_data,
             n_matches=config.n_surface_matches,
-            n_recent=config.n_recent_matches
+            n_recent=config.n_recent_matches,
+            max_rank=config.max_rank,
         )
         
         print(f"Saving to {config.preprocessed_data_path}...")

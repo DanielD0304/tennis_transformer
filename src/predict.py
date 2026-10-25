@@ -9,10 +9,14 @@ Datenbasis ist data/matches.csv (siehe src/update_data.py): Sackmann mit Aufschl
 danach tennis-data.co.uk und ESPN (jedes beendete Match, auch im laufenden Turnier, ohne Stats).
 Die Daten werden beim Start automatisch aktualisiert, wenn sie älter als 24 Stunden sind.
 
+Der Untergrund wird, wenn nicht angegeben, aus dem Turniernamen bestimmt (build._tourney_lookup),
+sonst aus dem Turnier, das beide Spieler gerade spielen. Ein expliziter Untergrund hat Vorrang.
+
 Nutzung:
     from src.predict import MatchPredictor
     p = MatchPredictor()
     p.predict("Medvedev D.", "Struff J.L.", surface="Hard")
+    p.predict("Medvedev D.", "Struff J.L.", tournament="Rolex Shanghai Masters")
 """
 
 import os
@@ -26,12 +30,16 @@ import pandas as pd
 import torch
 
 from . import data_loader as dl
+from .chronology import match_dates
 from .config import default_config
 from .dataset import DataSet
 from .elo import compute_elo_ratings
 from .model import Model
 from .names import candidate_keys, player_key
-from .preprocessing import extract_match_features, get_h2h_pct, is_walkover, pad_sequence
+from .preprocessing import (context_features, extract_match_features, get_h2h_pct, inject_context, is_home,
+                            is_walkover, pad_sequence)
+from .sources.build import VALID_SURFACES, _tourney_lookup
+from .sources.places import tourney_country
 from .train import custom_collate_fn
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +47,9 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Unter so vielen Matches in der Historie ist die Vorhersage kaum belastbar
 # (im Training wurden nur Spieler mit >= 5 Matches verwendet).
 MIN_HISTORY = 5
+# Ohne Turniernamen: das letzte Turnier beider Spieler zählt, wenn es höchstens so lange her ist
+CURRENT_TOURNEY_DAYS = 10
+DEFAULT_SURFACE = 'Hard'
 
 
 @dataclass
@@ -50,6 +61,8 @@ class Prediction:
     n_matches_a: int
     n_matches_b: int
     warnings: list = field(default_factory=list)
+    surface: str = DEFAULT_SURFACE
+    surface_source: str = 'default'  # manual, tournament, current oder default
 
 
 class MatchPredictor:
@@ -88,14 +101,27 @@ class MatchPredictor:
         df = dl.enforce_schema(df.copy())
         if 'match_num' not in df.columns:
             df['match_num'] = range(len(df))
-        df = compute_elo_ratings(df)
-        df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
+        df = compute_elo_ratings(df)  # pro Tour, in echter Reihenfolge
+        # Echtes Matchdatum (sonst Turnierstart), wie im Training
+        df['match_date_obj'] = match_dates(df)
         df = df.dropna(subset=['match_date_obj'])
-        if 'match_date' not in df.columns:
-            df['match_date'] = df['tourney_date']
-        # Echtes Matchdatum (fürs Interface); die Features rechnen wie im Training mit dem Turnierdatum
-        played_on = pd.to_datetime(df['match_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce')
-        df['played_on'] = played_on.fillna(df['match_date_obj'])
+        df['played_on'] = df['match_date_obj']
+        # Gleicher Name auf ATP und WTA: die WTA-Spielerin bekommt einen Zusatz, Historien bleiben getrennt
+        tours_of = defaultdict(set)
+        for tour, w, l in zip(df['tour'], df['winner_name'], df['loser_name']):
+            tours_of[w].add(tour)
+            tours_of[l].add(tour)
+        clash = {n for n, t in tours_of.items() if len(t) > 1}
+        if clash:
+            wta = df['tour'] == 'wta'
+            for col in ('winner_name', 'loser_name'):
+                df.loc[wta & df[col].isin(clash), col] = df.loc[wta & df[col].isin(clash), col] + " (WTA)"
+
+        rows = df[['tourney_name', 'tourney_date', 'surface']].astype(str).to_dict('records')
+        if 'location' in df.columns:
+            for r, loc in zip(rows, df['location']):
+                r['location'] = _text(loc)
+        self._surface_lookup = _tourney_lookup(rows, 'surface', VALID_SURFACES, None)
 
         self.history = defaultdict(list)
         self.h2h = {}
@@ -104,6 +130,8 @@ class MatchPredictor:
         self.matches = defaultdict(list)  # Name -> Match-Zusammenfassungen fürs Interface
         self.ranks = {}
         self.elo = {}
+        self.tour = {}  # Name -> 'atp'/'wta'
+        self.meta = {}  # Name -> {'dob', 'hand', 'ioc'} (neuester Stand)
 
         for _, row in df.iterrows():
             if is_walkover(row):
@@ -133,6 +161,11 @@ class MatchPredictor:
                     self._index[k].add(name)
 
             score = _text(row.get('score'))
+            for name, side in ((winner, 'winner'), (loser, 'loser')):
+                self.tour[name] = _text(row.get('tour')) or 'atp'
+                meta = {k: _text(row.get(f'{side}_{k}')) for k in ('dob', 'hand', 'ioc')}
+                self.meta[name] = {k: v or self.meta.get(name, {}).get(k, '') for k, v in meta.items()}
+
             for name, opp, won, rank in ((winner, loser, True, row['winner_rank']),
                                          (loser, winner, False, row['loser_rank'])):
                 self.matches[name].append({
@@ -144,10 +177,9 @@ class MatchPredictor:
                 if rank < 9999:
                     self.ranks[name] = int(rank)
 
-            # ELO nach dem Match (in df steht der Stand davor)
-            expected_w = 1 / (1 + 10 ** ((row['loser_elo'] - row['winner_elo']) / 400))
-            self.elo[winner] = row['winner_elo'] + 32 * (1 - expected_w)
-            self.elo[loser] = row['loser_elo'] - 32 * (1 - expected_w)
+            # ELO nach dem Match
+            self.elo[winner] = row['winner_elo_after']
+            self.elo[loser] = row['loser_elo_after']
 
         self.last_match_date = df['played_on'].max()
 
@@ -197,17 +229,36 @@ class MatchPredictor:
             return 0, 0
         return (stats['wins1'], stats['wins2']) if stats['p1'] == a else (stats['wins2'], stats['wins1'])
 
+    def surface_for(self, tournament=None, players=(), match_date=None):
+        """
+        Untergrund automatisch: (Untergrund, Quelle). Zuerst über den Turniernamen
+        (build._tourney_lookup auf allen Matches), sonst das laufende Turnier der Spieler
+        (letztes Match vor höchstens CURRENT_TOURNEY_DAYS Tagen), sonst DEFAULT_SURFACE.
+        """
+        if tournament:
+            found = self._surface_lookup(tournament)
+            if found:
+                return found, 'tournament'
+        day = pd.Timestamp(match_date or date.today()).date()
+        recent = [self.matches[p][-1] for p in players if self.matches.get(p)]
+        recent = [m for m in recent if 0 <= (day - m['date']).days <= CURRENT_TOURNEY_DAYS]
+        if recent:
+            return max(recent, key=lambda m: m['date'])['surface'], 'current'
+        return DEFAULT_SURFACE, 'default'
+
     # ------------------------------------------------------------ Vorhersage
 
-    def _sample(self, pA, pB, surface, match_date):
+    def _sample(self, pA, pB, surface, match_date, tourney_ioc=''):
         cfg = self.config
 
         def hist(p, h2h_val):
             full = self.history.get(p, [])
             rec = full[-cfg.n_recent_matches:][::-1]
             surf = [m for m in full if m['_surface'] == surface][-cfg.n_surface_matches:][::-1]
-            inject = lambda ms: [{**m, 'h2h_win_pct': h2h_val} for m in ms]
-            return inject(surf), inject(rec)
+            meta = self.meta.get(p, {})
+            ctx = context_features(full, match_date, h2h_val, dob=meta.get('dob'), hand=meta.get('hand'),
+                                   home=is_home(meta.get('ioc'), tourney_ioc))
+            return inject_context(surf, ctx), inject_context(rec, ctx)
 
         a_surf, a_rec = hist(pA, get_h2h_pct(pA, pB, self.h2h))
         b_surf, b_rec = hist(pB, get_h2h_pct(pB, pA, self.h2h))
@@ -228,20 +279,26 @@ class MatchPredictor:
         }
 
     @torch.no_grad()
-    def predict(self, player_a, player_b, surface="Hard", match_date=None):
+    def predict(self, player_a, player_b, surface=None, match_date=None, tournament=None):
         """
         Wahrscheinlichkeit, dass player_a gewinnt. Namen dürfen im Bookie-Format sein.
+        surface=None bestimmt den Untergrund automatisch (siehe surface_for), ein Wert überschreibt das.
         Gibt None zurück, wenn ein Spieler nicht in den Daten ist.
         """
         pA, pB = self.resolve(player_a), self.resolve(player_b)
         if pA is None or pB is None or pA == pB:
             return None
         match_date = pd.Timestamp(match_date or date.today())
+        if surface:
+            surface_source = 'manual'
+        else:
+            surface, surface_source = self.surface_for(tournament, (pA, pB), match_date)
+        tourney_ioc = tourney_country(tournament) if tournament else ''
 
         # Beide Reihenfolgen rechnen und mitteln, damit die A/B-Position keine Rolle spielt
         batch = custom_collate_fn([DataSet([s])[0] for s in (
-            self._sample(pA, pB, surface, match_date),
-            self._sample(pB, pA, surface, match_date),
+            self._sample(pA, pB, surface, match_date, tourney_ioc),
+            self._sample(pB, pA, surface, match_date, tourney_ioc),
         )])
         keys = ['player_a_surface', 'player_a_recent', 'player_b_surface', 'player_b_recent']
         features = torch.cat([batch[k] for k in keys], dim=1).to(self.device)
@@ -256,7 +313,9 @@ class MatchPredictor:
 
         n_a, n_b = len(self.history[pA]), len(self.history[pB])
         warnings = [f"{p}: nur {n} Matches in der Historie" for p, n in ((pA, n_a), (pB, n_b)) if n < MIN_HISTORY]
-        return Prediction(pA, pB, prob_a, 1 - prob_a, n_a, n_b, warnings)
+        if self.tour.get(pA) != self.tour.get(pB):
+            warnings.append(f"{pA} und {pB} spielen auf verschiedenen Touren")
+        return Prediction(pA, pB, prob_a, 1 - prob_a, n_a, n_b, warnings, surface, surface_source)
 
 
 def _flip_score(score):

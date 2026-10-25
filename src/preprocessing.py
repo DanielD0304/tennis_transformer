@@ -17,6 +17,17 @@ import math
 import random
 import pandas as pd
 from collections import defaultdict
+from functools import lru_cache
+
+from .chronology import chronological, match_dates
+from .score import parse_score
+
+# Matches, bei denen ein Spieler schlechter gerankt ist, fließen nicht als Trainings-Sample ein
+# (in die Historie schon). Früher Top 200, gelockert für mehr Daten (vor allem WTA).
+MAX_RANK = 500
+# Fehlt die Spielzeit (tennis-data, ESPN), wird sie für die Müdigkeit aus den Games geschätzt
+MINUTES_PER_GAME = 4.4
+FATIGUE_WINDOWS = (7, 14)
 
 # Feature names used for each match in the history
 # Updated to include ELO and opponent rank features
@@ -26,7 +37,15 @@ FEATURE_NAMES = [
     'bp_convert_pct', 'bp_save_pct', 'return_pts_won_pct', 'service_pts_won_pct',
     'h2h_win_pct',
     'surf_hard', 'surf_clay', 'surf_grass', 'surf_other',
-    'has_stats'
+    'has_stats',
+    # Aus dem Spielstand (alle Quellen, auch live)
+    'game_share', 'set_share', 'tiebreaks', 'n_sets', 'minutes', 'has_minutes', 'has_score', 'retired',
+    # Match-Umstände
+    'best_of_5', 'indoor', 'home',
+    # Kontext des vorherzusagenden Matches (wie h2h_win_pct in jedes Historien-Match geschrieben)
+    'fatigue_matches_7d', 'fatigue_sets_7d', 'fatigue_minutes_7d',
+    'fatigue_matches_14d', 'fatigue_sets_14d', 'fatigue_minutes_14d',
+    'age', 'left_handed', 'ctx_home',
 ]
 # Features, die aus der Aufschlag-Statistik kommen. Fehlen die Stats (tennis-data, ESPN),
 # sind sie 0 und has_stats ist 0, damit das Modell "keine Daten" von "0 Aces" unterscheiden kann.
@@ -45,6 +64,85 @@ DEFAULT_SURF = [1, 0, 0, 0]
 def is_walkover(row):
     """Kampflose Siege sind keine gespielten Matches und fließen nicht in Historie/ELO ein."""
     return str(row.get('status', '')) == 'W/O' or 'W/O' in str(row.get('score', ''))
+
+
+@lru_cache(maxsize=200_000)
+def _score(score):
+    return parse_score(score)
+
+
+def _num(value, default=0.0):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return default if math.isnan(v) else v
+
+
+def _text(value):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ''
+    return str(value)
+
+
+def player_key(row, name):
+    """Historien, H2H und Elo laufen getrennt pro Tour."""
+    return (_text(row.get('tour')) or 'atp', name)
+
+
+def is_home(ioc, tourney_ioc):
+    return 1 if ioc and tourney_ioc and ioc == tourney_ioc else 0
+
+
+def age_years(dob, current_date):
+    """Alter am Matchtag in Jahren (None, wenn das Geburtsdatum fehlt)."""
+    dob = _text(dob)[:8]
+    if len(dob) != 8 or current_date is None or pd.isna(current_date) or not dob.isdigit():
+        return None
+    try:
+        born = pd.Timestamp(f"{dob[:4]}-{dob[4:6]}-{dob[6:8]}")
+    except ValueError:
+        return None
+    return (current_date - born).days / 365.25
+
+
+def fatigue(history, current_date, days):
+    """(Matches, Sätze, Minuten) in den letzten `days` Tagen VOR current_date (nur Historie)."""
+    if not history or current_date is None or pd.isna(current_date):
+        return 0, 0, 0.0
+    threshold = current_date - pd.Timedelta(days=days)
+    n = sets = minutes = 0
+    for match in reversed(history):
+        d = match.get('_date_obj')
+        if d is None or pd.isna(d):
+            continue
+        if d < threshold:
+            break
+        if d > current_date:
+            continue  # darf nicht vorkommen (Historie liegt vor dem Match), sicherheitshalber
+        n += 1
+        sets += match.get('_sets', 0)
+        minutes += match.get('_minutes', 0.0)
+    return n, sets, minutes
+
+
+def context_features(history, current_date, h2h_pct, dob=None, hand=None, home=0):
+    """Werte zum vorherzusagenden Match, die in jedes Historien-Match geschrieben werden."""
+    ctx = {'h2h_win_pct': h2h_pct}
+    for days in FATIGUE_WINDOWS:
+        n, sets, minutes = fatigue(history, current_date, days)
+        ctx[f'fatigue_matches_{days}d'] = n / 5.0
+        ctx[f'fatigue_sets_{days}d'] = sets / 15.0
+        ctx[f'fatigue_minutes_{days}d'] = minutes / 600.0
+    age = age_years(dob, current_date)
+    ctx['age'] = age / 40.0 if age is not None else 0.0
+    ctx['left_handed'] = 1 if _text(hand) == 'L' else 0
+    ctx['ctx_home'] = home
+    return ctx
+
+
+def inject_context(matches, ctx):
+    return [{**m, **ctx} for m in matches]
 
 
 def safe_div(a, b):
@@ -104,6 +202,7 @@ def extract_match_features(row, player_role, current_h2h_pct):
         won = 0
         opp_elo_col = "winner_elo"
         own_elo_col = "loser_elo"
+    side = "winner" if won else "loser"
     
     # --- Feature Extraction ---
     
@@ -140,6 +239,13 @@ def extract_match_features(row, player_role, current_h2h_pct):
 
     # 4. Surface One-Hot
     surf_vec = SURFACE_MAP.get(row['surface'], DEFAULT_SURF)
+
+    # 5. Spielstand (alle Zahlen im Score aus Sicht des Siegers)
+    score = _score(_text(row.get('score')))
+    best_of = int(_num(row.get('best_of'), 3)) or 3
+    minutes = _num(row.get('minutes'))
+    games = score.games_w + score.games_l
+    est_minutes = minutes if minutes > 0 else games * MINUTES_PER_GAME
     
     return {
         'won': won,
@@ -161,9 +267,22 @@ def extract_match_features(row, player_role, current_h2h_pct):
         'surf_grass': surf_vec[2],
         'surf_other': surf_vec[3],
         'has_stats': 1 if svpt > 0 else 0,
-        
+        'game_share': score.game_share(bool(won)),
+        'set_share': score.set_share(bool(won)),
+        'tiebreaks': score.tiebreaks / 3.0,
+        'n_sets': score.n_sets / best_of,
+        'minutes': minutes / 180.0,
+        'has_minutes': 1 if minutes > 0 else 0,
+        'has_score': 1 if score.valid else 0,
+        'retired': 1 if score.retired or str(row.get('status', '')) in ('RET', 'DEF') else 0,
+        'best_of_5': 1 if best_of == 5 else 0,
+        'indoor': 1 if _text(row.get('court')) == 'Indoor' else 0,
+        'home': is_home(_text(row.get(f'{side}_ioc')), _text(row.get('tourney_ioc'))),
+
         '_date_obj': row.get('match_date_obj', None),
-        '_surface': row['surface']
+        '_surface': row['surface'],
+        '_sets': score.n_sets,
+        '_minutes': est_minutes,
     }
 
 
@@ -198,8 +317,8 @@ def pad_sequence(sequence, max_len, current_date=None):
         else:
             new_item['days_since_match'] = 0.0
             
-        new_item.pop('_date_obj', None)
-        new_item.pop('_surface', None)
+        for k in [k for k in new_item if k.startswith('_')]:
+            new_item.pop(k)
         processed_seq.append(new_item)
 
     actual_len = len(processed_seq)
@@ -240,7 +359,7 @@ def count_matches_in_period(history, current_date, days=90):
         
     return count
 
-def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
+def create_training_samples(df, n_matches=10, n_recent=15, seed=42, max_rank=MAX_RANK):
     """
     Create training samples from match data for the Transformer model.
     
@@ -259,6 +378,9 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
         df (pd.DataFrame): DataFrame containing match data
         n_matches (int): Number of surface-specific matches (default: 10)
         n_recent (int): Number of recent matches (default: 15)
+        max_rank (int): Beide Spieler müssen mindestens so gut gerankt sein (Standard MAX_RANK)
+
+    Historien und H2H laufen getrennt pro Tour, Reihenfolge nach echtem Matchdatum (chronology.py).
     
     Returns:
         list[dict]: List of training samples, each containing:
@@ -274,9 +396,9 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
     """
     print("Preprocessing data (Optimized Speed)...")
     
-    # 1. Datumskorrektur & Sortierung
-    df['match_date_obj'] = pd.to_datetime(df['tourney_date'], format='%Y%m%d', errors='coerce')
-    df = df.sort_values(['tourney_date', 'match_num'] if 'match_num' in df.columns else ['tourney_date'])
+    # 1. Echtes Matchdatum (sonst Turnierstart) & Sortierung
+    df['match_date_obj'] = match_dates(df)
+    df = chronological(df)
 
     player_history = defaultdict(list)
     
@@ -287,8 +409,8 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
     for index, row in df.iterrows():
         if is_walkover(row):
             continue
-        winner = row['winner_name']
-        loser = row['loser_name']
+        winner = player_key(row, row['winner_name'])
+        loser = player_key(row, row['loser_name'])
         surface = row['surface']
         current_date = row['match_date_obj']
         year = int(str(row['tourney_date'])[:4])
@@ -305,7 +427,7 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
         r_w = row['winner_rank'] if not pd.isna(row['winner_rank']) else 9999
         r_l = row['loser_rank'] if not pd.isna(row['loser_rank']) else 9999
         
-        if r_w <= 200 and r_l <= 200: # Top 200 Filter
+        if r_w <= max_rank and r_l <= max_rank:
             # Check Activity
             pA_hist = player_history.get(winner, [])
             pB_hist = player_history.get(loser, [])
@@ -316,44 +438,35 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
             pB_active = count_matches_in_period(pB_hist, current_date, days=90) >= 3
             
             if has_history and pA_active and pB_active:
+                tourney_ioc = _text(row.get('tourney_ioc'))
+
+                def ctx(p, side, h2h_val):
+                    return context_features(player_history.get(p, []), current_date, h2h_val,
+                                            dob=row.get(f'{side}_dob'), hand=row.get(f'{side}_hand'),
+                                            home=is_home(_text(row.get(f'{side}_ioc')), tourney_ioc))
+
                 if rng.random() > 0.5:
                     pA, pB = winner, loser
                     label = 1
                     odds_a = row.get('B365W', 0.0)
                     odds_b = row.get('B365L', 0.0)
-                    pA_current_h2h = win_h2h_pct
-                    pB_current_h2h = los_h2h_pct
+                    pA_ctx, pB_ctx = ctx(winner, 'winner', win_h2h_pct), ctx(loser, 'loser', los_h2h_pct)
                 else:
                     pA, pB = loser, winner
                     label = 0
                     odds_a = row.get('B365L', 0.0)
                     odds_b = row.get('B365W', 0.0)
-                    pA_current_h2h = los_h2h_pct
-                    pB_current_h2h = win_h2h_pct
+                    pA_ctx, pB_ctx = ctx(loser, 'loser', los_h2h_pct), ctx(winner, 'winner', win_h2h_pct)
                 
-                def get_hist_with_h2h(p, surf, current_h2h_val):
+                def get_hist_with_context(p, surf, context):
                     full = player_history.get(p, [])
-                    
-                    # Kopie erstellen, damit wir das Original nicht ändern!
-                    # Wir brauchen deepcopy, da es eine Liste von Dicts ist
-                    import copy
-                    
-                    # Filtern
                     rec_matches = full[-n_recent:][::-1]
                     surf_matches = [m for m in full if m['_surface'] == surf][-n_matches:][::-1]
-                    
-                    def inject(matches, val):
-                        injected = []
-                        for m in matches:
-                            m_copy = m.copy() # Flache Kopie reicht hier für das Dict
-                            m_copy['h2h_win_pct'] = val
-                            injected.append(m_copy)
-                        return injected
-
-                    return inject(surf_matches, current_h2h_val), inject(rec_matches, current_h2h_val)
+                    # inject_context kopiert die Dicts, die Historie selbst bleibt unverändert
+                    return inject_context(surf_matches, context), inject_context(rec_matches, context)
                 
-                pA_surf_hist, pA_rec_hist = get_hist_with_h2h(pA, surface, pA_current_h2h)
-                pB_surf_hist, pB_rec_hist = get_hist_with_h2h(pB, surface, pB_current_h2h)
+                pA_surf_hist, pA_rec_hist = get_hist_with_context(pA, surface, pA_ctx)
+                pB_surf_hist, pB_rec_hist = get_hist_with_context(pB, surface, pB_ctx)
                 
                 pA_surf, pA_s_mask = pad_sequence(pA_surf_hist, n_matches, current_date)
                 pA_rec, pA_r_mask = pad_sequence(pA_rec_hist, n_recent, current_date)
@@ -392,7 +505,7 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
     print(f"Preprocessing Done. Created {len(samples)} samples.")
     return samples
 
-def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
+def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15, max_rank=MAX_RANK):
     """
     Führt das Preprocessing einmal aus und speichert die Samples als .pt-Datei.
     Args:
@@ -404,7 +517,7 @@ def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15):
     from .elo import compute_elo_ratings
     df = compute_elo_ratings(df)
     
-    samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent)
+    samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent, max_rank=max_rank)
     torch.save(samples, out_path)
     print(f"Saved {len(samples)} samples to {out_path}")
 

@@ -4,6 +4,10 @@ Datum < Fensterbeginn gefittet und sagen dann das Fenster vorher.
 
     python -m src.evaluation.backtest --start 2020 --end 2025 --models market,rank,elo,blend
     python -m src.evaluation.backtest --start 2024 --end 2025 --models market,rank,elo,transformer,blend
+    python -m src.evaluation.backtest --start 2020 --end 2026 --tour wta
+
+Jede Tour läuft als eigener Backtest (eigene Fits, eigenes Elo); --tour all (Standard) rechnet alle
+Touren nacheinander und gibt die Tabellen pro Tour aus.
 
 Ergebnis: data/eval/predictions.parquet (eine Zeile pro Match, p je Predictor, alle Quoten aus
 Sicht von Spieler A). Danach werden die Metrik-Tabelle pro Modell und Jahr, der Signifikanztest
@@ -162,17 +166,24 @@ def main(argv=None):
     ap.add_argument('--bootstrap', type=int, default=2000)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default=PREDICTIONS_PATH)
+    ap.add_argument('--tour', default='all', help="atp | wta | all (jede Tour getrennt)")
     ap.add_argument('--no-refresh', action='store_true', help="data/matches.csv nicht aktualisieren")
     args = ap.parse_args(argv)
 
     df = load_matches(first_year=min(args.data_start, args.start), last_year=args.end, refresh=not args.no_refresh)
-    predictions, names = run(df, args.models.split(','), args.start, args.end, freq=args.freq,
-                             model_path=args.model_path)
-    print(f"Vorhersagen gespeichert: {save(predictions, args.out)} ({len(predictions)} Matches)")
+    tours = sorted(df['tour'].unique()) if args.tour == 'all' else [args.tour]
     staking = betting.Kelly(args.kelly, args.kelly_cap) if args.kelly else betting.Flat()
     venues = [VENUES[v.strip()] for v in args.venues.split(',') if v.strip()]
-    report(predictions, names, bet_model=args.bet_model, venues=venues, staking=staking,
-           n_boot=args.bootstrap, seed=args.seed)
+    results = []
+    for tour in tours:
+        print(f"\n{'#' * 20} {tour.upper()} {'#' * 20}")
+        predictions, names = run(df[df['tour'] == tour], args.models.split(','), args.start, args.end,
+                                 freq=args.freq, model_path=args.model_path)
+        report(predictions, names, bet_model=args.bet_model, venues=venues, staking=staking,
+               n_boot=args.bootstrap, seed=args.seed)
+        results.append(predictions)
+    predictions = pd.concat(results, ignore_index=True)
+    print(f"Vorhersagen gespeichert: {save(predictions, args.out)} ({len(predictions)} Matches)")
 
 
 if __name__ == "__main__":

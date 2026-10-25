@@ -15,6 +15,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from ..chronology import chronological, match_dates
 from ..elo import compute_elo_ratings
 
 # Quoten-Spalten im Sieger/Verlierer-Format (tennis-data) -> Kürzel in A/B-Sicht
@@ -60,18 +61,15 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
     for col in ('winner_rank', 'loser_rank'):
         df[col] = pd.to_numeric(df.get(col), errors='coerce').fillna(MISSING_RANK)
     if with_elo:
-        df = compute_elo_ratings(df)  # Stand VOR dem Match, sortiert nach Turnierdatum
+        df = compute_elo_ratings(df)  # Stand VOR dem Match, pro Tour, in echter Reihenfolge
     else:
-        df = df.sort_values(['tourney_date', 'match_num']).reset_index(drop=True)
+        df = chronological(df).reset_index(drop=True)
 
-    tourney = pd.to_datetime(df['tourney_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce')
-    played = pd.to_datetime(df['match_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce') \
-        if 'match_date' in df.columns else pd.Series(pd.NaT, index=df.index)
     # Echtes Matchdatum, sonst Turnierstart (Sackmann kennt nur den)
-    df['date'] = played.fillna(tourney)
+    df['date'] = match_dates(df)
     df = df[df['date'].notna()].copy()
     df['year'] = df['date'].dt.year
-    df['tour'] = df['tour'] if 'tour' in df.columns else 'atp'
+    df['tour'] = df['tour'].fillna('atp') if 'tour' in df.columns else 'atp'
     status = df['status'] if 'status' in df.columns else pd.Series('completed', index=df.index)
     df['status'] = status.fillna('completed').astype(str)
     if 'score' in df.columns:
@@ -101,7 +99,7 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True):
     df['market_source'] = np.where(np.isfinite(p_ps), 'ps', np.where(np.isfinite(p_avg), 'avg', 'none'))
     # Faire Pinnacle-Wahrscheinlichkeit (nur PS, ohne Fallback): Preis-Proxy für Exchange/PM-Venues
     df['fair_ps'] = p_ps
-    return df.sort_values(['date', 'tourney_date', 'match_num'], kind='stable').reset_index(drop=True)
+    return chronological(df).reset_index(drop=True)
 
 
 # ----------------------------------------------------------------- Hilfen
@@ -190,7 +188,7 @@ class RankPredictor(Predictor):
 
 
 class EloPredictor(Predictor):
-    """Bestehendes Elo (src/elo.py, K = 32), Stand vor dem Match. Braucht keinen Fit."""
+    """Elo aus src/elo.py (K = 32, pro Tour, Aufgaben mit halbem K), Stand vor dem Match. Braucht keinen Fit."""
     name = "elo"
 
     def predict(self, window):
@@ -239,7 +237,7 @@ class TransformerPredictor(Predictor):
     fürs Checkpointing benutzt, streng out-of-sample sind erst die Jahre danach.
 
     Features wie im Training (preprocessing.create_training_samples, also auch dessen Filter:
-    Top 200, >= 5 Matches Historie, aktiv). Matches außerhalb davon bekommen NaN.
+    beide Spieler bis config.max_rank, >= 5 Matches Historie, aktiv). Matches außerhalb davon bekommen NaN.
     Beide Reihenfolgen werden gerechnet und gemittelt (Symmetrie wie in predict.py).
     """
     name = "transformer"
@@ -275,7 +273,8 @@ class TransformerPredictor(Predictor):
 
         from ..data_loader import enforce_schema
         raw = enforce_schema(matches.copy())  # Stats-Spalten fehlen evtl. (z.B. Tests)
-        samples = create_training_samples(raw, n_matches=cfg.n_surface_matches, n_recent=cfg.n_recent_matches)
+        samples = create_training_samples(raw, n_matches=cfg.n_surface_matches, n_recent=cfg.n_recent_matches,
+                                          max_rank=cfg.max_rank)
         samples = [s for s in samples if s['year'] > cfg.train_years_end]
 
         def swapped(s):

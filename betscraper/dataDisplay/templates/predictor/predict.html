@@ -32,6 +32,7 @@
 <form method="get" class="inline card">
     <label>Spieler A <input name="a" value="{{ a }}" list="players" placeholder="z.B. Sinner J." required autocomplete="off"></label>
     <label>Spieler B <input name="b" value="{{ b }}" list="players" placeholder="z.B. Alcaraz C." required autocomplete="off"></label>
+    <label>Turnier <input name="t" value="{{ t }}" placeholder="optional, z.B. Shanghai Masters" autocomplete="off"></label>
     <label>Untergrund
         <select name="surface">
             {% for s in surfaces %}<option value="{{ s }}" {% if s == surface %}selected{% endif %}>{{ s }}</option>{% endfor %}
@@ -41,7 +42,7 @@
     <button type="submit">Vorhersagen</button>
     <datalist id="players">{% for p in players %}<option value="{{ p }}">{% endfor %}</datalist>
 </form>
-{% if data_until %}<p class="muted">{{ players|length }} ATP-Spieler, Daten bis {{ data_until|date:"d.m.Y" }} (Sackmann, tennis-data.co.uk, ESPN – täglich aktualisiert). Namen in jedem Format, z.B. „Medvedev D.“, „D. Medvedev“ oder „Medvedev, D.“.</p>{% endif %}
+{% if data_until %}<p class="muted">{{ players|length }} Spieler (ATP und WTA), Daten bis {{ data_until|date:"d.m.Y" }} (Sackmann, tennis-data.co.uk, ESPN – täglich aktualisiert). Namen in jedem Format, z.B. „Medvedev D.“, „D. Medvedev“ oder „Medvedev, D.“.</p>{% endif %}
 
 {% if model_error %}
     <div class="error">
@@ -56,7 +57,7 @@
         {% else %}
             <strong>„{{ e.name }}“</strong> nicht gefunden (nur ATP-Hauptturniere sind in den Daten).
             {% if e.suggestions %}<div class="suggest">Meintest du:
-                {% for s in e.suggestions %}<a href="?a={% if e.name == a %}{{ s|urlencode }}{% else %}{{ a|urlencode }}{% endif %}&b={% if e.name == a %}{{ b|urlencode }}{% else %}{{ s|urlencode }}{% endif %}&surface={{ surface }}&date={{ date }}">{{ s }}</a>{% endfor %}
+                {% for s in e.suggestions %}<a href="?a={% if e.name == a %}{{ s|urlencode }}{% else %}{{ a|urlencode }}{% endif %}&b={% if e.name == a %}{{ b|urlencode }}{% else %}{{ s|urlencode }}{% endif %}&t={{ t|urlencode }}&surface={{ surface }}&date={{ date }}">{{ s }}</a>{% endfor %}
             </div>{% endif %}
         {% endif %}
     </div>
@@ -67,7 +68,7 @@
 <div class="card" style="margin-top: 1.2rem">
     <div class="vs">
         <span class="name" style="color: var(--a)">{{ p.player_a }}</span>
-        <span class="muted meta">{{ surface }} · {{ match_date|date:"d.m.Y" }}</span>
+        <span class="muted meta">{{ p.surface }}{% if p.surface_source == 'tournament' %} (aus Turnier){% elif p.surface_source == 'current' %} (laufendes Turnier){% elif p.surface_source == 'default' %} (Standard){% endif %} · {{ match_date|date:"d.m.Y" }}</span>
         <span class="name" style="color: var(--b)">{{ p.player_b }}</span>
     </div>
     <div class="bar" role="img" aria-label="{{ p.player_a }} {{ result.pct_a }} Prozent, {{ p.player_b }} {{ result.pct_b }} Prozent">
@@ -84,8 +85,8 @@
 </div>
 
 <div class="players">
-    {% include "predictor/player.html" with info=result.info_a cls="a" surface=surface %}
-    {% include "predictor/player.html" with info=result.info_b cls="b" surface=surface %}
+    {% include "predictor/player.html" with info=result.info_a cls="a" surface=p.surface %}
+    {% include "predictor/player.html" with info=result.info_b cls="b" surface=p.surface %}
 </div>
 {% endwith %}
 {% endif %}
