@@ -6,3 +6,4 @@ openpyxl
 django
 playwright
 pyarrow
+lightgbm

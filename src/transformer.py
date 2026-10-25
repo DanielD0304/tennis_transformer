@@ -7,8 +7,13 @@ class Transformer(nn.Module):
     Transformer encoder for sequence prediction tasks.
     Includes positional encoding, stacked encoder layers, and output head.
     """
-    def __init__(self, d_model, num_heads, num_layers, input_dim=6, max_len=50, output_dim=2):
+    def __init__(self, d_model, num_heads, num_layers, input_dim=6, max_len=50, output_dim=2, extra_dim=0):
         super(Transformer, self).__init__()
+        # Match-Features außerhalb der Sequenzen (z.B. Elo2-Logit): gehen in das [CLS]-Token und direkt in die Logits
+        self.extra_dim = extra_dim
+        if extra_dim:
+            self.extra_proj = nn.Linear(extra_dim, d_model)
+            self.extra_out = nn.Linear(extra_dim, output_dim, bias=False)
         self.input_proj = nn.Linear(input_dim, d_model)
         # 0: CLS, 1: A-Surface, 2: A-Recent, 3: B-Surface, 4: B-Recent
         self.segmentEmbedding = nn.Embedding(5, d_model)
@@ -24,13 +29,14 @@ class Transformer(nn.Module):
         self.output = nn.Linear(d_model, output_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))  # [1, 1, d_model]
         
-    def forward(self, x, positions, segments, mask=None):
+    def forward(self, x, positions, segments, mask=None, extra=None):
         """
         Forward pass for the Transformer encoder mit [CLS]-Token.
         Args:
             x: Input tensor of shape [batch, seq_len, input_dim]
             positions: Position indices tensor of shape [batch, seq_len]
             mask: Optional attention mask [batch, seq_len+1, seq_len+1]
+            extra: Optional [batch, extra_dim] (nur wenn das Modell mit extra_dim > 0 gebaut wurde)
         Returns:
             Output tensor of shape [batch, output_dim]
         """
@@ -40,6 +46,8 @@ class Transformer(nn.Module):
 
         # [CLS]-Token an den Anfang der Sequenz einfügen
         cls_tokens = self.cls_token.expand(batch_size, 1, self.d_model)  # [batch, 1, d_model]
+        if self.extra_dim:
+            cls_tokens = cls_tokens + self.extra_proj(extra).unsqueeze(1)
         x = self.input_proj(x)
         x = torch.cat([cls_tokens, x], dim=1)  # [batch, seq_len+1, d_model]
 
@@ -61,4 +69,6 @@ class Transformer(nn.Module):
             all_attn_weights.append(attn_weights)
         x = x[:, 0, :]
         x = self.output(x)
+        if self.extra_dim:
+            x = x + self.extra_out(extra)
         return x, all_attn_weights

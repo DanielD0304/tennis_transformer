@@ -16,7 +16,10 @@ STAT_COLUMNS = [
     f"{p}_{s}" for p in ("w", "l")
     for s in ("ace", "df", "svpt", "1stIn", "1stWon", "2ndWon", "SvGms", "bpSaved", "bpFaced")
 ]
-ODDS_COLUMNS = ['B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL']
+# Quoten im Sieger/Verlierer-Format (tennis-data): Bet365, Pinnacle, Durchschnitt, Maximum und
+# Betfair Exchange (BFE, ab August 2025; Pinnacle fehlt dort seit Februar 2026)
+ODDS_PAIRS = [('B365W', 'B365L'), ('PSW', 'PSL'), ('AvgW', 'AvgL'), ('MaxW', 'MaxL'), ('BFEW', 'BFEL')]
+ODDS_COLUMNS = [c for pair in ODDS_PAIRS for c in pair]
 
 TOURS = ('atp', 'wta')
 # Spieler-Metadaten (aus Sackmann *_players.csv), pro Match für Sieger und Verlierer

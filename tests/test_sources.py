@@ -99,7 +99,8 @@ def test_build_merges_and_dedupes():
     tuk_rows = [
         # Dasselbe RG-Match (spätes Matchdatum) -> Duplikat, liefert aber Quoten (vertauschte Reihenfolge)
         _row('tuk', 'Cerundolo J.M.', 'Alcaraz C.', '20260525', '20260605',
-             B365W=5.0, B365L=1.2, PSW=5.5, PSL=1.18, AvgW=5.0, AvgL=1.2, location='Paris'),
+             B365W=5.0, B365L=1.2, PSW=5.5, PSL=1.18, AvgW=5.0, AvgL=1.2, MaxW=5.8, MaxL=1.22,
+             BFEW=5.9, BFEL=1.21, location='Paris'),
         # Neues Match nach dem Sackmann-Ende
         _row('tuk', 'Alcaraz C.', 'Medvedev D.', '20261001', '20261005', surface='Hard',
              tourney_name='China Open', winner_rank=1, loser_rank=12, B365W=1.3, B365L=3.5,
@@ -129,6 +130,7 @@ def test_build_merges_and_dedupes():
     rg = next(r for r in rows if r['source'] == 'sackmann' and r['winner_name'] == 'Carlos Alcaraz')
     # Quoten getauscht, weil tennis-data das Match andersherum führt
     assert (rg['B365W'], rg['B365L'], rg['PSW'], rg['PSL']) == (1.2, 5.0, 1.18, 5.5)
+    assert (rg['BFEW'], rg['BFEL'], rg['MaxW'], rg['MaxL']) == (1.21, 5.9, 1.22, 5.8)
 
     sh = next(r for r in rows if r['source'] == 'espn')
     assert sh['surface'] == 'Hard'  # über 'shanghai' im Turniernamen
@@ -207,6 +209,45 @@ def test_espn_parse_wta():
     assert [(r['winner_name'], r['tour']) for r in rows] == [('X', 'wta')]
     assert rows[0]['best_of'] == 3
     assert rows[0]['country'] == 'China PR'
+
+
+def test_clean_exchange_and_max_odds():
+    from collections import Counter
+    base = dict(source='tuk', tourney_id='t1', tourney_date='20260301', round='R32', surface='Hard')
+    rows = [
+        # Exchange fast ohne Marge: plausibel; Max-Kurse knapp unter 100 % (Bestkurse über alle Bücher): plausibel
+        {**base, 'winner_name': 'A', 'loser_name': 'B', 'score': '6-4', 'BFEW': 1.52, 'BFEL': 2.9,
+         'MaxW': 1.58, 'MaxL': 2.85},
+        # Exchange mit 54 % Überrundung (dünner Markt) und Max-Kurse mit Tippfehler: leeren
+        {**base, 'winner_name': 'C', 'loser_name': 'D', 'score': '6-3', 'BFEW': 1.1, 'BFEL': 2.0,
+         'MaxW': 3.0, 'MaxL': 3.0},
+    ]
+    stats = Counter()
+    out = build.clean(rows, stats)
+    assert (out[0]['BFEW'], out[0]['MaxL']) == (1.52, 2.85)
+    assert (out[1]['BFEW'], out[1]['BFEL'], out[1]['MaxW'], out[1]['MaxL']) == (None, None, None, None)
+    assert stats['clean_odds_removed'] == 2
+
+
+def test_tuk_load_reads_betfair_and_max(tmp_path, monkeypatch):
+    openpyxl = __import__('pytest').importorskip('openpyxl')
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    header = ['ATP', 'Location', 'Tournament', 'Date', 'Series', 'Court', 'Surface', 'Round', 'Best of', 'Winner',
+              'Loser', 'WRank', 'LRank', 'W1', 'L1', 'W2', 'L2', 'Comment', 'B365W', 'B365L', 'PSW', 'PSL',
+              'MaxW', 'MaxL', 'AvgW', 'AvgL', 'BFEW', 'BFEL']
+    ws.append(header)
+    from datetime import datetime
+    ws.append([1, 'Doha', 'Qatar Open', datetime(2026, 2, 17), 'ATP500', 'Outdoor', 'Hard', '1st Round', 3,
+               'Sinner J.', 'Fils A.', 2, 20, 6, 4, 6, 3, 'Completed', 1.2, 4.5, None, None, 1.25, 5.0, 1.2, 4.4,
+               1.24, 5.1])
+    monkeypatch.setitem(tuk.DIRS, 'atp', str(tmp_path))
+    wb.save(tmp_path / '2026.xlsx')
+    rows = tuk.load([2026])
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r['BFEW'], r['BFEL'], r['MaxW'], r['MaxL']) == (1.24, 5.1, 1.25, 5.0)
+    assert r['PSW'] is None and r['AvgL'] == 4.4
 
 
 def test_tuk_links_per_tour():
