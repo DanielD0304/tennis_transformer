@@ -76,6 +76,7 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
     df = df[df['date'].notna()].copy()
     df['year'] = df['date'].dt.year
     df['tour'] = df['tour'].fillna('atp') if 'tour' in df.columns else 'atp'
+    df['level'] = df['level'].fillna('main').replace('', 'main') if 'level' in df.columns else 'main'
     status = df['status'] if 'status' in df.columns else pd.Series('completed', index=df.index)
     df['status'] = status.fillna('completed').astype(str)
     if 'score' in df.columns:

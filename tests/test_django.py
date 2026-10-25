@@ -173,3 +173,36 @@ def test_predict_page_without_model(client, monkeypatch):
     assert r.status_code == 200
     assert "kein Modell" in r.context['model_error']
     assert "python main.py" in r.content.decode()
+
+
+def test_paper_page_renders_empty(client, monkeypatch, tmp_path):
+    from src.paper import store
+    monkeypatch.setattr(store, "BETS_PATH", str(tmp_path / "bets.parquet"))
+    r = client.get("/scraper/paper/")
+    assert r.status_code == 200
+    assert r.context['decision']['go'] is False
+    assert "Noch keine Paper-Wetten" in r.content.decode()
+
+
+def test_paper_page_renders_bets(client, monkeypatch, tmp_path):
+    import pandas as pd
+    from src.paper import store
+    path = str(tmp_path / "bets.parquet")
+    monkeypatch.setattr(store, "BETS_PATH", path)
+    now = pd.Timestamp("2026-10-25 12:00", tz="UTC")
+    rows = []
+    for i, status in enumerate(['won', 'lost', 'void', 'open']):
+        rows.append({'bet_id': f'b{i}', 'created_utc': now, 'strategy': 'sharp' if i % 2 else 'modell',
+                     'venue': 'kalshi', 'event_id': f'e{i}', 'level': 'challenger', 'player_a': 'A A', 'player_b': 'B B',
+                     'side': 'a', 'player': 'A A', 'start_time_utc': now if i < 3 else pd.NaT, 'odds': 2.1,
+                     'net_odds': 2.05, 'p': 0.55, 'edge': 0.12, 'stake': 10.0, 'stake_flat': 10.0, 'status': status,
+                     'settled_utc': now if status != 'open' else pd.NaT,
+                     'profit': {'won': 10.5, 'lost': -10.0}.get(status, 0.0), 'clv': 0.03 if status != 'open' else None})
+    store.save_bets(pd.DataFrame(rows))
+    r = client.get("/scraper/paper/")
+    html = r.content.decode()
+    assert r.status_code == 200
+    assert "<polyline" in html and "NO-GO" in html
+    assert len(r.context['open_bets']) == 1 and len(r.context['settled_bets']) == 3
+    r = client.get("/scraper/paper/?strategy=sharp")
+    assert r.context['strategy'] == 'sharp' and len(r.context['settled_bets']) == 1

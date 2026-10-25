@@ -46,6 +46,7 @@
         <strong>🎾 Tennis Transformer</strong>
         <a href="{% url 'predict_match' %}" {% if request.resolver_match.url_name == 'predict_match' %}class="active"{% endif %}>Vorhersage</a>
         <a href="{% url 'tennis_value_bets' %}" {% if request.resolver_match.url_name == 'tennis_value_bets' %}class="active"{% endif %}>Value Bets</a>
+        <a href="{% url 'paper_trading' %}" {% if request.resolver_match.url_name == 'paper_trading' %}class="active"{% endif %}>Paper-Trading</a>
         <a href="{% url 'fetch_and_process_odds' %}" {% if request.resolver_match.url_name == 'fetch_and_process_odds' %}class="active"{% endif %}>Fußball</a>
     </nav>
     <main>{% block content %}{% endblock %}</main>

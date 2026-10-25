@@ -5,6 +5,10 @@ Datum < Fensterbeginn gefittet und sagen dann das Fenster vorher.
     python -m src.evaluation.backtest --start 2020 --end 2025 --models market,rank,elo,blend
     python -m src.evaluation.backtest --start 2024 --end 2025 --models market,rank,elo,transformer,blend
     python -m src.evaluation.backtest --start 2020 --end 2026 --tour wta
+    python -m src.evaluation.backtest --start 2024 --end 2026 --level challenger   # nur Challenger auswerten
+
+Elo, Historien und Fits laufen immer über alle Level einer Tour (Haupttour, Challenger, ITF), --level filtert
+nur die ausgewerteten Matches.
 
 Jede Tour läuft als eigener Backtest (eigene Fits, eigenes Elo); --tour all (Standard) rechnet alle
 Touren nacheinander und gibt die Tabellen pro Tour aus.
@@ -32,7 +36,7 @@ PREDICTIONS_PATH = os.path.join(REPO_ROOT, "data", "eval", "predictions.parquet"
 PREDICTION_COLUMNS = [
     'match_id', 'date', 'year', 'tour', 'tourney_name', 'surface', 'round', 'player_a', 'player_b', 'label',
     'status', 'rank_a', 'rank_b', 'elo_a', 'elo_b', 'elo2_a', 'elo2_b', 'b365_a', 'b365_b', 'ps_a', 'ps_b', 'avg_a', 'avg_b',
-    'max_a', 'max_b', 'bfe_a', 'bfe_b', 'market_source', 'fair_ps', 'tourney_level', 'best_of',
+    'max_a', 'max_b', 'bfe_a', 'bfe_b', 'market_source', 'fair_ps', 'tourney_level', 'best_of', 'level', 'source',
 ]
 DEFAULT_VENUES = ('pinnacle', 'betfair', 'bet365_de')
 FREQ = {'month': 'MS', 'week': 'W-MON', 'year': 'YS', 'quarter': 'QS'}
@@ -94,6 +98,13 @@ def run(df, models, start, end, freq='month', config=None, model_path=None, log=
     predictions = walk_forward(matches, predictors, start, end, freq=freq, log=log, warmup=warmup)
     names = [p.name for p in predictors]
     return (predictions, names, predictors) if with_predictors else (predictions, names)
+
+
+def filter_levels(predictions, levels):
+    """Nur Matches der Level (z.B. ['challenger']); None oder 'all' = alle."""
+    if not levels or 'all' in levels:
+        return predictions
+    return predictions[predictions['level'].isin(levels)].reset_index(drop=True)
 
 
 def save(predictions, path=PREDICTIONS_PATH):
@@ -238,6 +249,8 @@ def main(argv=None):
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default=PREDICTIONS_PATH)
     ap.add_argument('--tour', default='all', help="atp | wta | all (jede Tour getrennt)")
+    ap.add_argument('--level', default='main', help="main | challenger | itf | all (kommagetrennt), filtert die "
+                                                     "Auswertung; Elo und Fits nutzen immer alle Level")
     ap.add_argument('--no-refresh', action='store_true', help="data/matches.csv nicht aktualisieren")
     args = ap.parse_args(argv)
 
@@ -251,6 +264,8 @@ def main(argv=None):
         predictions, names, predictors = run(df[df['tour'] == tour], args.models.split(','), args.start, args.end,
                                              freq=args.freq, model_path=args.model_path, warmup=args.warmup,
                                              gbdt_refit=args.gbdt_refit, with_predictors=True)
+        predictions = filter_levels(predictions, args.level.split(','))
+        print(f"Ausgewertet: Level {args.level}, {len(predictions)} Matches")
         report(predictions, names, bet_model=args.bet_model, venues=venues, staking=staking,
                n_boot=args.bootstrap, seed=args.seed, predictors=predictors)
         results.append(predictions)

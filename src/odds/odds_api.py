@@ -73,13 +73,20 @@ def fetch_current(client=None, log=print, key=None):
         log(f"  Odds API übersprungen: Umgebungsvariable {KEY_ENV} ist nicht gesetzt")
         return []
     client = client or JsonClient(max_per_sec=2)
-    sports = tennis_sports(client.get_json(f"{API}/sports", {'apiKey': key}))
+    r = client.request('GET', f"{API}/sports", params={'apiKey': key})  # kostenlos, zeigt aber das Kontingent
+    sports = tennis_sports(r.json())
     ts = now_utc()
-    out, remaining = [], None
+    out, remaining, used, cost = [], r.headers.get('x-requests-remaining'), r.headers.get('x-requests-used'), 0.0
     for sport in sports:
         r = client.request('GET', f"{API}/sports/{sport}/odds", params={
             'apiKey': key, 'regions': REGIONS, 'markets': 'h2h', 'oddsFormat': 'decimal', 'dateFormat': 'iso'})
         remaining = r.headers.get('x-requests-remaining', remaining)
+        used = r.headers.get('x-requests-used', used)
+        try:
+            cost += float(r.headers.get('x-requests-last') or 0)
+        except ValueError:
+            pass
         out += parse_odds(r.json(), ts)
-    log(f"  Odds API: {len(sports)} Turniere, {len(sports) + 1} Anfragen, Kontingent übrig: {remaining}")
+    log(f"  Odds API: {len(sports)} Turniere, {len(sports) + 1} Anfragen, {cost:g} Credits verbraucht, "
+        f"Kontingent übrig: {remaining} (diesen Monat genutzt: {used})")
     return out
