@@ -1,6 +1,10 @@
 """
-tennis-data.co.uk: ATP-Ergebnisse mit Rankings, Untergrund und Quoten (u.a. Bet365, Pinnacle).
-Wird etwa einmal pro Woche nach Turnierende aktualisiert. Keine Aufschlag-Stats.
+tennis-data.co.uk: ATP- und WTA-Ergebnisse mit Rankings, Untergrund, Indoor/Outdoor und Quoten
+(u.a. Bet365, Pinnacle). Wird etwa einmal pro Woche nach Turnierende aktualisiert. Keine Aufschlag-Stats.
+
+Dateien: ATP unter data/raw/tuk/{jahr}.xlsx, WTA unter data/raw/tuk_wta/{jahr}.xlsx. Auf der Seite
+liegen die WTA-Dateien in einem eigenen Ordner mit 'w' ({jahr}w/{jahr}.xlsx), sonst gleiches Format
+(statt 'Series' heißt die Turnierstufe 'Tier'). Fehlt eine Datei, wird sie übersprungen.
 """
 import io
 import os
@@ -14,11 +18,20 @@ from .common import RAW_DIR, ROUND_ORDER, USER_AGENT, http_get, round_code, yyyy
 
 BASE_URL = "https://www.tennis-data.co.uk"
 DIR = os.path.join(RAW_DIR, "tuk")
+DIRS = {'atp': DIR, 'wta': os.path.join(RAW_DIR, "tuk_wta")}
 
 _links = None
 
 
-def url(year):
+def parse_links(html):
+    """alldata.php -> {(tour, jahr): Pfad}. WTA-Ordner enden auf 'w' (z.B. /2026w/2026.xlsx)."""
+    links = {}
+    for p, y, w in re.findall(r'href="([^"]*?/(\d{4})(w?)/\d{4}\.xlsx?)"', html, flags=re.I):
+        links.setdefault(('wta' if w else 'atp', int(y)), f"{BASE_URL}/{p.lstrip('/')}")
+    return links
+
+
+def url(year, tour='atp'):
     """
     Die Dateien liegen unter einem wechselnden Pfad (z.B. /hrjk-.../2026/2026.xlsx),
     der aktuelle Link steht auf alldata.php.
@@ -28,31 +41,36 @@ def url(year):
         _links = {}
         try:
             r = requests.get(f"{BASE_URL}/alldata.php", headers={'User-Agent': USER_AGENT}, timeout=15)
-            for p, y in re.findall(r'href="([^"]*?/(\d{4})/\d{4}\.xlsx?)"', r.text, flags=re.I):
-                _links.setdefault(int(y), f"{BASE_URL}/{p.lstrip('/')}")
+            _links = parse_links(r.text)
         except requests.RequestException:
             pass
-    return _links.get(year, f"{BASE_URL}/{year}/{year}.xlsx")
+    folder = f"{year}w" if tour == 'wta' else f"{year}"
+    return _links.get((tour, year), f"{BASE_URL}/{folder}/{year}.xlsx")
 
 
-def path(year):
+def path(year, tour='atp'):
     ext = ".xls" if year <= 2012 else ".xlsx"
-    return os.path.join(DIR, f"{year}{ext}")
+    return os.path.join(DIRS[tour], f"{year}{ext}")
 
 
-def download(years, max_age_hours=None):
+def missing(years, tour='atp'):
+    """Jahre ohne lokale Datei (z.B. weil tennis-data Cloud-IPs blockt und sie hochgeladen werden müssen)."""
+    return [y for y in years if not os.path.exists(path(y, tour))]
+
+
+def download(years, max_age_hours=None, tour='atp'):
     """
     Lädt fehlende Jahre. Mit max_age_hours werden ältere Dateien neu geladen
     (für das laufende Jahr, das wöchentlich ergänzt wird).
     """
-    os.makedirs(DIR, exist_ok=True)
+    os.makedirs(DIRS[tour], exist_ok=True)
     loaded = []
     for year in years:
-        p = path(year)
+        p = path(year, tour)
         if os.path.exists(p):
             if max_age_hours is None or time.time() - os.path.getmtime(p) < max_age_hours * 3600:
                 continue
-        r = http_get(url(year))
+        r = http_get(url(year, tour), retries=1 if tour == "wta" else 3)
         if r is None or len(r.content) < 10_000:  # Fehlerseiten sind klein
             continue
         with open(p, "wb") as f:
@@ -78,6 +96,9 @@ GRAND_SLAMS = ('Australian Open', 'French Open', 'Wimbledon', 'US Open')
 # tennis-data 'Series' -> Sackmann tourney_level
 LEVELS = {'Grand Slam': 'G', 'Masters 1000': 'M', 'Masters': 'M', 'Masters Cup': 'F', 'ATP500': 'A', 'ATP250': 'A',
           'International Gold': 'A', 'International': 'A'}
+# WTA: 'Tier' -> Sackmann-WTA-Stufen (PM = 1000er, P = 500er, I = 250er)
+WTA_LEVELS = {'Grand Slam': 'G', 'WTA1000': 'PM', 'Premier Mandatory': 'PM', 'Premier 5': 'PM', 'WTA500': 'P',
+              'Premier': 'P', 'WTA250': 'I', 'International': 'I', 'Tour Championships': 'F', 'Elite': 'F'}
 
 
 def _round(tuk_round, max_round):
@@ -88,7 +109,7 @@ def _round(tuk_round, max_round):
     return {'Quarterfinals': 'QF', 'Semifinals': 'SF', 'The Final': 'F', 'Round Robin': 'RR'}.get(tuk_round, tuk_round or "")
 
 
-def load(years):
+def load(years, tour='atp'):
     """TUK-Zeilen im gemeinsamen Schema (Namen noch im TUK-Format 'Alcaraz C.')."""
     try:
         import openpyxl
@@ -97,7 +118,7 @@ def load(years):
 
     rows = []
     for year in years:
-        p = path(year)
+        p = path(year, tour)
         if not os.path.exists(p) or p.endswith(".xls"):
             continue  # .xls (bis 2012) bräuchte xlrd, wird ab 2015 nicht gebraucht
         ws = openpyxl.load_workbook(p, read_only=True).active
@@ -123,16 +144,22 @@ def load(years):
                 status = STATUS.get(r.get('Comment'), 'completed')
                 score = " ".join(sets) + (" RET" if status == 'RET' else "") if status != 'W/O' else "W/O"
                 rnd = _round(r.get('Round'), max_round)
+                if tour == 'wta':
+                    level = WTA_LEVELS.get(r.get('Tier') or r.get('Series'), 'I')
+                else:
+                    level = LEVELS.get(r.get('Series'), 'A')
                 rows.append({
-                    'tourney_id': f"tuk-{year}-{location}",
+                    'tour': tour,
+                    'tourney_id': f"tuk-{year}-{location}" if tour == 'atp' else f"tuk-wta-{year}-{location}",
                     'tourney_name': tournament,
                     'surface': r.get('Surface') or "",
-                    'tourney_level': LEVELS.get(r.get('Series'), 'A'),
+                    'court': r.get('Court') or "",
+                    'tourney_level': level,
                     'tourney_date': start,
                     'match_date': yyyymmdd(r['Date']),
                     'match_num': ROUND_ORDER.get(rnd, 0) * 1000 + i,
                     'round': rnd,
-                    'best_of': _int(r.get('Bestof')) or (5 if tournament in GRAND_SLAMS else 3),
+                    'best_of': _int(r.get('Bestof')) or (5 if tour == 'atp' and tournament in GRAND_SLAMS else 3),
                     'winner_name': str(r['Winner']).strip(),
                     'loser_name': str(r['Loser']).strip(),
                     'winner_rank': _int(r.get('WRank')),

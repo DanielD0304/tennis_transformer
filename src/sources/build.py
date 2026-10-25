@@ -5,6 +5,9 @@ Priorität pro Match: Sackmann (mit Stats) > tennis-data > ESPN. tennis-data und
 für die Zeit nach dem Ende der Sackmann-Daten als eigene Matches übernommen, davor liefern sie
 Quoten und helfen beim Namensabgleich.
 
+ATP und WTA werden getrennt zusammengeführt: Matches und Namen werden nie über Touren hinweg
+verknüpft (gleicher Nachname bei Herren und Damen ist nicht derselbe Spieler).
+
 Gleiche Matches werden über ein Zeitfenster (Sackmann kennt nur das Turnier-Startdatum, die
 anderen das echte Matchdatum) und gemeinsame Namensbestandteile beider Spieler erkannt. Aus jedem
 erkannten Duplikat lernen wir, dass zwei Schreibweisen derselbe Spieler sind ('Wu Yibing' =
@@ -21,6 +24,7 @@ from functools import lru_cache
 
 from ..names import candidate_keys
 from .common import ODDS_COLUMNS
+from .places import tourney_country
 
 # Fälle, die sich automatisch nicht sicher zuordnen lassen (andere Vornamen/Abkürzungen je Quelle).
 # Schreibweise links -> Name im Datensatz rechts. Bei neuen Funden einfach ergänzen.
@@ -30,7 +34,9 @@ MANUAL_ALIASES = {
 }
 
 VALID_SURFACES = ('Hard', 'Clay', 'Grass', 'Carpet')
-VALID_LEVELS = ('G', 'M', 'A', 'F', 'D', 'O')
+# ATP: G, M, A, F, D, O; WTA zusätzlich PM (1000er), P (500er), I (250er), W
+VALID_LEVELS = ('G', 'M', 'A', 'F', 'D', 'O', 'PM', 'P', 'I', 'W')
+VALID_COURTS = ('Indoor', 'Outdoor')
 GRAND_SLAMS = ('australian open', 'roland garros', 'french open', 'wimbledon', 'us open')
 
 STOPWORDS = {'open', 'masters', 'championships', 'championship', 'tennis', 'international', 'atp',
@@ -209,11 +215,18 @@ def _tourney_lookup(rows, field, valid, default):
         if r.get('location'):
             by_location[_norm(r['location'])] = value
 
-    def lookup(name, location):
-        for w in re.findall(r"[a-z]+", _norm_words(name)):
+    def lookup(name, location=None):
+        words = re.findall(r"[a-z]+", _norm_words(name))
+        for w in words:
             if w in by_word:
                 return by_word[w]
-        return by_location.get(_norm(location or ''), default)
+        if _norm(location or '') in by_location:
+            return by_location[_norm(location or '')]
+        # Ort steckt im Turniernamen ('Paris Masters' bei Sackmann, 'Paris' als Ort bei tennis-data)
+        for w in words:
+            if w in by_location:
+                return by_location[w]
+        return default
     return lookup
 
 
@@ -250,7 +263,92 @@ def _copy_odds(src, dst, same_order):
         dst[c] = src.get(s)
 
 
-def build(sackmann_rows, tuk_rows, espn_rows):
+def _copy_details(src, dst):
+    """
+    Details aus tennis-data/ESPN in die Sackmann-Zeile desselben Matches: echtes Matchdatum
+    (Sackmann kennt nur den Turnierstart), Indoor/Outdoor und Ort.
+    """
+    day = src.get('match_date')
+    start = dst.get('tourney_date')
+    if day and start and dst.get('match_date') in (None, "", start):
+        try:
+            if 0 <= (_date(day) - _date(start)).days <= 20:
+                dst['match_date'] = day
+        except ValueError:
+            pass
+    for c in ('court', 'location', 'country'):
+        if src.get(c) and not dst.get(c):
+            dst[c] = src[c]
+
+
+def _fill_by_tourney(rows, field):
+    """Fehlende Werte (court, location) aus anderen Matches desselben Turniers übernehmen."""
+    known = {}
+    for r in rows:
+        if r.get(field):
+            known.setdefault((r.get('tourney_id'), r.get('tourney_date')), r[field])
+    for r in rows:
+        if not r.get(field):
+            r[field] = known.get((r.get('tourney_id'), r.get('tourney_date')), r.get(field) or "")
+
+
+def _attach_players(rows, players):
+    """
+    Nationalität, Händigkeit und Geburtsdatum für Sieger und Verlierer. Sackmann-Zeilen über die
+    Spieler-ID, sonst über den Namen (nur wenn er in der Spielerliste eindeutig ist).
+    """
+    by_id = {p['player_id']: p for p in players if p.get('player_id')}
+    by_name = defaultdict(list)
+    for p in players:
+        by_name[_norm(p['name'])].append(p)
+    known = {}
+    for r in rows:
+        if r.get('source') != 'sackmann':
+            continue
+        for side in ('winner', 'loser'):
+            p = by_id.get(r.get(f'{side}_id'))
+            if p is not None:
+                known.setdefault(r[f'{side}_name'], p)
+
+    def meta(name):
+        if name in known:
+            return known[name]
+        candidates = by_name.get(_norm(name), [])
+        return candidates[0] if len(candidates) == 1 else None
+
+    for r in rows:
+        for side in ('winner', 'loser'):
+            p = meta(r[f'{side}_name']) or {}
+            r[f'{side}_ioc'] = p.get('ioc') or r.get(f'{side}_ioc') or ""
+            r[f'{side}_hand'] = p.get('hand') or r.get(f'{side}_hand') or ""
+            r[f'{side}_dob'] = p.get('dob') or ""
+
+
+def build(sackmann_rows, tuk_rows, espn_rows, players=None):
+    """
+    Führt alle Quellen zusammen, getrennt pro Tour (Spalte 'tour', fehlend = 'atp').
+    players: {tour: Spielerliste aus sackmann.load_players} für Nationalität, Hand und Alter.
+    """
+    def tour_of(r):
+        return r.get('tour') or 'atp'
+
+    out, stats = [], Counter()
+    tours = sorted({tour_of(r) for r in sackmann_rows + tuk_rows + espn_rows})
+    for tour in tours:
+        rows, tour_stats = _build_tour([r for r in sackmann_rows if tour_of(r) == tour],
+                                       [r for r in tuk_rows if tour_of(r) == tour],
+                                       [r for r in espn_rows if tour_of(r) == tour],
+                                       (players or {}).get(tour, []))
+        for r in rows:
+            r['tour'] = tour
+        out += rows
+        stats.update(tour_stats)
+        stats[f'{tour}_matches'] = len(rows)
+    out.sort(key=lambda r: (str(r['tourney_date']), int(float(r.get('match_num') or 0))))
+    return out, dict(stats)
+
+
+def _build_tour(sackmann_rows, tuk_rows, espn_rows, players):
     registry = NameRegistry()
     for r in sackmann_rows + espn_rows:
         registry.add_full(r['winner_name'])
@@ -287,6 +385,8 @@ def build(sackmann_rows, tuk_rows, espn_rows):
                         abbr_votes[b][a] += 1
                 if source == 'tuk' and other.get('B365W') in (None, ""):
                     _copy_odds(r, other, same_order)
+                if other['source'] == 'sackmann':
+                    _copy_details(r, other)
                 if (r['match_date'] or r['tourney_date']) > cutoff:
                     stats['duplicates'] += 1
                 continue
@@ -330,10 +430,21 @@ def build(sackmann_rows, tuk_rows, espn_rows):
         r['winner_rank'] = rank(r['winner_name'], r['match_date'])
         r['loser_rank'] = rank(r['loser_name'], r['match_date'])
 
+    # Indoor/Outdoor und Land des Turniers (Heimvorteil), Spieler-Metadaten
+    _fill_by_tourney(out, 'court')
+    _fill_by_tourney(out, 'location')
+    court = _tourney_lookup(tuk_rows, 'court', VALID_COURTS, "")
+    for r in out:
+        if r.get('court') not in VALID_COURTS:
+            r['court'] = court(r.get('tourney_name', ''), r.get('location'))
+        r['tourney_ioc'] = tourney_country(r.get('tourney_name', ''), r.get('location'), r.get('country'))
+    _attach_players(out, players)
+
     out = clean(out, stats)
     stats['with_odds'] = sum(1 for r in out if r.get('B365W') not in (None, ""))
+    stats['with_match_date'] = sum(1 for r in out if r.get('match_date') and r['match_date'] != r['tourney_date'])
     out.sort(key=lambda r: (str(r['tourney_date']), int(float(r.get('match_num') or 0))))
-    return out, dict(stats)
+    return out, stats
 
 
 def _odd(value):

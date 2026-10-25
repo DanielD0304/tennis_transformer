@@ -200,3 +200,82 @@ def test_manual_alias_and_jr():
     rows, _ = build.build(sackmann, tuk_rows, [])
     assert rows[-1]['winner_name'] == 'Tomas Barrios Vera'
     assert build._is_full('Eric Jr. Olivarez') and not build._is_full('Zhang Zh.')
+
+
+def test_espn_parse_wta():
+    rows = espn.parse(SCOREBOARD, tour='wta')
+    assert [(r['winner_name'], r['tour']) for r in rows] == [('X', 'wta')]
+    assert rows[0]['best_of'] == 3
+    assert rows[0]['country'] == 'China PR'
+
+
+def test_tuk_links_per_tour():
+    html = ('<a href="hrjk/2025/2025.xlsx">ATP</a> <a href="hrjk/2025w/2025.xlsx">WTA</a>'
+            '<a href="/2014/2014.xls">alt</a>')
+    links = tuk.parse_links(html)
+    assert links[('atp', 2025)].endswith('/hrjk/2025/2025.xlsx')
+    assert links[('wta', 2025)].endswith('/hrjk/2025w/2025.xlsx')
+    assert ('atp', 2014) in links
+    assert tuk.path(2025, 'wta').endswith('tuk_wta/2025.xlsx')
+
+
+def test_build_keeps_tours_apart():
+    """Gleicher Nachname bei Herren und Damen: weder Namen noch Matches oder Quoten werden verknüpft."""
+    sackmann = [
+        _row('sackmann', 'Mischa Zverev', 'Andy Murray', '20260525', tour='atp', surface='Clay',
+             tourney_name='Roland Garros'),
+        _row('sackmann', 'Jamie Murray', 'Ana Zverev', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros'),
+    ]
+    tuk_rows = [
+        # ATP-Duplikat mit Quoten -> nur das ATP-Match bekommt sie
+        _row('tuk', 'Zverev M.', 'Murray A.', '20260525', '20260527', tour='atp', B365W=1.5, B365L=2.5,
+             PSW=1.55, PSL=2.6, AvgW=1.5, AvgL=2.5, court='Outdoor', location='Paris'),
+        # neues WTA-Match nach dem Stichtag: 'Murray J.' darf nicht auf die ATP-Seite zeigen
+        _row('tuk', 'Murray J.', 'Zverev A.', '20261001', '20261002', tour='wta', surface='Hard',
+             tourney_name='China Open', location='Beijing'),
+    ]
+    rows, stats = build.build(sackmann, tuk_rows, [])
+
+    assert stats['atp_matches'] == 1 and stats['wta_matches'] == 2
+    by_tour = {t: [r for r in rows if r['tour'] == t] for t in ('atp', 'wta')}
+    atp_names = {n for r in by_tour['atp'] for n in (r['winner_name'], r['loser_name'])}
+    wta_names = {n for r in by_tour['wta'] for n in (r['winner_name'], r['loser_name'])}
+    assert atp_names == {'Mischa Zverev', 'Andy Murray'}
+    assert wta_names == {'Jamie Murray', 'Ana Zverev'}
+
+    atp = by_tour['atp'][0]
+    assert (atp['B365W'], atp['PSL']) == (1.5, 2.6)
+    # echtes Datum, Indoor/Outdoor und Ort kommen aus dem tennis-data-Duplikat
+    assert (atp['match_date'], atp['court'], atp['location']) == ('20260527', 'Outdoor', 'Paris')
+    assert atp['tourney_ioc'] == 'FRA'
+    wta_rg = next(r for r in by_tour['wta'] if r['source'] == 'sackmann')
+    assert wta_rg.get('B365W') in (None, "") and wta_rg['match_date'] == '20260525'
+
+
+def test_build_attaches_player_metadata():
+    sackmann = [_row('sackmann', 'Carlos Alcaraz', 'Jannik Sinner', '20260525', surface='Clay',
+                     tourney_name='Roland Garros', winner_id='207989', loser_id='206173', winner_ioc='ESP')]
+    espn_rows = [_row('espn', 'Jannik Sinner', 'Carlos Alcaraz', '20260901', '20260905', tourney_name='US Open',
+                      country='USA')]
+    players = {'atp': [
+        {'player_id': '207989', 'name': 'Carlos Alcaraz', 'hand': 'R', 'dob': '20030505', 'ioc': 'ESP'},
+        {'player_id': '206173', 'name': 'Jannik Sinner', 'hand': 'R', 'dob': '20010816', 'ioc': 'ITA'},
+        # Namensvetter auf der Liste: über die ID trotzdem eindeutig
+        {'player_id': '999', 'name': 'Jannik Sinner', 'hand': 'L', 'dob': '19800101', 'ioc': 'AUT'},
+    ]}
+    rows, _ = build.build(sackmann, [], espn_rows, players)
+    us = next(r for r in rows if r['source'] == 'espn')
+    assert (us['winner_ioc'], us['winner_dob'], us['loser_ioc']) == ('ITA', '20010816', 'ESP')
+    assert us['tourney_ioc'] == 'USA'
+    rg = next(r for r in rows if r['source'] == 'sackmann')
+    assert rg['tourney_ioc'] == 'FRA' and rg['loser_hand'] == 'R'
+
+
+def test_tourney_country():
+    from src.sources.places import tourney_country
+    assert tourney_country('Rolex Shanghai Masters', 'Shanghai', 'China PR') == 'CHN'
+    assert tourney_country('Indian Wells Masters') == 'USA'
+    assert tourney_country('Monte Carlo Masters') == 'MON'
+    assert tourney_country('BNP Paribas Masters', 'Paris') == 'FRA'
+    assert tourney_country('Davis Cup WG R1: CZE vs AUS') == ''

@@ -4,25 +4,28 @@ from dataProcessing.predictor import get_predictor
 from django.shortcuts import render
 
 SURFACES = ['Hard', 'Clay', 'Grass', 'Carpet']
+# Auto: Untergrund aus dem Turniernamen bzw. dem laufenden Turnier der Spieler (MatchPredictor.surface_for)
+AUTO = 'Auto'
 
 
 def predict_match(request):
     """
-    Interface zum Transformer: zwei Spieler + Untergrund + Datum -> Siegwahrscheinlichkeit,
-    faire Quoten, H2H und aktuelle Form beider Spieler.
+    Interface zum Transformer: zwei Spieler + Untergrund (oder Auto über das Turnier) + Datum
+    -> Siegwahrscheinlichkeit, faire Quoten, H2H und aktuelle Form beider Spieler.
     """
     player_a = request.GET.get('a', '').strip()
     player_b = request.GET.get('b', '').strip()
-    surface = request.GET.get('surface', 'Hard')
+    tournament = request.GET.get('t', '').strip()
+    surface = request.GET.get('surface', AUTO)
     if surface not in SURFACES:
-        surface = 'Hard'
+        surface = AUTO
     try:
         match_date = date.fromisoformat(request.GET.get('date', ''))
     except ValueError:
         match_date = date.today()
 
     context = {
-        'a': player_a, 'b': player_b, 'surface': surface, 'surfaces': SURFACES,
+        'a': player_a, 'b': player_b, 't': tournament, 'surface': surface, 'surfaces': [AUTO] + SURFACES,
         'date': match_date.isoformat(), 'match_date': match_date,
         'players': [], 'errors': [], 'result': None,
     }
@@ -52,7 +55,8 @@ def predict_match(request):
         context['errors'].append({'name': player_b, 'suggestions': [], 'same': True})
         return render(request, 'predictor/predict.html', context)
 
-    pred = predictor.predict(resolved['a'], resolved['b'], surface=surface, match_date=match_date)
+    pred = predictor.predict(resolved['a'], resolved['b'], surface=None if surface == AUTO else surface,
+                             match_date=match_date, tournament=tournament or None)
     wins_a, wins_b = predictor.h2h_record(resolved['a'], resolved['b'])
     context['result'] = {
         'pred': pred,
@@ -61,7 +65,7 @@ def predict_match(request):
         'fair_a': 1 / pred.prob_a if pred.prob_a > 0 else None,
         'fair_b': 1 / pred.prob_b if pred.prob_b > 0 else None,
         'h2h': (wins_a, wins_b),
-        'info_a': predictor.player_info(resolved['a'], surface),
-        'info_b': predictor.player_info(resolved['b'], surface),
+        'info_a': predictor.player_info(resolved['a'], pred.surface),
+        'info_b': predictor.player_info(resolved['b'], pred.surface),
     }
     return render(request, 'predictor/predict.html', context)

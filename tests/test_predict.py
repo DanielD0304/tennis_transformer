@@ -151,3 +151,29 @@ def test_stats_dropout(predictor):
     assert dropped[:, cols].abs().sum() == 0
     # nur die Stats verschwinden, Ergebnis/ELO usw. bleiben
     assert torch.equal(full[:, won], dropped[:, won])
+
+
+def test_surface_lookup_from_tournament(predictor):
+    # Turniernamen aus den Daten: Wimbledon/Roland Garros/Shanghai mit dem Untergrund des neuesten Eintrags
+    surface, source = predictor.surface_for("Wimbledon")
+    assert source == 'tournament' and surface in ('Hard', 'Clay', 'Grass')
+    expected = [m['surface'] for ms in predictor.matches.values() for m in ms if m['tournament'] == 'Wimbledon']
+    assert surface in expected
+
+
+def test_surface_auto_and_override(predictor):
+    pred = predictor.predict("Daniil Medvedev", "Jan-Lennard Struff", tournament="Rolex Shanghai Masters")
+    assert pred.surface_source == 'tournament'
+    manual = predictor.predict("Daniil Medvedev", "Jan-Lennard Struff", surface="Clay", tournament="Shanghai Masters")
+    assert (manual.surface, manual.surface_source) == ("Clay", "manual")
+    # Unbekanntes Turnier, kein laufendes Turnier (Daten enden 2025): Standard
+    unknown = predictor.predict("Daniil Medvedev", "Jan-Lennard Struff", tournament="Nirgendwo Open",
+                                match_date="2026-10-01")
+    assert (unknown.surface, unknown.surface_source) == ("Hard", "default")
+
+
+def test_surface_from_current_tournament(predictor):
+    last = max(m['date'] for m in predictor.matches["Daniil Medvedev"])
+    surface, source = predictor.surface_for(None, ("Daniil Medvedev",), match_date=last)
+    assert source == 'current'
+    assert surface == predictor.matches["Daniil Medvedev"][-1]['surface']
