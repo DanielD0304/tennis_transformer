@@ -58,7 +58,7 @@ coverage.xml
 
 # Data, models, logs
 data/
-models/
+/models/
 # Checkpoints und Plots gehören nicht ins Repo
 *.pt
 attention_epoch_*.png
