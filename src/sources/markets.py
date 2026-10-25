@@ -34,7 +34,9 @@ def market_rows(df, venue):
             continue
         winner, loser = (a, b) if r['winner'] == 'a' else (b, a)
         day = yyyymmdd(r['start_time_utc'])
-        level = r.get('level') or None  # None: build.py bestimmt das Level über den Turniernamen
+        level = r.get('level')
+        if not isinstance(level, str) or not level:
+            level = None  # auch NaN aus dem Parquet: build.py bestimmt das Level über den Turniernamen
         rows.append({
             'tour': r['tour'], 'level': level, 'tourney_id': f"{venue}-{r.get('tourney') or day}",
             'tourney_name': r.get('tourney') or '', 'tourney_level': LEVEL_CODES.get(level, ''),
