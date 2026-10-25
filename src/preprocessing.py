@@ -369,6 +369,7 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42):
                     'player_b_recent': pB_rec, 'player_b_recent_mask': pB_r_mask,
                     'segment_ids': seg_ids, 'label': label,
                     'year': year,
+                    'match_index': index,  # Zeile in df, damit die Evaluation Samples Matches zuordnen kann
                     'odds_a': odds_a if not pd.isna(odds_a) else 0.0,
                     'odds_b': odds_b if not pd.isna(odds_b) else 0.0
                 }
