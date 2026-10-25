@@ -35,13 +35,14 @@ tennis_transformer/
 │   ├── predict.py           # Live-Vorhersagen für anstehende Matches
 │   ├── names.py             # Spielernamen aus verschiedenen Quellen abgleichen
 │   ├── update_data.py       # Daten laden & data/matches.csv bauen (täglicher Refresh)
+│   ├── evaluation/          # Walk-forward-Backtest, Metriken gegen den Markt, Venues, Wett-Simulation
 │   └── sources/             # Sackmann-Archiv, tennis-data.co.uk, ESPN + Zusammenführung
 ├── betscraper/              # Django-App: Quoten scrapen & Value Bets anzeigen
 │   ├── scraper/sites.py     # Seiten-Konfiguration (Tipico, bwin) + Playwright-Scraper
 │   ├── dataProcessing/      # Buchmacher-Marge, Value-Bet-Berechnung
 │   └── manage.py
 ├── preprocess_data.py       # Einmaliges Preprocessing (spart Zeit)
-├── main.py                  # Hauptskript mit Strategien & Simulationen
+├── main.py                  # Training + Auswertung über src/evaluation
 ├── requirements.txt
 └── README.md
 ```
@@ -66,7 +67,9 @@ Dies lädt die Matchdaten (2015-2025, siehe Datenquellen), verarbeitet sie und s
 ```bash
 python main.py
 ```
-**Automatische Baseline-Berechnung:** `main.py` berechnet automatisch die Baseline-Accuracy (Ranking-basierte Vorhersage) vor dem Training. Dies zeigt, wie viel Verbesserung das Transformer-Modell gegenüber einer naiven Strategie erreicht.
+Nach dem Training wertet `main.py` das Modell mit `src.evaluation` aus: Baseline-Accuracy (Rang, Elo),
+Log Loss/Brier/ECE und Signifikanz gegen den Markt (Pinnacle ohne Marge), Wett-Strategien pro Venue
+und Kalibrierung. Details unter „Evaluation“.
 
 ### 3. Custom Training mit eigener Config
 ```python
@@ -248,26 +251,80 @@ class FocalLoss(nn.Module):
 - Fokussiert das Training auf schwierige Fälle
 - Verbessert die Kalibrierung der Wahrscheinlichkeiten
 
-## Wett-Strategien
+## Evaluation
 
-Das Projekt implementiert mehrere Wett-Strategien zur ROI-Analyse:
+Alle Auswertungen laufen über `src/evaluation/`. Messlatte ist der **Markt**: die Pinnacle-Quote ohne
+Marge. Ein Modell, das den Markt nicht verbessert, liefert keinen Wett-Edge, egal wie hoch seine
+Accuracy ist.
 
-### Strategie 1: Filtered Betting
-Wette auf den Spieler mit der höheren Wahrscheinlichkeit, aber nur wenn die Quote >= min_odds (Standard: 1.30) ist. Filtert "Müll-Quoten" (1.01-1.29) heraus.
+```bash
+python -m src.evaluation.backtest --start 2020 --end 2025 --models market,rank,elo,blend
+python -m src.evaluation.backtest --start 2024 --end 2025 --models market,rank,elo,transformer,blend
+python -m src.evaluation.backtest --start 2023 --end 2025 --kelly 0.25 --kelly-cap 0.02 --venues pinnacle,bet365_de
+```
 
-### Strategie 2: Pure Value
-Wette nur, wenn der erwartete Wert (Expected Value) > 1.0 ist. Formel: `Wahrscheinlichkeit * Quote > 1.0`
+| Datei | Inhalt |
+|---|---|
+| `predictors.py` | Pro Match `p` = P(Spieler A gewinnt). A ist per Hash der `match_id` (fester Seed) Sieger oder Verlierer, Quoten werden mitgedreht. Predictor: `market` (Pinnacle ohne Marge, Fallback Ø-Quote, Spalte `market_source`), `rank` (logistisch auf log-Rang-Differenz), `elo` (bestehendes Elo), `transformer` (Adapter um `models/best_model.pt`), `blend` (logistische Regression auf `logit(p_market)` + `logit(p_model)`) |
+| `backtest.py` | Walk-forward (Standard monatlich, `--freq week/quarter/year`). Ein Predictor sieht beim Fit nur Matches mit Datum < Testfenster (Assert im Code). Ergebnis: `data/eval/predictions.parquet` |
+| `metrics.py` | Log Loss (Hauptmetrik), Brier, Accuracy, ECE, Kalibrierungstabelle, gepaarter Bootstrap und Diebold-Mariano-Test auf Log-Loss-Differenzen gegen den Markt |
+| `venues.py` | Venue-Profile: Preisquelle, Steuer/Gebühr, RET-Regel, max. Einsatz |
+| `betting.py` | `simulate(predictions, strategy, venue, staking)`: Strategien und Staking als Parameter-Objekte |
 
-### Strategie 3: Sniper
-Wette nur, wenn die Modell-Wahrscheinlichkeit im "Gold-Bereich" liegt (65% - 80% Konfidenz). Basiert auf dem Calibration Check.
+**Metriken** werden immer auf derselben Stichprobe verglichen: Matches mit Pinnacle-Quote, ohne W/O
+und mit einer Vorhersage von jedem angeforderten Modell. Mit `transformer` schrumpft die Stichprobe,
+weil der Transformer nur Matches im Trainings-Filter (Top 200, genug Historie, aktiv) und nur Jahre nach
+`train_years_end` vorhersagt. Achtung: `val_year` wurde fürs Checkpointing benutzt, streng
+out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward (noch) nicht neu trainiert.
 
-### Baseline: Better Rank Wins
-Setzt immer auf den Spieler mit dem besseren (niedrigeren) Rang.
+**Venues** (Steuer und Gebühr stecken in der Netto-Quote, mit der auch EV und Kelly rechnen):
 
-### Diagnose: Probability Calibration Check
-Überprüft, ob die Wahrscheinlichkeiten des Modells der Realität entsprechen und zeigt "Overconfidence" oder "Underconfidence" an.
+| Profil | Preis | Kosten | RET (Annahme) |
+|---|---|---|---|
+| `pinnacle` | `PSW/PSL` | keine | gewertet |
+| `bet365_de` | `B365W/B365L` | 5,3 % Wettsteuer auf den Einsatz | gewertet |
+| `avg_de` | `AvgW/AvgL` | 5,3 % Wettsteuer auf den Einsatz | gewertet |
+| `betfair` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | 5 % Kommission auf den Nettogewinn | gewertet |
+| `kalshi` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | Fee pro Kontrakt = ceil_to_cent(0,07 · p · (1−p)) | gewertet |
+| `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Fee (Standard 0) | gewertet |
+
+W/O ist immer void. Alle Werte sind per `Venue.with_(...)` änderbar (z. B. `ret_rule='void'`,
+`max_stake=50`). Die RET-Regeln unterscheiden sich je Anbieter und müssen vor echtem Einsatz in den
+AGB geprüft werden. Für Betfair, Kalshi und Polymarket gibt es historisch noch keine echten Preise.
+Ihr Preis ist ein Proxy aus Pinnacle, deshalb sind sie im Output als „Proxy“ markiert. Die
+tennis-data-Quoten sind Schlussquoten, was den erreichbaren Preis überschätzt. CLV ist im Output
+vorgesehen, bleibt aber leer, bis es Quoten-Snapshots mit Zeitstempel gibt.
+
+**Strategien** (`betting.py`, die alten Schleifen aus `main.py` als Parameter):
+
+| Strategie | Alt | Regel |
+|---|---|---|
+| `Favorite(model, min_odds=1.30)` | Filtered Betting | Auf den Favoriten des Modells ab Mindestquote |
+| `Value(model, min_ev=0.0)` | Pure Value | Seite mit höherem EV = p · Netto-Quote − 1, wenn > Schwelle |
+| `ConfidenceBand(model, 0.65, 0.80)` | Sniper | Favorit, wenn sein p im Band liegt |
+| `BetterRank()` | Baseline | Immer auf den besser platzierten Spieler |
+| `Value('market', 0.02)` | neu | „Sharp vs. Rest“: faire Pinnacle-Wahrscheinlichkeit gegen den Preis der Venue |
+
+Staking: `Flat(10)` oder `Kelly(fraction=0.25, cap=0.02)` (fraktionales Kelly auf die aktuelle
+Bankroll, gedeckelt). Kennzahlen: Anzahl Wetten (und voids), Trefferquote, Ø-Quote, Yield mit
+**Bootstrap-95-%-KI**, ROI auf die Bankroll, Max Drawdown.
+
+**Go/No-Go:** Ein Modell darf erst dann live Wetten auslösen, wenn sein Blend mit dem Markt den Log
+Loss von Pinnacle allein **signifikant senkt** (obere KI-Grenze der Log-Loss-Differenz < 0 und
+Bootstrap-p < 0,05). Die CLI gibt das Urteil pro Blend aus. Ein Yield ohne KI oder auf wenigen hundert
+Wetten ist kein Beleg.
+
+`python main.py` trainiert den Transformer und ruft danach dieselbe Auswertung auf (Baseline-Accuracy,
+Metriken und Signifikanz gegen den Markt, Strategien auf `bet365_de` und `pinnacle`, Kalibrierung).
+`python main.py --eval-only` überspringt das Training.
 
 ## Ergebnisse
+
+> **Veraltet und statistisch nicht belastbar.** Die folgenden Zahlen stammen aus den alten
+> Simulationen in `main.py` (fester Split, nur Bet365 ohne Wettsteuer, keine Konfidenzintervalle,
+> Accuracy statt Log Loss, kein Vergleich mit dem Markt). Der „Sniper“ mit +2,7 % Yield beruht auf
+> 110 Wetten mit Quoten um 1,1: Das 95-%-KI des Yields ist dort grob ±10 %, daraus folgt nichts.
+> Maßgeblich sind ab jetzt die Tabellen von `python -m src.evaluation.backtest` (siehe „Evaluation“).
 
 ### Baseline Accuracy
 Das Projekt verwendet eine **Ranking-basierte Baseline**, um die Performance des Transformer-Modells zu bewerten:
