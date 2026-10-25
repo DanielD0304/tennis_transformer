@@ -244,7 +244,11 @@ def test_unknown_model():
 
 def test_report_runs(predictions):
     grid = backtest.report(predictions, ['market', 'rank', 'elo', 'blend'], n_boot=100, log=lambda *a: None)
-    assert set(grid['venue']) >= {'pinnacle', 'bet365_de', 'kalshi (Proxy)'}
+    # Standard: Pinnacle, Betfair (echte Kurse, in den synthetischen Daten keine) und Bet365 mit Steuer
+    assert set(grid['venue']) == {'pinnacle', 'betfair', 'bet365_de'}
+    grid = backtest.report(predictions, ['market', 'rank', 'elo', 'blend'], n_boot=100, log=lambda *a: None,
+                           venues=list(VENUES.values()))
+    assert set(grid['venue']) >= {'pinnacle', 'bet365_de', 'kalshi (Proxy)', 'betfair_proxy (Proxy)'}
 
 
 # ------------------------------------------------------------------- Venues
