@@ -3,6 +3,12 @@ Lädt alle Matchdaten (ATP und WTA) herunter und baut data/matches.csv.
 
     python -m src.update_data          # täglicher Refresh (nur Neues)
     python -m src.update_data --full   # alles neu laden (z.B. nach Löschen von data/)
+    python -m src.update_data --levels main   # nur Haupttour (ohne Challenger/ITF)
+
+Standard sind alle Level (Haupttour inkl. Qualifikation, Challenger, ITF): Elo, Historien und Features
+laufen über alle Level einer Tour gemeinsam, weil Spieler zwischen den Leveln wechseln. Nach dem Ende des
+Sackmann-Archivs kommen Challenger/ITF-Ergebnisse aus den abgerechneten Polymarket-/Kalshi-Märkten
+(data/odds/history, siehe sources/markets.py), sofern die Historie geladen ist.
 
 Ohne pandas/torch lauffähig. Der MatchPredictor ruft update() automatisch auf,
 wenn der letzte Refresh älter als 24 Stunden ist.
@@ -14,8 +20,8 @@ import time
 from datetime import date, datetime, timedelta
 
 from .sources import build as build_mod
-from .sources import espn, sackmann, tuk
-from .sources.common import DATA_DIR, MATCHES_PATH, TOURS, write_matches
+from .sources import espn, markets, sackmann, tuk
+from .sources.common import DATA_DIR, LEVELS, MATCHES_PATH, TOURS, write_matches
 
 FIRST_YEAR = 2015
 STATE_PATH = os.path.join(DATA_DIR, "update_state.json")
@@ -38,7 +44,13 @@ def is_stale(max_age_hours=24):
     return last is None or not os.path.exists(MATCHES_PATH) or datetime.now() - last > timedelta(hours=max_age_hours)
 
 
-def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS):
+def _coverage(rows):
+    """Anzahl Matches je 'tour/level/source' (Daten-Abdeckung pro Level)."""
+    from collections import Counter
+    return dict(sorted(Counter(f"{r.get('tour')}/{r.get('level') or 'main'}/{r.get('source')}" for r in rows).items()))
+
+
+def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS, levels=LEVELS):
     t0 = time.time()
     today = date.today()
     years = list(range(first_year, today.year + 1))
@@ -46,12 +58,14 @@ def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS):
     sack_rows, tuk_rows, espn_rows, players, cutoffs, tuk_missing = [], [], [], {}, {}, {}
     for tour in tours:
         log(f"[{tour.upper()}] Sackmann (Mirror) ...")
-        sackmann.download(years, force=full, tour=tour)
-        rows = sackmann.load(years, tour=tour)
+        sackmann.download(years, force=full, tour=tour, levels=levels)
+        rows = sackmann.load(years, tour=tour, levels=levels)
         players[tour] = sackmann.load_players(tour)
         cutoffs[tour] = max((r['tourney_date'] for r in rows), default=f"{today.year}0101")
         sack_rows += rows
-        log(f"  {len(rows)} Matches, Daten bis Turnierstart {cutoffs[tour]}, {len(players[tour])} Spieler")
+        by_level = {lv: sum(r['level'] == lv for r in rows) for lv in levels}
+        log(f"  {len(rows)} Matches ({', '.join(f'{k} {v}' for k, v in by_level.items())}), "
+            f"Daten bis Turnierstart {cutoffs[tour]}, {len(players[tour])} Spieler")
 
         log(f"[{tour.upper()}] tennis-data.co.uk ...")
         tuk.download(years[:-1], max_age_hours=0 if full else None, tour=tour)
@@ -70,7 +84,10 @@ def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS):
         espn_rows += rows
         log(f"  {len(loaded)} Tage geladen, {len(rows)} Matches")
 
-    rows, stats = build_mod.build(sack_rows, tuk_rows, espn_rows, players)
+    log("[Märkte] Polymarket/Kalshi als Ergebnisquelle ...")
+    market_rows = [r for r in markets.load(levels, log=log) if r['tour'] in tours]
+    rows, stats = build_mod.build(sack_rows, tuk_rows, espn_rows, players, market_rows)
+    rows = [r for r in rows if (r.get('level') or 'main') in levels]  # Level aus dem Turniernamen (ESPN, Märkte)
     write_matches(rows)
     last = max(r['match_date'] or r['tourney_date'] for r in rows)
     state = {
@@ -81,6 +98,8 @@ def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS):
         'sackmann_until_by_tour': cutoffs,
         'tuk_missing_years': tuk_missing,
         'mirror_commit': sackmann.MIRROR_COMMIT,
+        'levels': list(levels),
+        'by_level_source': _coverage(rows),
         **stats,
     }
     with open(STATE_PATH, "w", encoding="utf-8") as f:
@@ -101,5 +120,7 @@ if __name__ == "__main__":
     parser.add_argument("--full", action="store_true", help="alles neu laden")
     parser.add_argument("--first-year", type=int, default=FIRST_YEAR)
     parser.add_argument("--tours", default=",".join(TOURS), help="Kommagetrennt: atp, wta")
+    parser.add_argument("--levels", default=",".join(LEVELS), help="Kommagetrennt: main, challenger, itf")
     args = parser.parse_args()
-    update(full=args.full, first_year=args.first_year, tours=tuple(t.strip() for t in args.tours.split(",") if t.strip()))
+    update(full=args.full, first_year=args.first_year, tours=tuple(t.strip() for t in args.tours.split(",") if t.strip()),
+           levels=tuple(lv.strip() for lv in args.levels.split(",") if lv.strip()))

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Paper-Trading{% endblock %}
+
+{% block style %}
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
+        .kpi { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+        .ok { color: var(--win); } .no { color: var(--loss); }
+        svg.curve { width: 100%; height: auto; display: block; }
+        svg.curve polyline { fill: none; stroke: var(--a); stroke-width: 2; }
+        svg.curve line { stroke: var(--line); }
+{% endblock %}
+
+{% block content %}
+    <h1>Paper-Trading</h1>
+    {% if error %}<p class="error">Wetten konnten nicht geladen werden: <code>{{ error }}</code></p>{% endif %}
+
+    <form method="get" class="inline card">
+        <label>Strategie
+            <select name="strategy">
+                <option value="" {% if not strategy %}selected{% endif %}>alle</option>
+                {% for s in strategies %}<option value="{{ s }}" {% if s == strategy %}selected{% endif %}>{{ s }}</option>{% endfor %}
+            </select>
+        </label>
+        <button type="submit">Anzeigen</button>
+    </form>
+
+    <h2>Go/No-Go für echtes Geld</h2>
+    <div class="card">
+        <p class="kpi {% if decision.go %}ok{% else %}no{% endif %}">{% if decision.go %}GO{% else %}NO-GO{% endif %}</p>
+        <table>
+            <tr><th>Kriterium</th><th>Stand</th><th>erfüllt</th></tr>
+            {% for name, ok, value in decision.checks %}
+            <tr><td>{{ name }}</td><td class="num">{{ value }}</td><td class="{% if ok %}ok{% else %}no{% endif %}">{% if ok %}ja{% else %}nein{% endif %}</td></tr>
+            {% endfor %}
+        </table>
+        <p class="muted">Vorher rechtlich prüfen, ob Polymarket und Kalshi aus Deutschland nutzbar sind (Kalshi ist im Wesentlichen nur für die USA). Keine Rechtsberatung.</p>
+    </div>
+
+    <h2>Bankroll (Viertel-Kelly, Start {{ start_bankroll|floatformat:0 }})</h2>
+    <div class="card">
+        {% if points %}
+        <svg class="curve" viewBox="0 0 640 180" role="img" aria-label="Bankroll-Kurve">
+            <line x1="0" y1="174" x2="640" y2="174"></line>
+            <polyline points="{{ points }}"></polyline>
+        </svg>
+        <p class="muted">Aktuell {{ bankroll|floatformat:2 }} · Minimum {{ curve_low|floatformat:2 }} · Maximum {{ curve_high|floatformat:2 }}</p>
+        {% else %}
+        <p class="muted">Noch keine abgerechneten Wetten. Starten mit <code>python -m src.paper.run --loop 30</code>.</p>
+        {% endif %}
+    </div>
+
+    <h2>Kennzahlen pro Strategie, Venue und Level</h2>
+    {% if rows %}
+    <div class="wide card"><table>
+        <tr><th>Gruppe</th><th>Wert</th><th>Wetten</th><th>offen</th><th>void</th><th>abgerechnet</th><th>Treffer</th><th>Yield</th><th>95-%-KI</th><th>Yield flat</th><th>CLV</th><th>CLV Sharp</th></tr>
+        {% for r in rows %}
+        <tr>
+            <td>{{ r.gruppe }}</td><td>{{ r.wert }}</td><td class="num">{{ r.n }}</td><td class="num">{{ r.open }}</td>
+            <td class="num">{{ r.void }}</td><td class="num">{{ r.settled }}</td><td class="num">{{ r.hit_rate_txt }}</td>
+            <td class="num">{{ r.yield_txt }}</td><td class="num">{{ r.yield_ci_low_txt }} … {{ r.yield_ci_high_txt }}</td>
+            <td class="num">{{ r.yield_flat_txt }}</td><td class="num">{{ r.clv_txt }}</td><td class="num">{{ r.clv_sharp_txt }}</td>
+        </tr>
+        {% endfor %}
+    </table></div>
+    {% else %}
+    <p class="muted">Noch keine Paper-Wetten.</p>
+    {% endif %}
+
+    <h2>Offene Wetten ({{ open_bets|length }})</h2>
+    {% include "scraper/paper_bets.html" with bets=open_bets %}
+    <h2>Abgerechnete Wetten ({{ settled_bets|length }}, neueste zuerst)</h2>
+    {% include "scraper/paper_bets.html" with bets=settled_bets %}
+{% endblock %}

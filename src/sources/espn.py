@@ -111,7 +111,7 @@ def parse(scoreboard, tour='atp'):
                     'status': status,
                     'location': venue.split(',')[0].strip(),
                     'country': venue.split(',')[-1].strip() if ',' in venue else '',
-                    'source': 'espn',
+                    'source': 'espn', 'level': 'main',
                 })
     return rows
 

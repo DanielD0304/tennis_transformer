@@ -25,6 +25,15 @@ from .schema import HISTORY_DIR, mid, now_utc, utc
 COLUMNS = ['venue', 'event_id', 'market_id', 'tour', 'level', 'tourney', 'start_time_utc', 'player_a', 'player_b',
            'open_ts', 'open_price_a', 'close_ts', 'close_price_a', 'close_bid_a', 'close_ask_a', 'close_last_a',
            'close_1h_price_a', 'n_points', 'volume', 'winner', 'source_url', 'loaded_utc']
+# Preise zu festen Zeitpunkten vor der geplanten Startzeit (für src/evaluation/timing.py): je Offset der letzte
+# Punkt <= start - offset mit Zeitstempel, Preis, Bid/Ask (nur Kalshi) und bis dahin gehandeltem Volumen (nur Kalshi)
+TIMING_OFFSETS = {'24h': timedelta(hours=24), '6h': timedelta(hours=6), '1h': timedelta(hours=1)}
+TIMING_FIELDS = ('ts', 'price_a', 'bid_a', 'ask_a', 'volume')
+# move_*: erster Preis, der sich vom ersten Preis unterscheidet. Polymarket startet oft mit leerem Orderbuch
+# (Mittelpreis 0,5), handelbar ist erst der erste echte Kurs.
+TIMING_COLUMNS = ['open_bid_a', 'open_ask_a', 'close_volume', 'move_ts', 'move_price_a'] + [
+    f't{k}_{f}' for k in TIMING_OFFSETS for f in TIMING_FIELDS]
+COLUMNS = COLUMNS + TIMING_COLUMNS
 POLY_FIDELITY = 10  # Minuten
 MAX_WINDOW = timedelta(days=14)  # so weit vor dem Start wird höchstens geladen
 DEFAULT_LEVELS = ('main', 'challenger')
@@ -57,6 +66,39 @@ def opening_closing(points, start, buffer=SAFE_BUFFER):
             'n_points': len(pre)}
 
 
+def price_at(points, t):
+    """
+    Letzter Punkt mit ts <= t (nie ein späterer) und Preis. points: [(ts, preis, bid, ask[, last[, volumen]]), ...].
+    Liefert dict ts/price_a/bid_a/ask_a/volume (volume = Summe der Punkt-Volumina bis t, sonst None) oder None.
+    """
+    pre = sorted((p for p in points if p[0] <= t), key=lambda p: p[0])
+    priced = [p for p in pre if p[1] is not None]
+    if not priced:
+        return None
+    last = priced[-1]
+    vols = [p[5] for p in pre if len(p) > 5 and p[5] is not None]
+    return {'ts': last[0], 'price_a': last[1], 'bid_a': last[2], 'ask_a': last[3],
+            'volume': float(sum(vols)) if vols else None}
+
+
+def timing_points(points, start):
+    """Zusatzspalten TIMING_COLUMNS: Bid/Ask der Eröffnung, Volumen bis zum Start und je Offset price_at(start - offset)."""
+    pre = sorted((p for p in points if p[0] <= start and p[1] is not None), key=lambda p: p[0])
+    out = dict.fromkeys(TIMING_COLUMNS)
+    if not pre:
+        return out
+    out['open_bid_a'], out['open_ask_a'] = pre[0][2], pre[0][3]
+    moved = next((p for p in pre if p[1] != pre[0][1]), None)
+    if moved is not None:
+        out['move_ts'], out['move_price_a'] = moved[0], moved[1]
+    out['close_volume'] = (price_at(points, start) or {}).get('volume')
+    for k, offset in TIMING_OFFSETS.items():
+        at = price_at(points, start - offset)
+        for f in TIMING_FIELDS:
+            out[f't{k}_{f}'] = (at or {}).get(f)
+    return out
+
+
 def polymarket_points(history):
     """CLOB prices-history -> Punkte (ts, preis, None, None)."""
     return [(utc(int(h['t'])), float(h['p']), None, None) for h in history.get('history') or []]
@@ -73,6 +115,15 @@ def _candle_value(part, key):
         return None
 
 
+def _fp_value(d, key):
+    for k in (f'{key}_fp', key):
+        try:
+            return float(d[k])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
 def kalshi_points(candles):
     """Candlesticks -> Punkte (Ende der Periode, Mitte aus Bid/Ask oder letzter Kurs, Bid, Ask)."""
     out = []
@@ -80,7 +131,9 @@ def kalshi_points(candles):
         bid, ask = _candle_value(c.get('yes_bid'), 'close'), _candle_value(c.get('yes_ask'), 'close')
         last = _candle_value(c.get('price'), 'close')
         price = mid(bid, ask) or last
-        out.append((utc(int(c['end_period_ts'])), price, bid if bid else None, ask if ask is not None and ask < 1 else None, last))
+        volume = _fp_value(c, 'volume')
+        out.append((utc(int(c['end_period_ts'])), price, bid if bid else None, ask if ask is not None and ask < 1 else None,
+                    last, volume))
     return out
 
 
@@ -117,7 +170,8 @@ def polymarket_row(info, history, loaded):
     return {'venue': polymarket.VENUE, 'event_id': info['event_id'], 'market_id': info['token_a'],
             'tour': info['tour'], 'level': info['level'], 'tourney': info['tourney'], 'start_time_utc': start,
             'player_a': info['player_a'], 'player_b': info['player_b'], **oc, 'close_last_a': oc['close_price_a'],
-            'volume': info['volume'], 'winner': info['winner'], 'source_url': info['source_url'], 'loaded_utc': loaded}
+            'volume': info['volume'], 'winner': info['winner'], 'source_url': info['source_url'], 'loaded_utc': loaded,
+            **timing_points(polymarket_points(history), start)}
 
 
 def load_polymarket(client, known=(), since=None, limit=None, workers=24, log=print, save=None):
@@ -169,10 +223,10 @@ def kalshi_row(event, milestone, market_a, market_b, candles, loaded):
             'tourney': (milestone.get('details') or {}).get('tournament_name'), 'start_time_utc': start,
             'player_a': market_a['yes_sub_title'], 'player_b': market_b['yes_sub_title'], **oc, 'close_last_a': last,
             'volume': sum(volume) if volume else None, 'winner': kalshi.winner_of(market_a),
-            'source_url': f"{kalshi.API}/events/{event}", 'loaded_utc': loaded}
+            'source_url': f"{kalshi.API}/events/{event}", 'loaded_utc': loaded, **timing_points(points, start)}
 
 
-def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=8, log=print, save=None):
+def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=4, log=print, save=None):
     since = since or datetime(2024, 1, 1, tzinfo=timezone.utc)
     log("Kalshi: Milestones laden ...")
     cutoff = now_utc() - SETTLE_DELAY
@@ -212,7 +266,7 @@ def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS,
 
 # --------------------------------------------------------------- Ablauf
 
-def _run(fn, items, workers, log, save=None, every=2000):
+def _run(fn, items, workers, log, save=None, every=500):
     """fn parallel auf items anwenden. save(rows) sichert alle `every` Zeilen und am Ende (Abbruch kostet wenig)."""
     rows, errors, saved = [], 0, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -231,7 +285,7 @@ def _run(fn, items, workers, log, save=None, every=2000):
                 save(rows[saved:])
                 saved = len(rows)
             if i % 1000 == 0:
-                log(f"    {i}/{len(items)} geladen, {len(rows)} mit Preis vor Start")
+                log(f"    {i}/{len(items)} geladen, {len(rows)} mit Preis vor Start, {errors} Fehler")
     if save and len(rows) > saved:
         save(rows[saved:])
     if errors:
@@ -254,9 +308,13 @@ def save_history(venue, rows, root=HISTORY_DIR):
     old = read_history(venue, root)
     df = pd.concat([old, new], ignore_index=True) if len(old) else new
     df = df.drop_duplicates('event_id', keep='last')
-    for c in ('start_time_utc', 'open_ts', 'close_ts', 'loaded_utc'):
+    for c in COLUMNS:  # ältere Dateien ohne Timing-Spalten
+        if c not in df:
+            df[c] = None
+    for c in ('start_time_utc', 'open_ts', 'close_ts', 'loaded_utc', 'move_ts') + tuple(f't{k}_ts' for k in TIMING_OFFSETS):
         df[c] = pd.to_datetime(df[c], utc=True)
-    for c in ('open_price_a', 'close_price_a', 'close_bid_a', 'close_ask_a', 'close_last_a', 'close_1h_price_a', 'volume'):
+    floats = [c for c in TIMING_COLUMNS if not c.endswith('_ts')]  # move_ts ist ein Zeitstempel
+    for c in ['open_price_a', 'close_price_a', 'close_bid_a', 'close_ask_a', 'close_last_a', 'close_1h_price_a', 'volume'] + floats:
         df[c] = pd.to_numeric(df[c], errors='coerce').astype(float)
     df['n_points'] = pd.to_numeric(df['n_points'], errors='coerce').fillna(0).astype(int)
     os.makedirs(root, exist_ok=True)
@@ -267,7 +325,8 @@ def save_history(venue, rows, root=HISTORY_DIR):
 
 
 LOADERS = {'polymarket': load_polymarket, 'kalshi': load_kalshi}
-RATE = {'polymarket': 15, 'kalshi': 4}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
+RATE = {'polymarket': 15, 'kalshi': 2}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
+RETRIES = {'polymarket': 6, 'kalshi': 10}  # Kalshi drosselt geteilte IPs teils minutenlang
 
 
 def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAULT_LEVELS, refresh=False,
@@ -275,7 +334,7 @@ def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAU
     """Historie je Venue nachladen. Fehler einer Venue stoppen die andere nicht."""
     result = {}
     for venue in venues:
-        client = JsonClient(max_per_sec=RATE[venue])
+        client = JsonClient(max_per_sec=RATE[venue], retries=RETRIES[venue])
         try:
             known = set() if refresh else set(read_history(venue, root)['event_id'])
             kwargs = {'levels': levels} if venue == 'kalshi' else {}
