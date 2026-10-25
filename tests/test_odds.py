@@ -6,6 +6,7 @@ Kalshi vom 25.10.2026. Ausnahme: odds_api_odds_doku_format.json folgt dem dokume
 Odds API v4, weil in der Cloud-Session kein API-Key vorhanden war.
 """
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -294,7 +295,8 @@ MATCHES = [
     {'source': 'sackmann', 'tourney_date': '20261019', 'match_date': '', 'tourney_name': 'Vienna',
      'winner_name': 'Matteo Berrettini', 'loser_name': 'Tomas Martin Etcheverry', 'status': 'completed'},
     {'source': 'espn', 'tourney_date': '20261019', 'match_date': '20261025', 'tourney_name': 'Basel',
-     'winner_name': 'Arthur Rinderknech', 'loser_name': 'Jerome Kym', 'status': 'completed'},
+     'winner_name': 'Arthur Rinderknech', 'loser_name': 'Jerome Kym', 'status': 'completed',
+     'PSW': '1.50', 'PSL': '2.70'},
     {'source': 'espn', 'tourney_date': '20261019', 'match_date': '20261025', 'tourney_name': 'Basel',
      'winner_name': 'Felix Auger-Aliassime', 'loser_name': 'Juan Manuel Cerundolo', 'status': 'RET'},
 ]
@@ -321,6 +323,9 @@ def test_link_matches_name_variants_and_swap():
     assert list(linked['match_found']) == [True, True, True, False, False]
     assert list(linked['a_won'][:3]) == [True, False, True]
     assert linked['match_status'].iloc[2] == 'RET'
+    # Pinnacle-Quote aus Sicht von A: Tipico hat Kym (Verlierer) als A
+    assert (linked['ps_a'].iloc[1], linked['ps_b'].iloc[1]) == (2.70, 1.50)
+    assert pd.isna(linked['ps_a'].iloc[0])
 
     rate = matching.match_rate(df, MATCHES).set_index('venue')
     assert rate.loc['kalshi', 'n'] == 3 and rate.loc['kalshi', 'matched'] == 1
@@ -371,3 +376,26 @@ def test_report_on_small_history(tmp_path):
     closing = out['polymarket'].set_index(['gruppe', 'preis']).loc[('polymarket gesamt', 'closing')]
     assert closing['n'] == 40 and 0 < closing['log_loss'] < 2
     assert out['head_to_head'].attrs['ergebnis_gleich'] == 1.0
+
+
+def test_vs_pinnacle():
+    rows = []
+    for i, (price, winner) in enumerate([(0.30, 'b'), (0.40, 'a'), (0.35, 'b')]):
+        rows.append({c: None for c in history.COLUMNS} | {
+            'venue': 'kalshi', 'event_id': f'K{i}', 'player_a': 'Jerome Kym', 'player_b': 'Arthur Rinderknech',
+            'start_time_utc': utc('2026-10-25T11:00:00Z'), 'close_price_a': price, 'close_1h_price_a': price,
+            'close_bid_a': price - 0.01, 'close_ask_a': price + 0.01, 'winner': winner})
+    df = pd.DataFrame(rows)
+    df['close_bid_a'] = df['close_bid_a'].astype(float)
+    df['close_ask_a'] = df['close_ask_a'].astype(float)
+    r = report.vs_pinnacle(df, 'kalshi', MATCHES)
+    # Zeile K1 (Kym gewinnt laut Markt, laut matches.csv aber Rinderknech) fällt raus
+    assert r['n'] == 2
+    p_pin = (1 / 2.7) / (1 / 2.7 + 1 / 1.5)
+    assert r['mittel_abs_dp'] == pytest.approx((abs(0.30 - p_pin) + abs(0.35 - p_pin)) / 2)
+    assert r['ll_pinnacle'] == pytest.approx(-math.log(1 - p_pin))
+    # Pinnacle fair für Kym: 0.357. K0: Ask 0.31 + Fee 0.02 = 0.33 -> Edge +8 %, Kym verliert -> -100 %.
+    # K2: Ask 0.36 + 0.02 = 0.38 zu teuer, Rinderknech 1 - 0.34 + 0.02 = 0.68 > 0.643 auch -> keine Wette
+    assert r['wetten'] == 1 and r['yield_flat'] == -1.0
+    assert r['edge_mittel'] == pytest.approx(p_pin / 0.33 - 1)
+    assert report.vs_pinnacle(df, 'kalshi', []) is None

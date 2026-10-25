@@ -6,7 +6,8 @@ Erste Auswertung ohne Pinnacle: Wie gut sind die Closing-Preise von Polymarket u
 
 Für jede Venue: Anzahl Märkte, Zeitraum, Volumen, Spread, Log Loss, Brier, ECE und Kalibrierungstabelle
 der Closing- und Eröffnungspreise gegen das Ergebnis aus der Markt-Auflösung. Dazu der direkte
-Vergleich auf gemeinsamen Matches beider Venues und die Abgleich-Quote gegen data/matches.csv.
+Vergleich auf gemeinsamen Matches beider Venues, die Abgleich-Quote gegen data/matches.csv und, wo
+matches.csv Pinnacle-Schlussquoten hat (tennis-data, nur ATP), der Vergleich mit Pinnacle ohne Marge.
 Es werden nur Märkte mit Sieger ausgewertet (50-50-Auflösungen bei Absage/W/O fallen raus).
 """
 import argparse
@@ -15,6 +16,8 @@ import numpy as np
 import pandas as pd
 
 from ..evaluation import metrics
+from ..evaluation.predictors import remove_margin
+from ..evaluation.venues import get_venue
 from .history import HISTORY_DIR, read_history
 from .matching import link_matches, load_matches, pair_venues
 from .schema import SNAPSHOT_DIR, load_snapshots
@@ -86,6 +89,49 @@ def head_to_head(pm, ks, min_volume=0.0):
     return m, out
 
 
+def vs_pinnacle(df, venue, matches, min_volume=0.0, price_col='close_price_a'):
+    """
+    Venue-Preis gegen Pinnacle-Closing (ohne Marge) auf denselben Matches: Log Loss, Brier, gepaarter
+    Bootstrap der Log-Loss-Differenz, mittlere Preisabweichung und Anteil mit Edge nach Gebühren
+    (faire Pinnacle-Wahrscheinlichkeit × Netto-Quote der Venue - 1 > 0, gekauft zum Ask, sonst zur Mitte).
+    Nur Matches, deren Sieger laut Markt-Auflösung und matches.csv übereinstimmt.
+    """
+    ev = evaluable(df, min_volume)
+    ev = ev[ev[price_col].notna()]
+    if ev.empty or not matches:
+        return None
+    m = link_matches(ev, matches)
+    m = m[m['match_found'] & m['ps_a'].notna() & m['ps_b'].notna()]
+    m = m[(m['y'] == 1) == m['a_won'].astype(bool)]
+    if m.empty:
+        return None
+    y, p = m['y'].to_numpy(float), m[price_col].to_numpy(float)
+    p_pin = remove_margin(m['ps_a'].to_numpy(float), m['ps_b'].to_numpy(float))
+    loss_v, loss_p = metrics.pointwise_log_loss(y, p), metrics.pointwise_log_loss(y, p_pin)
+    boot = metrics.paired_bootstrap(loss_v, loss_p)
+
+    profile = get_venue(venue)
+    cost_a = np.where(m['close_ask_a'].notna(), m['close_ask_a'], p) if price_col == 'close_price_a' else p
+    cost_b = np.where(m['close_bid_a'].notna(), 1 - m['close_bid_a'], 1 - p) if price_col == 'close_price_a' else 1 - p
+    ok = (cost_a > 0.01) & (cost_a < 0.99) & (cost_b > 0.01) & (cost_b < 0.99)
+    net_a = profile.net_odds_from_gross(1 / np.clip(cost_a, 0.01, 0.99))
+    net_b = profile.net_odds_from_gross(1 / np.clip(cost_b, 0.01, 0.99))
+    ev_a, ev_b = p_pin * net_a - 1, (1 - p_pin) * net_b - 1
+    side_a = ev_a >= ev_b
+    edge = np.where(side_a, ev_a, ev_b)
+    bet = ok & (edge > 0)
+    won = np.where(side_a, y == 1, y == 0)
+    profit = np.where(won, np.where(side_a, net_a, net_b) - 1, -1.0)
+    return {'venue': venue, 'preis': price_col.replace('_price_a', ''), 'n': len(m),
+            'll_venue': float(loss_v.mean()), 'll_pinnacle': float(loss_p.mean()),
+            'brier_venue': metrics.brier(y, p), 'brier_pinnacle': metrics.brier(y, p_pin),
+            'll_diff': boot['mean_diff'], 'ci_low': boot['ci_low'], 'ci_high': boot['ci_high'],
+            'p_boot': boot['p_value'], 'mittel_abs_dp': float(np.abs(p - p_pin).mean()),
+            'anteil_edge': float(bet.mean()), 'wetten': int(bet.sum()),
+            'edge_mittel': float(edge[bet].mean()) if bet.any() else np.nan,
+            'yield_flat': float(profit[bet].mean()) if bet.any() else np.nan}
+
+
 def matching_table(frames, matches):
     rows = []
     for venue, df in frames.items():
@@ -139,6 +185,14 @@ def report(min_volume=0.0, history_root=HISTORY_DIR, snapshot_root=SNAPSHOT_DIR,
         log("\n=== Abgleich mit data/matches.csv (enthält nur ATP-Haupttour) ===")
         out['matching'] = matching_table(frames, matches)
         log(_fmt(out['matching']))
+        rows = [r for v, df in frames.items() for col in ('close_price_a', 'close_1h_price_a')
+                if (r := vs_pinnacle(df, v, matches, min_volume, col))]
+        out['pinnacle'] = pd.DataFrame(rows)
+        log("\n=== Gegen Pinnacle-Closing ohne Marge (gleiche Matches, ATP aus tennis-data) ===")
+        log(_fmt(out['pinnacle']))
+        log("ll_diff < 0: Venue besser als Pinnacle. anteil_edge/yield_flat: Kauf zum Ask (Kalshi) bzw. zur "
+            "Mitte (Polymarket, historisch kein Ask) nach Gebühren, wenn Pinnacle-fair × Netto-Quote > 1. "
+            "Pinnacle-Closing ist zeitlich später als der PM-Preis vor der geplanten Startzeit.")
     else:
         log("\n(data/matches.csv fehlt, kein Abgleich. Erst python -m src.update_data)")
 
