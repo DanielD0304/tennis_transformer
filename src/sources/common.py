@@ -18,12 +18,17 @@ STAT_COLUMNS = [
 ]
 ODDS_COLUMNS = ['B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL']
 
-# Sackmann-Schema plus match_date (echtes Matchdatum, falls bekannt), status und source
+TOURS = ('atp', 'wta')
+# Spieler-Metadaten (aus Sackmann *_players.csv), pro Match für Sieger und Verlierer
+PLAYER_COLUMNS = [f"{p}_{s}" for p in ("winner", "loser") for s in ("ioc", "hand", "dob")]
+
+# Sackmann-Schema plus tour, match_date (echtes Matchdatum, falls bekannt), status und source.
+# court (Indoor/Outdoor), location und tourney_ioc (Land des Turniers) ergänzt build.py.
 COLUMNS = [
-    'tourney_id', 'tourney_name', 'surface', 'tourney_level', 'tourney_date', 'match_date',
+    'tour', 'tourney_id', 'tourney_name', 'surface', 'court', 'tourney_level', 'tourney_date', 'match_date',
     'match_num', 'round', 'best_of', 'winner_name', 'loser_name', 'winner_rank', 'loser_rank',
-    'score', 'minutes', 'status',
-] + STAT_COLUMNS + ODDS_COLUMNS + ['source']
+    'score', 'minutes', 'status', 'location', 'tourney_ioc',
+] + PLAYER_COLUMNS + STAT_COLUMNS + ODDS_COLUMNS + ['source']
 
 # Reihenfolge der Runden innerhalb eines Turniers (für match_num)
 ROUND_ORDER = {'Q1': 1, 'Q2': 2, 'Q3': 3, 'R128': 10, 'R64': 20, 'R32': 30, 'R16': 40,
@@ -44,6 +49,7 @@ def status_from_score(score):
     if "DEF" in s:
         return "DEF"
     return "completed"
+
 
 
 def yyyymmdd(value):

@@ -17,7 +17,11 @@ from src.predict import Prediction  # noqa: E402
 
 
 class FakePredictor:
+    def __init__(self):
+        self.surfaces = []
+
     def predict(self, a, b, surface):
+        self.surfaces.append(surface)
         return Prediction(a, b, 0.6, 0.4, 20, 20)
 
 
@@ -41,6 +45,18 @@ def test_tennis_page_shows_value_bets(client, monkeypatch):
     assert [side['name'] for _, side, *_ in r.context['bets']] == ["Tabilo, A."]
 
 
+def test_tennis_page_auto_surface(client, monkeypatch):
+    events = [(["Tabilo, A.", "Carreno-Busta, P."], [2.00, 1.90], "tipico")]
+    monkeypatch.setattr(views, "scrape_all_sites", lambda sites, n_outcomes: events)
+    fake = FakePredictor()
+    monkeypatch.setattr(views, "get_predictor", lambda: fake)
+
+    r = client.get("/scraper/tennis/")
+    assert r.context['surface'] == "Auto"
+    # None = der Predictor bestimmt den Untergrund selbst
+    assert fake.surfaces == [None]
+
+
 def test_tennis_page_without_model_still_shows_odds(client, monkeypatch):
     events = [(["Bu, Y.", "Ruud, C."], [1.85, 1.85], "bwin")]
     monkeypatch.setattr(views, "scrape_all_sites", lambda sites, n_outcomes: events)
@@ -52,7 +68,8 @@ def test_tennis_page_without_model_still_shows_odds(client, monkeypatch):
     r = client.get("/scraper/tennis/?surface=Rasen&min_ev=abc")
 
     assert r.status_code == 200
-    assert r.context['surface'] == "Hard"
+    # unbekannter Untergrund -> automatisch
+    assert r.context['surface'] == "Auto"
     assert r.context['min_ev'] == 1.05
     assert "kein Modell" in r.context['error']
     assert len(r.context['matches']) == 1
@@ -71,6 +88,9 @@ def test_football_page(client, monkeypatch):
 class FakeMatchPredictor:
     players = {("medvedev", "d"): "Medvedev D.", ("struff", "j"): "Struff J.L."}
 
+    def __init__(self):
+        self.calls = []
+
     class last_match_date:
         @staticmethod
         def date():
@@ -83,8 +103,11 @@ class FakeMatchPredictor:
     def search(self, query, n=8):
         return ["Struff J.L."]
 
-    def predict(self, a, b, surface="Hard", match_date=None):
-        return Prediction(a, b, 0.75, 0.25, 30, 3, [f"{b}: nur 3 Matches in der Historie"])
+    def predict(self, a, b, surface=None, match_date=None, tournament=None):
+        self.calls.append((surface, tournament))
+        if surface is None:
+            return Prediction(a, b, 0.75, 0.25, 30, 3, [f"{b}: nur 3 Matches in der Historie"], 'Clay', 'tournament')
+        return Prediction(a, b, 0.75, 0.25, 30, 3, [f"{b}: nur 3 Matches in der Historie"], surface, 'manual')
 
     def h2h_record(self, a, b):
         return (2, 1)
@@ -113,6 +136,16 @@ def test_predict_page_shows_prediction(client, monkeypatch):
     assert res['h2h'] == (2, 1)
     html = r.content.decode()
     assert "Medvedev D." in html and "12.10.2026" in html and "nur 3 Matches" in html
+
+
+def test_predict_page_auto_surface_from_tournament(client, monkeypatch):
+    fake = FakeMatchPredictor()
+    monkeypatch.setattr(predictor_views, "get_predictor", lambda: fake)
+    r = client.get("/?a=Medvedev+D.&b=Struff+J.L.&t=Internazionali+BNL+d%27Italia")
+
+    assert r.context['surface'] == "Auto"
+    assert fake.calls == [(None, "Internazionali BNL d'Italia")]
+    assert "Clay (aus Turnier)" in r.content.decode()
 
 
 def test_predict_page_unknown_player_suggests(client, monkeypatch):

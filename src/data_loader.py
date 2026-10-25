@@ -35,13 +35,16 @@ def enforce_schema(df):
         dates = pd.to_datetime(df['tourney_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce')
         df['tourney_date'] = dates.dt.strftime('%Y%m%d')
 
+    # Ältere matches.csv kennen nur ATP
+    df['tour'] = df['tour'].fillna('atp') if 'tour' in df.columns else 'atp'
     return df
 
 
-def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24):
+def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24, tour=None):
     """
     Gemeinsamer Datensatz aus data/matches.csv (Sackmann + tennis-data + ESPN, siehe src/update_data.py).
     Ist er älter als max_age_hours oder fehlt, wird er vorher aktualisiert.
+    tour: 'atp' oder 'wta' filtert, None = beide.
     """
     from . import update_data
     if refresh and update_data.is_stale(max_age_hours):
@@ -52,13 +55,16 @@ def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24
                 raise
             print(f"Warning: Update fehlgeschlagen ({e}), nutze vorhandene Daten.")
 
-    df = pd.read_csv(MATCHES_PATH, dtype={'tourney_date': str, 'match_date': str}, low_memory=False)
+    df = pd.read_csv(MATCHES_PATH, low_memory=False,
+                     dtype={'tourney_date': str, 'match_date': str, 'winner_dob': str, 'loser_dob': str})
     year = df['tourney_date'].str[:4].astype(int)
     if first_year is not None:
         df = df[year >= first_year]
     if last_year is not None:
         df = df[year <= last_year]
     df = enforce_schema(df.reset_index(drop=True))
+    if tour is not None:
+        df = df[df['tour'] == tour].reset_index(drop=True)
     for col in ['B365W', 'B365L', 'PSW', 'PSL', 'AvgW', 'AvgL']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     return df

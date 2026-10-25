@@ -93,7 +93,9 @@ cd betscraper
 python manage.py runserver
 ```
 Dann http://127.0.0.1:8000/ öffnen. Unter **Vorhersage** zwei Spieler wählen (Autovervollständigung,
-Namen in jedem Format wie „Medvedev D.“ oder „D. Medvedev“), dazu Untergrund und Datum. Die Seite zeigt
+Namen in jedem Format wie „Medvedev D.“ oder „D. Medvedev“), dazu optional das Turnier, Untergrund und
+Datum. Mit Untergrund „Auto“ (Standard) wird er aus dem Turniernamen bestimmt, ohne Turnier aus dem
+laufenden Turnier der Spieler; eine manuelle Auswahl hat Vorrang. Die Seite zeigt
 die Siegwahrscheinlichkeit des Transformers, faire Quoten, Head-to-Head sowie Ranking, ELO, Form und
 die letzten Matches beider Spieler. Bei Tippfehlern gibt es Namensvorschläge. Voraussetzung ist ein
 trainiertes Modell unter `models/best_model.pt`.
@@ -108,14 +110,14 @@ playwright install chromium
 cd betscraper
 python manage.py runserver
 ```
-Dann http://127.0.0.1:8000/scraper/tennis/ öffnen (Untergrund und Mindest-EV sind wählbar,
-die Quellen liefern keinen Untergrund). Statt des Playwright-Chromiums kann mit
+Dann http://127.0.0.1:8000/scraper/tennis/ öffnen (Untergrund und Mindest-EV sind wählbar;
+„Auto“ nimmt pro Match den Untergrund des Turniers, das die Spieler gerade spielen). Statt des Playwright-Chromiums kann mit
 `PLAYWRIGHT_CHANNEL=msedge` bzw. `chrome` ein installierter Browser genutzt werden.
 
 Hinweise:
 - Die Spieler-Historien kommen aus `data/matches.csv` (siehe „Datenquellen“), inklusive aller
   bereits gespielten Runden eines laufenden Turniers.
-- Nur ATP-Hauptturniere werden erkannt; WTA, Challenger und Doppel bekommen keine Vorhersage.
+- ATP- und WTA-Hauptturniere werden erkannt; Challenger, ITF und Doppel bekommen keine Vorhersage.
 - Die alte Fußball-Ansicht (1X2-Quoten + Marge) gibt es weiter unter `/scraper/scrape-odds/`.
 
 ## Features
@@ -151,14 +153,20 @@ Die Rohdaten liegen unter `data/raw/`, nichts davon ist im Repo.
 
 | Quelle | Inhalt | Aktualität |
 |---|---|---|
-| [Sackmann-Archiv](https://github.com/Aneeshers/tennis-sackmann-archive) (fester Commit) | Ergebnisse **mit Aufschlag-Stats** | bis Turnierstart 25.05.2026 (Original-Repo ist offline) |
-| [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) | Ergebnisse, Rankings, Untergrund, Quoten (Bet365, Pinnacle, Ø) | wöchentlich nach Turnierende |
-| ESPN-Scoreboard | jedes beendete Match, auch im laufenden Turnier | täglich |
+| [Sackmann-Archiv](https://github.com/Aneeshers/tennis-sackmann-archive) (fester Commit) | ATP und WTA: Ergebnisse **mit Aufschlag-Stats**, Spieler-Metadaten (Nation, Hand, Geburtsdatum) | bis Turnierstart 25.05.2026 (Original-Repo ist offline) |
+| [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) | Ergebnisse, Rankings, Untergrund, Indoor/Outdoor, Quoten (Bet365, Pinnacle, Ø); ATP in `data/raw/tuk/`, WTA in `data/raw/tuk_wta/` | wöchentlich nach Turnierende |
+| ESPN-Scoreboard | jedes beendete Match (ATP und WTA), auch im laufenden Turnier | täglich |
 
 ```bash
 python -m src.update_data          # täglicher Refresh, lädt nur Neues (~1 Minute)
 python -m src.update_data --full   # alles neu laden (~4 Minuten)
+python -m src.update_data --tours atp   # nur eine Tour
 ```
+
+ATP und WTA werden getrennt zusammengeführt (Spalte `tour`), Namen und Matches nie über Touren hinweg
+verknüpft; Elo, Historien und H2H laufen pro Tour. Sackmann kennt nur den Turnierstart: Wo dasselbe
+Match bei tennis-data oder ESPN vorkommt, wird dessen echtes Datum übernommen, sortiert wird überall
+danach (sonst Turnierstart + Runde, `src/chronology.py`).
 
 Training, `preprocess_data.py` und der `MatchPredictor` laden die Daten automatisch neu, wenn der
 letzte Refresh älter als 24 Stunden ist. Beim Zusammenführen werden Spielernamen vereinheitlicht
@@ -273,7 +281,8 @@ python -m src.evaluation.backtest --start 2023 --end 2025 --kelly 0.25 --kelly-c
 
 **Metriken** werden immer auf derselben Stichprobe verglichen: Matches mit Pinnacle-Quote, ohne W/O
 und mit einer Vorhersage von jedem angeforderten Modell. Mit `transformer` schrumpft die Stichprobe,
-weil der Transformer nur Matches im Trainings-Filter (Top 200, genug Historie, aktiv) und nur Jahre nach
+weil der Transformer nur Matches im Trainings-Filter (`config.max_rank`, Standard Top 500, genug Historie,
+aktiv) und nur Jahre nach
 `train_years_end` vorhersagt. Achtung: `val_year` wurde fürs Checkpointing benutzt, streng
 out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward (noch) nicht neu trainiert.
 

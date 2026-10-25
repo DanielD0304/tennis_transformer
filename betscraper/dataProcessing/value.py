@@ -30,7 +30,8 @@ def aggregate_tennis(events):
     return [match for _, match in matches.values()]
 
 
-def add_predictions(matches, predictor, surface):
+def add_predictions(matches, predictor, surface=None):
+    """surface=None: der Predictor bestimmt den Untergrund pro Match selbst."""
     for match in matches:
         match.prediction = predictor.predict(match.player1['name'], match.player2['name'], surface=surface)
     return matches
