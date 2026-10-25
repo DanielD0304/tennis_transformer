@@ -2,17 +2,24 @@
 Neue Paper-Signale aus den aktuellen Snapshots.
 
 - model_signals (Strategie aus dem Timing-Backtest): eigenes Modell (elo2/gbdt) gegen den aktuellen Kaufpreis bei
-  Polymarket/Kalshi (Ask, sonst Preis + halber Spread), Gebühren laut venues.py.
+  Polymarket/Kalshi (Ask, sonst Preis + halber Spread), Gebühren laut venues.py. Liegen Blend-Gewichte aus dem
+  Timing-Backtest vor (data/eval/timing_blend.json), ist p der Blend aus aktuellem Preis und Modell (Gewichte des
+  Zeitpunkts, der der Zeit bis zum Start am nächsten liegt). Das rohe Modell weicht sonst bei sehr vielen Märkten
+  weit vom Preis ab, meist weil es schlechter ist als der Markt.
 - sharp_signals (Strategie A): faire Pinnacle/Betfair-Wahrscheinlichkeit gegen den besten Netto-Preis aller
   anderen Venues (evaluation/sharp.py).
 
 Einsatz: Viertel-Kelly (Deckel 2 % der Bankroll der Strategie) mit p Richtung Markt geschrumpft, dazu flat.
 """
+import json
+import os
+
 import numpy as np
 import pandas as pd
 
 from ..evaluation import sharp
 from ..evaluation.betting import Kelly
+from ..evaluation.predictors import logit, sigmoid
 from .store import bet_id, normalize
 
 MODEL_THRESHOLD = 0.05
@@ -20,6 +27,30 @@ MAX_AGE = pd.Timedelta(minutes=90)  # nur Snapshots, die höchstens so alt sind,
 HORIZON = pd.Timedelta(hours=48)  # nur Matches, die innerhalb dieser Zeit beginnen
 FLAT_STAKE = 10.0
 KELLY = Kelly(0.25, 0.02)
+
+
+BLEND_HOURS = {'24h': 24.0, '6h': 6.0, '1h': 1.0, 'close': 0.0}
+
+
+def load_blend(path=None):
+    """Blend-Gewichte aus dem Timing-Backtest ({venue: {point: {model: [w_preis, w_modell, n]}}}) oder {}."""
+    from ..evaluation.timing import BLEND_PATH
+    path = path or BLEND_PATH
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
+def blended(p, q, hours, weights, venue, model):
+    """p im Blend mit dem Preis q (A) -> (p, verwendeter Zeitpunkt oder None, wenn keine Gewichte da sind)."""
+    by_point = (weights or {}).get(venue) or {}
+    points = [k for k in BLEND_HOURS if model in (by_point.get(k) or {})]
+    if not points or q is None or not (0 < q < 1):
+        return p, None
+    point = min(points, key=lambda k: abs(BLEND_HOURS[k] - hours))
+    w_price, w_model = by_point[point][model][:2]
+    return float(sigmoid(w_price * logit(q) + w_model * logit(p))), point
 
 
 def latest(snaps, now, max_age=MAX_AGE):
@@ -39,21 +70,25 @@ def _stakes(p, odds, net, bankroll, shrink=sharp.SHRINK):
 
 
 def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, strategy='modell',
-                  pm_spread=sharp.PM_SPREAD, log=print):
+                  pm_spread=sharp.PM_SPREAD, log=print, blend=None, model='elo2'):
     """
     snaps: Snapshots (schema.load_snapshots). prob(row) -> P(player_a gewinnt) oder None (Spieler unbekannt).
-    Liefert neue Wetten (DataFrame im Schema von store.COLUMNS).
+    blend: Gewichte aus load_blend() (leer: rohes Modell). Liefert neue Wetten (DataFrame im Schema von store.COLUMNS).
     """
     cur = upcoming(latest(snaps[snaps['venue'].isin(sharp.PREDICTION_MARKETS)], now), now)
     if cur.empty:
         return normalize(pd.DataFrame())
     gross_a, gross_b = sharp.buy_odds(cur, pm_spread)
-    rows, unknown = [], 0
+    rows, unknown, n_blend = [], 0, 0
     for i, r in enumerate(cur.to_dict('records')):
         p = prob(r)
         if p is None or not np.isfinite(p):
             unknown += 1
             continue
+        hours = (pd.Timestamp(r['start_time_utc']) - now).total_seconds() / 3600
+        q = r['price_a'] if r['price_type'] == 'probability' and r['price_a'] == r['price_a'] else None
+        p, used = blended(p, q, hours, blend, r['venue'], model)
+        n_blend += used is not None
         prof = sharp.profile(r['venue'])
         best = None
         for side, odds, p_side in (('a', gross_a[i], p), ('b', gross_b[i], 1 - p)):
@@ -77,6 +112,8 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
         })
     if unknown:
         log(f"  Modell: {unknown} von {len(cur)} Märkten ohne Vorhersage (Spieler nicht in den Matchdaten)")
+    log(f"  Modell: {n_blend} von {len(cur) - unknown} Märkten im Blend mit dem Preis"
+        + ("" if blend else " (keine Gewichte: erst python -m src.evaluation.timing)"))
     return normalize(pd.DataFrame(rows))
 
 

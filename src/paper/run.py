@@ -53,6 +53,47 @@ def make_prob(model='elo2', log=print):
     return prob, predictor.model_name
 
 
+MATCH_DAYS = 30  # Matchdaten für die Abrechnung: nur die letzten Tage (data/matches.csv hat > 600.000 Zeilen)
+LEVEL_DAYS = 730  # Turniernamen für die Level-Zuordnung
+
+
+def recent_matches(now, path=None):
+    """
+    data/matches.csv zeilenweise lesen: (Matches der letzten MATCH_DAYS für die Abrechnung, Sackmann-Zeilen der
+    letzten LEVEL_DAYS mit Turniername/Level für fill_levels). Spart Speicher gegenüber dem ganzen Datensatz.
+    """
+    import csv
+    import os
+    from ..sources.common import MATCHES_PATH
+    path = path or MATCHES_PATH
+    if not os.path.exists(path):
+        return [], []
+    since = f"{now - timedelta(days=MATCH_DAYS):%Y%m%d}"
+    since_level = f"{now - timedelta(days=LEVEL_DAYS):%Y%m%d}"
+    keep = ('winner_name', 'loser_name', 'match_date', 'tourney_date', 'status', 'source', 'tourney_name', 'level',
+            'location')
+    matches, level_rows = [], []
+    with open(path, newline='', encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            day = r.get('match_date') or r.get('tourney_date') or ''
+            if day >= since:
+                matches.append({k: r.get(k) for k in keep})
+            if day >= since_level and r.get('source') == 'sackmann' and r.get('level') in ('challenger', 'itf'):
+                level_rows.append({k: r.get(k) for k in ('tourney_name', 'tourney_date', 'level', 'location')})
+    return matches, level_rows
+
+
+def fill_levels(bets, level_rows):
+    """Fehlendes Level (Polymarket trennt Challenger und Haupttour nicht) über den Turniernamen (Sackmann-Zeilen)."""
+    from ..sources.build import _tourney_lookup
+    missing = bets['level'].isna() if len(bets) else []
+    if not len(bets) or not missing.any():
+        return bets
+    lookup = _tourney_lookup(level_rows, 'level', ('challenger', 'itf'), None)
+    bets.loc[missing, 'level'] = [lookup(t or '') or 'main' for t in bets.loc[missing, 'tourney']]
+    return bets
+
+
 def run_once(args, log=print, prob=None, model_name=None):
     now = now_utc()
     if args.collect:
@@ -68,10 +109,13 @@ def run_once(args, log=print, prob=None, model_name=None):
         if prob is None:
             prob, model_name = make_prob(args.model, log)
         new.append(signals.model_signals(snaps, prob, pd.Timestamp(now), report.bankroll(bets, 'modell'),
-                                         args.threshold, strategy='modell', log=log))
+                                         args.threshold, strategy='modell', log=log,
+                                         blend=None if args.raw else signals.load_blend(), model=model_name))
     if 'sharp' in args.strategies and not snaps.empty:
         new.append(signals.sharp_signals(snaps, pd.Timestamp(now), report.bankroll(bets, 'sharp'), args.sharp_threshold))
+    matches, level_rows = recent_matches(now)
     for part in new:
+        fill_levels(part, level_rows)
         bets, n = add_bets(bets, part)
         if len(part):
             log(f"  {part['strategy'].iloc[0]}: {len(part)} Signale, {n} neue Wetten")
@@ -81,9 +125,8 @@ def run_once(args, log=print, prob=None, model_name=None):
         update(('polymarket', 'kalshi'), since=now - timedelta(days=HISTORY_DAYS),
                levels=('main', 'challenger', 'itf'), log=lambda *a: None)
     from ..odds.history import read_history
-    from ..odds.matching import load_matches
     history = {v: read_history(v) for v in ('polymarket', 'kalshi')}
-    bets, n = settle.settle(bets, pd.Timestamp(now), history, load_matches(), snaps)
+    bets, n = settle.settle(bets, pd.Timestamp(now), history, matches, snaps)
     log(f"  {n} Wetten abgerechnet")
     save_bets(bets, args.bets)
 
@@ -106,6 +149,7 @@ def main(argv=None):
     ap.add_argument('--strategies', default='modell,sharp')
     ap.add_argument('--model', default='gbdt', help="elo2 | gbdt (ohne models/gbdt_<tour>.pkl: elo2)")
     ap.add_argument('--threshold', type=float, default=signals.MODEL_THRESHOLD, help="Mindest-Edge Modell")
+    ap.add_argument('--raw', action='store_true', help="Modell ohne Blend mit dem Preis (data/eval/timing_blend.json)")
     ap.add_argument('--sharp-threshold', type=float, default=0.02, help="Mindest-Edge Sharp vs. Rest")
     ap.add_argument('--days', type=int, default=14, help="Snapshots der letzten N Tage laden")
     ap.add_argument('--bets', default=BETS_PATH)

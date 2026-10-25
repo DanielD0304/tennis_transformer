@@ -174,9 +174,11 @@ def test_run_segments_end_to_end():
         'move_ts': start - pd.Timedelta(days=1), 'move_price_a': 0.48,
         'open_bid_a': np.nan, 'open_ask_a': np.nan, 'p_elo2': true_p, 'p_market': np.nan,
     })
-    table, bets = timing.run_segments({'polymarket': df}, ['polymarket'], ['itf'], ['open'], ['elo2'],
-                                      n_boot=200, with_blend=False)
+    table, bets, weights = timing.run_segments({'polymarket': df}, ['polymarket'], ['itf'], ['open'], ['elo2'],
+                                               n_boot=200, with_blend=True)
     row = table[(table['level'] == 'itf')].iloc[0]
     # Wahres p gegen einen Eröffnungspreis von 0,5: klarer Vorteil, Log Loss besser als der Preis
     assert row['n_bets'] > 50 and row['yield'] > 0 and row['ll_diff'] < 0
     assert set(table['decision']) <= {'GO', 'Kandidat', 'NO-GO', 'zu wenig'}
+    w_price, w_model, n_fit = weights['polymarket']['open']['elo2']
+    assert w_model > w_price and n_fit == 400  # Eröffnungspreis konstant 0,48: nur das Modell trägt Information

@@ -167,3 +167,25 @@ def test_sharp_paper_signals_side_in_venue_orientation():
     # fair Alcaraz ~ 0,46 > 0,41 + Gebühr: Wette auf Alcaraz = Seite A im Kalshi-Event
     assert len(out) == 1
     assert (out['player'].iloc[0], out['side'].iloc[0]) == ('Carlos Alcaraz', 'a')
+
+
+def test_recent_matches_and_level_fill(tmp_path):
+    import csv
+    from src.paper import run
+    path = tmp_path / 'matches.csv'
+    rows = [{'winner_name': 'A', 'loser_name': 'B', 'match_date': '20261020', 'tourney_date': '20261019',
+             'status': 'RET', 'source': 'espn', 'tourney_name': 'Paris', 'level': 'main'},
+            {'winner_name': 'C', 'loser_name': 'D', 'match_date': '20250301', 'tourney_date': '20250301',
+             'status': 'completed', 'source': 'sackmann', 'tourney_name': 'Lima Challenger', 'level': 'challenger'},
+            {'winner_name': 'E', 'loser_name': 'F', 'match_date': '20200101', 'tourney_date': '20200101',
+             'status': 'completed', 'source': 'sackmann', 'tourney_name': 'Old Challenger', 'level': 'challenger'}]
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+    matches, level_rows = run.recent_matches(NOW, str(path))
+    assert [m['winner_name'] for m in matches] == ['A']  # nur die letzten 30 Tage
+    assert [r['tourney_name'] for r in level_rows] == ['Lima Challenger']
+    bets = pd.DataFrame({'level': [None, 'itf'], 'tourney': ['Lima', 'M15 X']})
+    run.fill_levels(bets, level_rows)
+    assert list(bets['level']) == ['challenger', 'itf']

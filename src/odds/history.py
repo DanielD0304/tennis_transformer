@@ -226,7 +226,7 @@ def kalshi_row(event, milestone, market_a, market_b, candles, loaded):
             'source_url': f"{kalshi.API}/events/{event}", 'loaded_utc': loaded, **timing_points(points, start)}
 
 
-def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=8, log=print, save=None):
+def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS, workers=4, log=print, save=None):
     since = since or datetime(2024, 1, 1, tzinfo=timezone.utc)
     log("Kalshi: Milestones laden ...")
     cutoff = now_utc() - SETTLE_DELAY
@@ -266,7 +266,7 @@ def load_kalshi(client, known=(), since=None, limit=None, levels=DEFAULT_LEVELS,
 
 # --------------------------------------------------------------- Ablauf
 
-def _run(fn, items, workers, log, save=None, every=2000):
+def _run(fn, items, workers, log, save=None, every=500):
     """fn parallel auf items anwenden. save(rows) sichert alle `every` Zeilen und am Ende (Abbruch kostet wenig)."""
     rows, errors, saved = [], 0, 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -285,7 +285,7 @@ def _run(fn, items, workers, log, save=None, every=2000):
                 save(rows[saved:])
                 saved = len(rows)
             if i % 1000 == 0:
-                log(f"    {i}/{len(items)} geladen, {len(rows)} mit Preis vor Start")
+                log(f"    {i}/{len(items)} geladen, {len(rows)} mit Preis vor Start, {errors} Fehler")
     if save and len(rows) > saved:
         save(rows[saved:])
     if errors:
@@ -325,7 +325,8 @@ def save_history(venue, rows, root=HISTORY_DIR):
 
 
 LOADERS = {'polymarket': load_polymarket, 'kalshi': load_kalshi}
-RATE = {'polymarket': 15, 'kalshi': 4}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
+RATE = {'polymarket': 15, 'kalshi': 2}  # Anfragen pro Sekunde (Kalshi antwortet sonst mit 429)
+RETRIES = {'polymarket': 6, 'kalshi': 10}  # Kalshi drosselt geteilte IPs teils minutenlang
 
 
 def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAULT_LEVELS, refresh=False,
@@ -333,7 +334,7 @@ def update(venues=('polymarket', 'kalshi'), since=None, limit=None, levels=DEFAU
     """Historie je Venue nachladen. Fehler einer Venue stoppen die andere nicht."""
     result = {}
     for venue in venues:
-        client = JsonClient(max_per_sec=RATE[venue])
+        client = JsonClient(max_per_sec=RATE[venue], retries=RETRIES[venue])
         try:
             known = set() if refresh else set(read_history(venue, root)['event_id'])
             kwargs = {'levels': levels} if venue == 'kalshi' else {}

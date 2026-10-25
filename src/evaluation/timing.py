@@ -30,6 +30,7 @@ das Gesamtvolumen des Markts (als Filter ein leichter Blick in die Zukunft, desh
 Kalshi: Volumen bis t aus den Stunden-Candles, Bid/Ask zum Periodenende.
 """
 import argparse
+import json
 import os
 
 import numpy as np
@@ -44,6 +45,7 @@ from .venues import get_venue
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_DIR = os.path.join(REPO_ROOT, "data", "eval")
+BLEND_PATH = os.path.join(OUT_DIR, "timing_blend.json")
 
 # Zeitpunkt -> Spalten der Historie (ts, Preis, Bid, Ask, Volumen bis t)
 POINTS = {
@@ -261,16 +263,28 @@ def holm(p_values):
 
 # ------------------------------------------------------------------- Auswertung
 
+def _blend_data(df, point, model, venue):
+    _, price_col, _, _, _ = columns(point, venue)
+    ok = usable(df, point, venue) & np.isfinite(df[f'p_{model}'].to_numpy(float))
+    q = pd.to_numeric(df[price_col], errors='coerce').to_numpy(float)
+    X = np.column_stack([logit(q), logit(df[f'p_{model}'].to_numpy(float))])
+    return ok, X, (df['winner'] == 'a').to_numpy(float)
+
+
+def blend_weights(df, point, model, venue, min_train=300):
+    """Gewichte [Preis, Modell] des Blends auf allen Märkten (für den Live-Einsatz im Paper-Trading) oder None."""
+    ok, X, y = _blend_data(df, point, model, venue)
+    if ok.sum() < min_train:
+        return None
+    return [float(w) for w in fit_logistic(X[ok], y[ok])] + [int(ok.sum())]
+
+
 def blend_column(df, point, model, venue, min_train=300):
     """
     p_blend_<model>: logistische Regression auf [logit(Preis zum Zeitpunkt), logit(p_model)], pro Quartal nur auf
     früheren Quartalen gefittet (ohne Fit: der Preis selbst). Prüft, ob das Modell dem frühen Preis etwas hinzufügt.
     """
-    _, price_col, _, _, _ = columns(point, venue)
-    ok = usable(df, point, venue) & np.isfinite(df[f'p_{model}'].to_numpy(float))
-    q = pd.to_numeric(df[price_col], errors='coerce').to_numpy(float)
-    X = np.column_stack([logit(q), logit(df[f'p_{model}'].to_numpy(float))])
-    y = (df['winner'] == 'a').to_numpy(float)
+    ok, X, y = _blend_data(df, point, model, venue)
     start = pd.to_datetime(df['start_time_utc'], utc=True)
     period = start.dt.tz_localize(None).dt.to_period('Q').to_numpy()
     out = np.full(len(df), np.nan)
@@ -315,11 +329,12 @@ def summarize_bets(bets, n_boot=2000, seed=0):
 def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=0.0, min_volume=None,
                  n_boot=2000, seed=0, with_blend=True):
     """
-    linked: {venue: Ausgabe von link_predictions}. Gibt (Tabelle pro Segment, alle Walk-forward-Wetten) zurück.
-    Segment = Venue x Level x Zeitpunkt x Modell; 'all' fasst die Level zusammen.
+    linked: {venue: Ausgabe von link_predictions}. Gibt (Tabelle pro Segment, alle Walk-forward-Wetten, Blend-Gewichte
+    {venue: {point: {model: [w_preis, w_modell, n]}}}) zurück. Segment = Venue x Level x Zeitpunkt x Modell; 'all'
+    fasst die Level zusammen.
     """
     min_volume = min_volume or {}
-    rows, all_bets = [], []
+    rows, all_bets, weights = [], [], {}
     for venue in venues:
         df = linked.get(venue)
         if df is None or df.empty:
@@ -332,6 +347,9 @@ def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=
                 frame = df.copy()
                 for m in models:
                     frame[f'p_blend_{m}'] = blend_column(frame, point, m, venue)
+                    w = blend_weights(frame, point, m, venue)
+                    if w:
+                        weights.setdefault(venue, {}).setdefault(point, {})[m] = w
                 names += [f'blend_{m}' for m in models]
             for model in names:
                 cands = candidate_bets(frame, point, venue, model, pm_spread, pm_fee, min_volume.get(venue, 0.0))
@@ -351,7 +369,7 @@ def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=
     if len(table):
         table = add_decision(table)
     bets = pd.concat(all_bets, ignore_index=True) if all_bets else pd.DataFrame()
-    return table, bets
+    return table, bets, weights
 
 
 def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS):
@@ -457,13 +475,15 @@ def main(argv=None):
 
     venues = args.venues.split(',')
     linked = load_linked(venues, predictions)
-    table, bets = run_segments(linked, venues, args.levels.split(','), args.points.split(','), models,
+    table, bets, weights = run_segments(linked, venues, args.levels.split(','), args.points.split(','), models,
                                pm_spread=args.pm_spread, pm_fee=args.pm_fee,
                                min_volume={'kalshi': args.min_volume_kalshi, 'polymarket': args.min_volume_pm},
                                n_boot=args.bootstrap, with_blend=not args.no_blend)
     os.makedirs(OUT_DIR, exist_ok=True)
     table.to_parquet(os.path.join(OUT_DIR, "timing.parquet"), index=False)
     bets.to_parquet(os.path.join(OUT_DIR, "timing_bets.parquet"), index=False)
+    with open(BLEND_PATH, "w", encoding="utf-8") as f:
+        json.dump(weights, f, indent=1)  # für src/paper (Modell-Strategie im Blend mit dem Preis)
     with open(os.path.join(OUT_DIR, "timing.md"), "w", encoding="utf-8") as f:
         f.write(markdown(table, [c for c in SHOW if c in table.columns]) + "\n")
     pd.set_option('display.width', 250)
@@ -473,7 +493,7 @@ def main(argv=None):
     for r in table[table['decision'].isin(['GO', 'Kandidat'])].to_dict('records'):
         print(f"  {r['decision']}: {r['venue']} {r['level']} {r['point']} {r['model']}: {r['n_bets']} Wetten, "
               f"Yield {r['yield']:+.1%} [{r['yield_ci_low']:+.1%}, {r['yield_ci_high']:+.1%}], CLV {r['clv']:+.1%}")
-    print(f"Gespeichert: {OUT_DIR}/timing.parquet, timing_bets.parquet, timing.md")
+    print(f"Gespeichert: {OUT_DIR}/timing.parquet, timing_bets.parquet, timing.md, timing_blend.json")
 
 
 if __name__ == '__main__':

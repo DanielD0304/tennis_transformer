@@ -154,15 +154,29 @@ Die Rohdaten liegen unter `data/raw/`, nichts davon ist im Repo.
 
 | Quelle | Inhalt | Aktualität |
 |---|---|---|
-| [Sackmann-Archiv](https://github.com/Aneeshers/tennis-sackmann-archive) (fester Commit) | ATP und WTA: Ergebnisse **mit Aufschlag-Stats**, Spieler-Metadaten (Nation, Hand, Geburtsdatum) | bis Turnierstart 25.05.2026 (Original-Repo ist offline) |
+| [Sackmann-Archiv](https://github.com/Aneeshers/tennis-sackmann-archive) (fester Commit) | ATP und WTA: Ergebnisse **mit Aufschlag-Stats**, Spieler-Metadaten (Nation, Hand, Geburtsdatum); auch Challenger, Qualifikation und ITF (siehe unten) | bis Turnierstart 01.06.2026 (Original-Repo ist offline) |
 | [tennis-data.co.uk](https://www.tennis-data.co.uk/alldata.php) | Ergebnisse, Rankings, Untergrund, Indoor/Outdoor, Quoten (Bet365, Pinnacle, Ø); ATP in `data/raw/tuk/`, WTA in `data/raw/tuk_wta/` | wöchentlich nach Turnierende |
-| ESPN-Scoreboard | jedes beendete Match (ATP und WTA), auch im laufenden Turnier | täglich |
+| ESPN-Scoreboard | jedes beendete Match (ATP und WTA), auch im laufenden Turnier; nur vereinzelt Challenger/WTA 125, kein ITF, keine Qualifikation | täglich |
+| Polymarket/Kalshi-Auflösungen (`data/odds/history`, `src/sources/markets.py`) | Sieger abgerechneter Match-Märkte (ohne Score), vor allem Challenger und ITF nach dem Sackmann-Ende | mit `python -m src.odds.collect --history` |
 
 ```bash
 python -m src.update_data          # täglicher Refresh, lädt nur Neues (~1 Minute)
 python -m src.update_data --full   # alles neu laden (~4 Minuten)
 python -m src.update_data --tours atp   # nur eine Tour
+python -m src.update_data --levels main # nur Haupttour (Standard: main,challenger,itf)
 ```
+
+**Level (Spalte `level`: `main`, `challenger`, `itf`).** Aus dem Sackmann-Mirror kommen zusätzlich
+`atp_matches_qual_chall_*` (Challenger + Qualifikation der Haupttour), `atp_matches_futures_*` (ITF M15/M25)
+und `wta_matches_qual_itf_*` (WTA 125, ITF W15–W100, Qualifikation). Qualifikationen der Haupttour zählen als
+`main`, `tourney_level` behält den Sackmann-Code (`C`, `15`, `25`, …). Elo, Historien und Features laufen
+über alle Level einer Tour gemeinsam, weil Spieler zwischen den Leveln wechseln. Ausgewertet wird mit
+`--level` (`python -m src.evaluation.backtest --level challenger`), Standard bleibt die Haupttour.
+Nach dem Sackmann-Ende (01.06.2026) kommen Challenger/ITF-Ergebnisse aus den abgerechneten Polymarket- und
+Kalshi-Märkten (`source='kalshi'`/`'polymarket'`, Sieger aus der Auflösung, kein Score, RET nicht erkennbar,
+50-50-Auflösungen fehlen). Duplikate (dasselbe Match bei beiden Venues oder schon aus Sackmann/ESPN bekannt)
+erkennt `build.MatchIndex`, Priorität Sackmann > tennis-data > ESPN > Kalshi > Polymarket. ESPN und
+Polymarket kennzeichnen Challenger nicht, das Level kommt dort über den Turniernamen aus Sackmann.
 
 ATP und WTA werden getrennt zusammengeführt (Spalte `tour`), Namen und Matches nie über Touren hinweg
 verknüpft; Elo, Historien und H2H laufen pro Tour. Sackmann kennt nur den Turnierstart: Wo dasselbe
@@ -462,3 +476,85 @@ Ablage (unter `data/`, nicht im Repo):
   Den Key einmal mit `setx ODDS_API_KEY "..."` setzen. Die Aufgaben laufen nur, solange der Rechner an ist.
 - Auf einem Server: `nohup python -m src.odds.collect --loop 20 >> data/odds/collect.log 2>&1 &` oder als
   systemd-Service mit `Restart=always`.
+
+## Timing-Backtest (`src/evaluation/timing.py`)
+
+Frage: Lohnt sich ein früher Einstieg bei Polymarket oder Kalshi, wenn das eigene Modell vom Preis abweicht?
+Frühe PM-Preise sind deutlich ungenauer als das Closing (Log Loss Eröffnung 0,658 gegenüber 0,569).
+
+```bash
+python -m src.odds.collect --history --levels main,challenger,itf   # Historie inkl. Preise bei -24 h/-6 h/-1 h
+python -m src.update_data                                           # Märkte als Ergebnisquelle einbinden
+python -m src.evaluation.timing                                     # alle Venues, Level, Zeitpunkte, elo2+gbdt
+python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenger --pm-spread 0.03
+```
+
+- Zeitpunkte: Eröffnung, −24 h, −6 h, −1 h, Closing. Es zählt jeweils der letzte Preis ≤ t vor der geplanten
+  Startzeit, nie ein späterer (`odds/history.price_at`).
+- Erreichbarer Preis: Kalshi kauft zum Ask aus den Stunden-Candles (B über 1 − Bid von A), dazu kommt die
+  Kalshi-Gebühr. Polymarket kauft zum Preis + halben Spread (`--pm-spread`, Standard 2 %), dazu die
+  Taker-Fee (`--pm-fee`). Die „Eröffnung“ ist bei Polymarket der erste echte Kurs: Der erste Punkt ist
+  meist der Mittelpreis 0,5 eines leeren Orderbuchs. Preise von genau 0,5 gelten dort als Platzhalter.
+- Liquidität: Kalshi verlangt mindestens `--min-volume-kalshi` Kontrakte, die bis t gehandelt wurden.
+  Polymarket kennt historisch nur das Gesamtvolumen. Dieser Filter ist deshalb ein Blick in die Zukunft
+  und standardmäßig aus.
+- p aus `elo2`/`gbdt` walk-forward (Fits nur auf Matches vor dem Testmonat, Leakage-Asserts) sowie
+  `blend_<modell>`: eine logistische Regression aus Preis zum Zeitpunkt t und Modell, pro Quartal nur auf
+  früheren Quartalen gefittet. Sie prüft, ob das Modell dem frühen Preis etwas hinzufügt.
+- Wette, wenn p × Netto-Quote − 1 > Schwelle. Die Schwelle kommt pro Quartal aus den Quartalen davor.
+- Ausgabe pro Venue × Level × Zeitpunkt × Modell: Wetten, Yield mit Bootstrap-KI, CLV gegen das Closing
+  der Venue (und gegen Pinnacle/Betfair, wo vorhanden) sowie der Log Loss von p gegen den Preis zum
+  Zeitpunkt t. GO gilt nur, wenn alle drei Bedingungen erfüllt sind: Holm-korrigiertes p < 0,05,
+  KI-Untergrenze > 0 und CLV > 0.
+- Ablage: `data/eval/timing.{parquet,md}` und `timing_bets.parquet`. Dazu `timing_blend.json`
+  (Blend-Gewichte für das Paper-Trading).
+
+## Sharp vs. Rest (`src/evaluation/sharp.py`)
+
+Strategie A aus dem ROI-Plan auf den Quoten-Snapshots: Die faire Wahrscheinlichkeit kommt von Pinnacle bzw.
+Betfair Exchange ohne Marge. Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
+die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei den Prediction Markets die
+Gebühren. Ein Signal entsteht, wenn p_fair × netto − 1 > Schwelle. Snapshots verschiedener Venues werden
+nur verknüpft, wenn sie höchstens 5 Minuten auseinanderliegen. Einsatz: Viertel-Kelly mit Deckel 2 % der
+Bankroll, p vorher zur Hälfte Richtung Venue-Preis geschrumpft. Flat läuft zum Vergleich mit. Ohne
+Sharp-Snapshots (Odds API) gibt es keine Signale.
+
+## Paper-Trading (`src/paper/`, Dashboard `/scraper/paper/`)
+
+```bash
+python -m src.paper.run                 # eine Runde: Snapshots holen, Signale -> Wetten, abrechnen, Stand ausgeben
+python -m src.paper.run --loop 30       # dauerhaft alle 30 Minuten
+python -m src.paper.run --no-collect    # wenn der Collector schon separat läuft
+python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent, für „sharp“ nötig)
+```
+
+- Strategien: `modell` (gbdt bzw. elo2 im Blend mit dem aktuellen Preis bei Polymarket/Kalshi, Gewichte
+  aus `data/eval/timing_blend.json`; `--raw` nimmt das rohe Modell) und `sharp` (Sharp vs. Rest).
+- Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
+  Strategie, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals verfügbare
+  Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match.
+- Abrechnung frühestens 3 h nach der geplanten Startzeit, über die PM/Kalshi-Auflösung (die Historie der
+  letzten 10 Tage wird nachgeladen) oder die Matchdaten (ESPN, Märkte). W/O ist void. RET richtet sich
+  nach der Venue: Polymarket und Kalshi zahlen den Spieler aus, der weiterkommt. Deutsche Bücher werden
+  als void angenommen, das bitte in den AGB prüfen. Eine 50-50-Auflösung ist void.
+- CLV = genommene Quote / Schlussquote − 1. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
+  dem Start, dazu wird gegen Sharp verglichen, wo vorhanden.
+- **Kriterium für echtes Geld** (im Dashboard angezeigt): ≥ 300 abgerechnete Paper-Wetten, mittlerer CLV
+  > +2 % und untere Grenze des Yield-KI > 0 nach Gebühren. Vorher rechtlich prüfen, ob Polymarket und
+  Kalshi aus Deutschland nutzbar sind (Kalshi ist im Wesentlichen nur für die USA). Das ist keine
+  Rechtsberatung.
+
+**Dauerhaft laufen lassen** (lokal, in der Cloud-Session läuft nichts dauerhaft). Der Paper-Lauf holt selbst
+Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlich der Odds-API-Collector laufen
+(siehe oben, Kontingent beachten).
+- Linux/macOS (cron, vorher `mkdir -p data/paper data/odds`):
+  ```
+  */30 * * * * cd /pfad/zu/tennis_transformer && python -m src.paper.run >> data/paper/run.log 2>&1
+  5 */3 * * *  cd /pfad/zu/tennis_transformer && ODDS_API_KEY=... python -m src.odds.collect --venues odds_api >> data/odds/collect.log 2>&1
+  15 4 * * *   cd /pfad/zu/tennis_transformer && python -m src.update_data && python -m src.odds.collect --history >> data/odds/history.log 2>&1
+  ```
+- Windows (Aufgabenplanung, im Repo-Ordner, vorher `mkdir data\paper`):
+  ```
+  schtasks /Create /SC MINUTE /MO 30 /TN "TennisPaper" /TR "cmd /c cd /d %CD% && python -m src.paper.run >> data\paper\run.log 2>&1"
+  ```
+- Dashboard: `cd betscraper && python manage.py runserver`, dann http://127.0.0.1:8000/scraper/paper/
