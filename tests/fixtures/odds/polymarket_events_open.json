@@ -1,0 +1,170 @@
+[
+ {
+  "id": "1250398",
+  "slug": "wta-fernand-sakatsu-2026-10-26",
+  "title": "Pan Pacific Open: Leylah Fernandez vs Himeno Sakatsume",
+  "startTime": "2026-10-27T02:00:00Z",
+  "seriesSlug": "wta",
+  "eventMetadata": {
+   "context_requires_regen": true,
+   "league": "Pan Pacific Open",
+   "opticOddsFixtureId": "20261026BD1AFECE",
+   "opticOddsGameId": "37833-37608-2026-43",
+   "opticOddsNumericalId": 1203506
+  },
+  "teams": [
+   {
+    "name": "Leylah Fernandez",
+    "alias": "L. Fernandez",
+    "ordering": "home"
+   },
+   {
+    "name": "Himeno Sakatsume",
+    "alias": "H. Sakatsume",
+    "ordering": "away"
+   }
+  ],
+  "markets": [
+   {
+    "id": "6173065",
+    "question": "Pan Pacific Open: Leylah Fernandez vs Himeno Sakatsume",
+    "slug": "wta-fernand-sakatsu-2026-10-26",
+    "sportsMarketType": "moneyline",
+    "outcomes": "[\"Leylah Fernandez\", \"Himeno Sakatsume\"]",
+    "outcomePrices": "[\"0.795\", \"0.205\"]",
+    "clobTokenIds": "[\"61465786935217555288490033062827918806065833757206234102355696525281096860255\", \"67988218667330669584011068897442026383587778906839308934461627564478163942791\"]",
+    "bestBid": 0.79,
+    "bestAsk": 0.8,
+    "volumeNum": 10402.763473,
+    "liquidityNum": 14112.5664,
+    "gameStartTime": "2026-10-27 02:00:00+00",
+    "startDate": "2026-10-25T04:14:10Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   },
+   {
+    "id": "6173066",
+    "question": "Pan Pacific Open: Completed Match: Leylah Fernandez vs Himeno Sakatsume",
+    "slug": "wta-fernand-sakatsu-2026-10-26-completed-match",
+    "sportsMarketType": "tennis_completed_match",
+    "outcomes": "[\"Yes\", \"No\"]",
+    "outcomePrices": "[\"0.505\", \"0.495\"]",
+    "clobTokenIds": "[\"12791529866552400334870785452153949160807179669527922064261587168580339694078\", \"27046368413875396793583323643628892625667771937757654001618280344085308649247\"]",
+    "bestBid": 0.01,
+    "bestAsk": 1,
+    "volumeNum": null,
+    "liquidityNum": 0.05,
+    "gameStartTime": "2026-10-27 02:00:00+00",
+    "startDate": "2026-10-25T04:14:10Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   }
+  ]
+ },
+ {
+  "id": "1250399",
+  "slug": "wta-uchijim-mertens-2026-10-26",
+  "title": "Pan Pacific Open: Moyuka Uchijima vs Elise Mertens",
+  "startTime": "2026-10-26T04:30:00Z",
+  "seriesSlug": "wta",
+  "eventMetadata": {
+   "league": "Pan Pacific Open",
+   "opticOddsFixtureId": "202610260FC90328",
+   "opticOddsGameId": "37871-24337-2026-42",
+   "opticOddsNumericalId": 1203505
+  },
+  "teams": [
+   {
+    "name": "Moyuka Uchijima",
+    "alias": "Moyuka Uchijima",
+    "ordering": "home"
+   },
+   {
+    "name": "Elise Mertens",
+    "alias": "E. Mertens",
+    "ordering": "away"
+   }
+  ],
+  "markets": [
+   {
+    "id": "6173067",
+    "question": "Pan Pacific Open: Moyuka Uchijima vs Elise Mertens",
+    "slug": "wta-uchijim-mertens-2026-10-26",
+    "sportsMarketType": "moneyline",
+    "outcomes": "[\"Moyuka Uchijima\", \"Elise Mertens\"]",
+    "outcomePrices": "[\"0.155\", \"0.845\"]",
+    "clobTokenIds": "[\"8974646230191679988246124452520002635267141799679047220865743513374821287180\", \"47913844118318649137542599026887141622785426953327130348035599868757277240086\"]",
+    "bestBid": 0.15,
+    "bestAsk": 0.16,
+    "volumeNum": 2000.940698,
+    "liquidityNum": 7677.5207,
+    "gameStartTime": "2026-10-26 04:30:00+00",
+    "startDate": "2026-10-25T04:14:12Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   },
+   {
+    "id": "6173068",
+    "question": "Pan Pacific Open: Completed Match: Moyuka Uchijima vs Elise Mertens",
+    "slug": "wta-uchijim-mertens-2026-10-26-completed-match",
+    "sportsMarketType": "tennis_completed_match",
+    "outcomes": "[\"Yes\", \"No\"]",
+    "outcomePrices": "[\"0.505\", \"0.495\"]",
+    "clobTokenIds": "[\"79078234957224280432256923229206854141251718974130776277847346479419802959026\", \"68203401143320149077408661112620329036891056298734508751444175271642716993104\"]",
+    "bestBid": 0.01,
+    "bestAsk": 1,
+    "volumeNum": null,
+    "liquidityNum": 0.05,
+    "gameStartTime": "2026-10-26 04:30:00+00",
+    "startDate": "2026-10-25T04:14:12Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   }
+  ]
+ },
+ {
+  "id": "1080883",
+  "slug": "atp-mayot-cassone-2026-09-26",
+  "title": "St. Tropez: Harold Mayot vs Murphy Cassone",
+  "startTime": "2026-09-26T12:05:00Z",
+  "seriesSlug": "atp",
+  "eventMetadata": {
+   "context_requires_regen": true,
+   "league": "St. Tropez",
+   "opticOddsFixtureId": "2026092698F9DF15",
+   "opticOddsGameId": "20477-23589-2026-38",
+   "opticOddsNumericalId": 1152385
+  },
+  "teams": [
+   {
+    "name": "Harold Mayot",
+    "alias": "H. Mayot",
+    "ordering": "home"
+   },
+   {
+    "name": "Murphy Cassone",
+    "alias": "M. Cassone",
+    "ordering": "away"
+   }
+  ],
+  "markets": [
+   {
+    "id": "4951338",
+    "question": "St. Tropez: Harold Mayot vs Murphy Cassone",
+    "slug": "atp-mayot-cassone-2026-09-26",
+    "sportsMarketType": "moneyline",
+    "outcomes": "[\"Harold Mayot\", \"Murphy Cassone\"]",
+    "outcomePrices": "[\"1\", \"0\"]",
+    "clobTokenIds": "[\"101476602748270311485407811911432329685044941983556967744258409060568597029186\", \"4825930120403674789918588539510223649800723454685135549809951185824002316713\"]",
+    "bestBid": 0.999,
+    "bestAsk": 1,
+    "volumeNum": 456208.62959999987,
+    "liquidityNum": null,
+    "gameStartTime": "2026-09-26 12:05:00+00",
+    "startDate": "2026-09-25T17:05:16Z",
+    "closed": true,
+    "umaResolutionStatus": "resolved"
+   }
+  ]
+ }
+]

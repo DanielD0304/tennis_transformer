@@ -1,0 +1,49 @@
+{
+ "events": [
+  {
+   "event_ticker": "KXATPMATCH-26OCT25BERETC",
+   "series_ticker": "KXATPMATCH",
+   "title": "Berrettini vs Etcheverry",
+   "sub_title": "Berrettini vs Etcheverry (Oct 25)",
+   "product_metadata": {
+    "competition": "ATP Vienna",
+    "competition_scope": "Game"
+   },
+   "markets": [
+    {
+     "ticker": "KXATPMATCH-26OCT25BERETC-BER",
+     "event_ticker": "KXATPMATCH-26OCT25BERETC",
+     "yes_sub_title": "Matteo Berrettini",
+     "custom_strike": {
+      "tennis_competitor": "c2d9e167-2fd6-484f-938e-0f8ba768fa88"
+     },
+     "yes_bid_dollars": "0.6200",
+     "yes_ask_dollars": "0.6300",
+     "last_price_dollars": "0.6400",
+     "volume_fp": "260.05",
+     "open_time": "2026-10-24T11:26:00Z",
+     "close_time": "2026-11-08T09:00:00Z",
+     "result": "",
+     "status": "active"
+    },
+    {
+     "ticker": "KXATPMATCH-26OCT25BERETC-ETC",
+     "event_ticker": "KXATPMATCH-26OCT25BERETC",
+     "yes_sub_title": "Tomas Martin Etcheverry",
+     "custom_strike": {
+      "tennis_competitor": "1a6577a3-f592-47fd-a84e-eb7e97ff61b8"
+     },
+     "yes_bid_dollars": "0.3700",
+     "yes_ask_dollars": "0.3800",
+     "last_price_dollars": "0.3600",
+     "volume_fp": "402.13",
+     "open_time": "2026-10-24T11:26:00Z",
+     "close_time": "2026-11-08T09:00:00Z",
+     "result": "",
+     "status": "active"
+    }
+   ]
+  }
+ ],
+ "cursor": ""
+}
