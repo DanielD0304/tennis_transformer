@@ -51,7 +51,7 @@ def predictor(tmp_path_factory):
     model = Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len, cfg.output_dim)
     model_path = tmp_path_factory.mktemp("model") / "best_model.pt"
     torch.save(model.state_dict(), model_path)
-    return MatchPredictor(matches=fake_matches(), model_path=str(model_path))
+    return MatchPredictor(matches=fake_matches(), model_path=str(model_path), model="transformer")
 
 
 def test_history_built(predictor):
@@ -100,7 +100,7 @@ def test_unknown_player_gives_none(predictor):
 
 def test_missing_model_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        MatchPredictor(matches=fake_matches(), model_path=str(tmp_path / "fehlt.pt"))
+        MatchPredictor(matches=fake_matches(), model_path=str(tmp_path / "fehlt.pt"), model="transformer")
 
 
 def test_player_info(predictor):
@@ -177,3 +177,58 @@ def test_surface_from_current_tournament(predictor):
     surface, source = predictor.surface_for(None, ("Daniil Medvedev",), match_date=last)
     assert source == 'current'
     assert surface == predictor.matches["Daniil Medvedev"][-1]['surface']
+
+
+def test_predict_proba_interface(predictor):
+    p = predictor.predict_proba({'player_a': "Daniil Medvedev", 'player_b': "Jan-Lennard Struff", 'surface': "Hard"})
+    q = predictor.predict_proba({'player_a': "Jan-Lennard Struff", 'player_b': "Daniil Medvedev", 'surface': "Hard"})
+    assert 0 < p < 1 and p == pytest.approx(1 - q, abs=1e-6)
+    assert predictor.predict_proba({'player_a': "Daniil Medvedev", 'player_b': "Unbekannt X."}) is None
+
+
+def test_transformer_checkpoint_with_temperature(tmp_path):
+    """Neuer Checkpoint (Elo2-Input + Temperatur): höhere Temperatur zieht p Richtung 0,5."""
+    from src.model import save_checkpoint
+    cfg = default_config
+    torch.manual_seed(1)
+    model = Model(cfg.d_model, cfg.num_heads, cfg.num_layers, cfg.input_dim, cfg.max_len, cfg.output_dim,
+                  cfg.extra_dim)
+    probs = []
+    for t in (1.0, 4.0):
+        path = tmp_path / f"m{t}.pt"
+        save_checkpoint(model, str(path), temperature=t, extra_dim=cfg.extra_dim)
+        pred = MatchPredictor(matches=fake_matches(), model_path=str(path), model="transformer")
+        assert pred.temperature == t
+        probs.append(pred.predict("Daniil Medvedev", "Jan-Lennard Struff", surface="Hard").prob_a)
+    assert abs(probs[1] - 0.5) == pytest.approx(abs(probs[0] - 0.5) / 4, rel=0.05)
+    ba = pred.predict("Jan-Lennard Struff", "Daniil Medvedev", surface="Hard")
+    assert ba.prob_a == pytest.approx(1 - probs[1], abs=1e-6)
+
+
+def test_live_model_elo2():
+    pred = MatchPredictor(matches=fake_matches(), model='elo2')
+    out = pred.predict("Daniil Medvedev", "Jan-Lennard Struff", surface="Clay")
+    assert out.model == 'elo2'
+    tour = pred.tour["Daniil Medvedev"]
+    assert out.prob_a == pytest.approx(pred.elo2.prob(tour, "Daniil Medvedev", "Jan-Lennard Struff", "Clay"))
+    assert out.prob_a + pred.predict("Jan-Lennard Struff", "Daniil Medvedev", surface="Clay").prob_a == pytest.approx(1)
+    with pytest.raises(ValueError):
+        MatchPredictor(matches=fake_matches(), model='xgboost')
+
+
+def test_live_model_gbdt(tmp_path):
+    pytest.importorskip('lightgbm')
+    from src.evaluation.predictors import prepare_matches
+    from src.models.gbdt import GBDTParams, train_live
+
+    df = fake_matches(years=(2022, 2023, 2024, 2025))
+    model = train_live(prepare_matches(df), params=GBDTParams(max_rounds=30, min_data_in_leaf=5), val_months=6)
+    model.save(str(tmp_path / "gbdt_atp.pkl"))
+    with pytest.raises(FileNotFoundError):
+        MatchPredictor(matches=df, model='gbdt', gbdt_dir=str(tmp_path / "leer"))
+    pred = MatchPredictor(matches=df, model='gbdt', gbdt_dir=str(tmp_path))
+    p = pred.predict_proba({'player_a': "Daniil Medvedev", 'player_b': "Nuno Borges", 'surface': "Hard",
+                            'date': "2026-01-10"})
+    q = pred.predict_proba({'player_a': "Nuno Borges", 'player_b': "Daniil Medvedev", 'surface': "Hard",
+                            'date': "2026-01-10"})
+    assert 0 < p < 1 and p == pytest.approx(1 - q, abs=1e-9)

@@ -47,6 +47,23 @@ FEATURE_NAMES = [
     'fatigue_matches_14d', 'fatigue_sets_14d', 'fatigue_minutes_14d',
     'age', 'left_handed', 'ctx_home',
 ]
+# Match-Features außerhalb der Sequenzen (config.extra_dim), aus Sicht von Spieler A.
+# elo2_logit: logit der Elo2-Siegwahrscheinlichkeit (elo.elo2_features), 0 wenn unbekannt.
+EXTRA_FEATURES = ['elo2_logit']
+
+
+def elo2_logit(p_winner, a_is_winner):
+    """logit(P(A gewinnt)) aus der Elo2-Wahrscheinlichkeit des Siegers."""
+    try:
+        p = float(p_winner)
+    except (TypeError, ValueError):
+        return 0.0
+    if not 0.0 < p < 1.0:
+        return 0.0
+    z = math.log(p / (1 - p))
+    return z if a_is_winner else -z
+
+
 # Features, die aus der Aufschlag-Statistik kommen. Fehlen die Stats (tennis-data, ESPN),
 # sind sie 0 und has_stats ist 0, damit das Modell "keine Daten" von "0 Aces" unterscheiden kann.
 STAT_FEATURES = [
@@ -483,6 +500,7 @@ def create_training_samples(df, n_matches=10, n_recent=15, seed=42, max_rank=MAX
                     'segment_ids': seg_ids, 'label': label,
                     'year': year,
                     'match_index': index,  # Zeile in df, damit die Evaluation Samples Matches zuordnen kann
+                    'elo2_logit': elo2_logit(row.get('elo2_p_winner'), label == 1),
                     'odds_a': odds_a if not pd.isna(odds_a) else 0.0,
                     'odds_b': odds_b if not pd.isna(odds_b) else 0.0
                 }

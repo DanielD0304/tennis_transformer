@@ -95,16 +95,19 @@ def _update(state, date, surface, won, score, minutes, retired_self, retired_mat
     state.last_retired = int(retired_self)
 
 
-def feature_table(matches):
+class FeatureBuilder:
     """
-    matches: Ausgabe von evaluation.predictors.prepare_matches (A/B-Sicht, mit elo_a/elo_b).
-    -> DataFrame mit KEY_COLUMNS, MATCH_FEATURES und <feature>_a/_b/_diff für PLAYER_FEATURES,
-    in der Reihenfolge von matches (die schon chronologisch ist).
+    Stand aller Spieler einer Datenbasis. row(m) baut die Feature-Zeile für ein Match aus dem aktuellen
+    Stand (ohne ihn zu ändern), update(m) schreibt das Ergebnis ein. feature_table ruft beides im
+    Wechsel auf, predict.MatchPredictor nutzt row() für Matches, die noch nicht gespielt sind.
+    m: Dict mit den Spalten von prepare_matches (player_a/b, label, date, surface, ...).
     """
-    players = defaultdict(_Player)  # (Tour, Name) -> Stand
-    h2h = defaultdict(int)          # (Tour, Sieger, Verlierer) -> Siege
-    rows = []
-    for m in matches.to_dict('records'):
+
+    def __init__(self):
+        self.players = defaultdict(_Player)  # (Tour, Name) -> Stand
+        self.h2h = defaultdict(int)          # (Tour, Sieger, Verlierer) -> Siege
+
+    def row(self, m):
         tour = _text(m.get('tour')) or 'atp'
         a, b = m['player_a'], m['player_b']
         a_won = int(m['label']) == 1
@@ -117,13 +120,13 @@ def feature_table(matches):
         row = {k: m.get(k) for k in KEY_COLUMNS}
         feats = {}
         for p, side, x in ((a, side_a, 'a'), (b, side_b, 'b')):
-            feats[x] = _player_row(players[(tour, p)], surface, date, _num(m.get(f'elo_{x}'), np.nan),
+            feats[x] = _player_row(self.players[(tour, p)], surface, date, _num(m.get(f'elo_{x}'), np.nan),
                                    _num(m.get(f'rank_{x}'), 0), m.get(f'{side}_dob'), _text(m.get(f'{side}_hand')),
                                    _text(m.get(f'{side}_ioc')), tourney_ioc)
         for f in PLAYER_FEATURES:
             row[f'{f}_a'], row[f'{f}_b'] = feats['a'][f], feats['b'][f]
             row[f'{f}_diff'] = feats['a'][f] - feats['b'][f]
-        wins_a, wins_b = h2h[(tour, a, b)], h2h[(tour, b, a)]
+        wins_a, wins_b = self.h2h[(tour, a, b)], self.h2h[(tour, b, a)]
         row.update({
             'best_of_5': int(best_of == 5),
             'indoor': int(_text(m.get('court')) == 'Indoor'),
@@ -133,19 +136,40 @@ def feature_table(matches):
             'h2h_pct_a': wins_a / (wins_a + wins_b) if wins_a + wins_b else 0.5,
             'elo_prob_a': 1 / (1 + 10 ** ((row['elo_b'] - row['elo_a']) / 400)),
         })
-        rows.append(row)
+        return row
 
-        # Erst jetzt fließt das Ergebnis in den Stand ein (W/O ist kein gespieltes Match)
+    def update(self, m):
+        # W/O ist kein gespieltes Match
         if is_walkover(m):
-            continue
+            return
+        tour = _text(m.get('tour')) or 'atp'
+        a, b = m['player_a'], m['player_b']
+        a_won = int(m['label']) == 1
+        date = m['date']
+        surface = _text(m.get('surface'))
         score = _score(_text(m.get('score')))
         retired = is_retired(m)
         winner, loser = (a, b) if a_won else (b, a)
         minutes = _num(m.get('minutes'))
-        _update(players[(tour, winner)], date, surface, True, score, minutes, False, retired)
+        _update(self.players[(tour, winner)], date, surface, True, score, minutes, False, retired)
         # Bei RET/DEF gibt immer der Verlierer auf
-        _update(players[(tour, loser)], date, surface, False, score, minutes, retired, retired)
-        h2h[(tour, winner, loser)] += 1
+        _update(self.players[(tour, loser)], date, surface, False, score, minutes, retired, retired)
+        self.h2h[(tour, winner, loser)] += 1
 
-    return pd.DataFrame(rows, columns=KEY_COLUMNS + MATCH_FEATURES +
-                        [f'{f}_{x}' for f in PLAYER_FEATURES for x in ('a', 'b', 'diff')])
+
+FEATURE_COLUMNS = MATCH_FEATURES + [f'{f}_{x}' for f in PLAYER_FEATURES for x in ('a', 'b', 'diff')]
+
+
+def feature_table(matches, builder=None):
+    """
+    matches: Ausgabe von evaluation.predictors.prepare_matches (A/B-Sicht, mit elo_a/elo_b).
+    -> DataFrame mit KEY_COLUMNS, MATCH_FEATURES und <feature>_a/_b/_diff für PLAYER_FEATURES,
+    in der Reihenfolge von matches (die schon chronologisch ist). builder: FeatureBuilder, der danach
+    den Stand nach dem letzten Match hält (für Live-Vorhersagen).
+    """
+    builder = builder if builder is not None else FeatureBuilder()
+    rows = []
+    for m in matches.to_dict('records'):
+        rows.append(builder.row(m))  # erst die Zeile aus dem Stand VOR dem Match ...
+        builder.update(m)            # ... dann fließt das Ergebnis ein
+    return pd.DataFrame(rows, columns=KEY_COLUMNS + FEATURE_COLUMNS)

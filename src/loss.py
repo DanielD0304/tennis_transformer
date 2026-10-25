@@ -23,3 +23,12 @@ class FocalLoss(nn.Module):
             return focal_loss.sum()
         else:
             return focal_loss
+
+
+def make_criterion(kind='ce'):
+    """'ce' = Cross-Entropy (Standard, kalibrierte Wahrscheinlichkeiten), 'focal' = Focal Loss (gamma 2)."""
+    if kind == 'ce':
+        return nn.CrossEntropyLoss()
+    if kind == 'focal':
+        return FocalLoss(gamma=2.0)
+    raise ValueError(f"Unbekannter Loss {kind!r} (ce oder focal)")

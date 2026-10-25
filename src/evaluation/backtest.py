@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from . import betting, metrics
-from .predictors import MarketPredictor, EloPredictor, TransformerPredictor, make_predictors, prepare_matches
+from .predictors import Elo2Predictor, EloPredictor, MarketPredictor, make_predictors, prepare_matches
 from .venues import VENUES
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -31,12 +31,13 @@ PREDICTIONS_PATH = os.path.join(REPO_ROOT, "data", "eval", "predictions.parquet"
 
 PREDICTION_COLUMNS = [
     'match_id', 'date', 'year', 'tour', 'tourney_name', 'surface', 'round', 'player_a', 'player_b', 'label',
-    'status', 'rank_a', 'rank_b', 'elo_a', 'elo_b', 'b365_a', 'b365_b', 'ps_a', 'ps_b', 'avg_a', 'avg_b',
-    'market_source', 'fair_ps',
+    'status', 'rank_a', 'rank_b', 'elo_a', 'elo_b', 'elo2_a', 'elo2_b', 'b365_a', 'b365_b', 'ps_a', 'ps_b', 'avg_a', 'avg_b',
+    'max_a', 'max_b', 'bfe_a', 'bfe_b', 'market_source', 'fair_ps', 'tourney_level', 'best_of',
 ]
+DEFAULT_VENUES = ('pinnacle', 'betfair', 'bet365_de')
 FREQ = {'month': 'MS', 'week': 'W-MON', 'year': 'YS', 'quarter': 'QS'}
 # Predictor ohne Fit: dürfen auch für die Historie vor dem Start gerechnet werden (Warm-up für den Blend)
-STATIC = (MarketPredictor, EloPredictor)
+STATIC = (MarketPredictor, EloPredictor, Elo2Predictor)
 
 
 def windows(start, end, freq='month'):
@@ -50,22 +51,24 @@ def windows(start, end, freq='month'):
     return list(zip(edges[:-1], edges[1:]))
 
 
-def walk_forward(matches, predictors, start, end, freq='month', log=print):
+def walk_forward(matches, predictors, start, end, freq='month', log=print, warmup=0):
     """
     matches: Ausgabe von predictors.prepare_matches (inkl. Historie vor `start`).
     Gibt die Vorhersagen für start..end zurück (Spalten PREDICTION_COLUMNS + p_<name>).
+    warmup: so viele Jahre vor `start` laufen schon mit (nicht im Ergebnis), damit Blend und Stack
+    zu Beginn out-of-sample-Vorhersagen der Basismodelle zum Fitten haben.
     """
     frame = matches.copy()
     for p in predictors:
         frame[f'p_{p.name}'] = np.nan
         if isinstance(p, STATIC):
             frame[f'p_{p.name}'] = p.predict(frame)
-        if isinstance(p, TransformerPredictor):
-            log("Transformer: Features und Vorhersagen für alle Matches ...")
+        if hasattr(p, 'prepare'):
+            log(f"{p.name}: Features für alle Matches ...")
             p.prepare(matches)
 
     dates = frame['date']
-    for lo, hi in windows(start, end, freq):
+    for lo, hi in windows(start - warmup, end, freq):
         in_window = (dates >= lo) & (dates < hi)
         if not in_window.any():
             continue
@@ -73,7 +76,7 @@ def walk_forward(matches, predictors, start, end, freq='month', log=print):
         assert (history['date'] < lo).all(), "Leakage: Fit-Daten reichen ins Testfenster"
         window = frame[in_window]
         for p in predictors:
-            if isinstance(p, STATIC):
+            if isinstance(p, STATIC) or lo.year < getattr(p, 'first_year', lo.year):
                 continue
             p.fit(history)
             frame.loc[in_window, f'p_{p.name}'] = p.predict(window)
@@ -84,10 +87,13 @@ def walk_forward(matches, predictors, start, end, freq='month', log=print):
     return frame.loc[in_range, cols].reset_index(drop=True)
 
 
-def run(df, models, start, end, freq='month', config=None, model_path=None, log=print):
-    predictors = make_predictors(models, config=config, model_path=model_path)
+def run(df, models, start, end, freq='month', config=None, model_path=None, log=print, warmup=1,
+        gbdt_refit='quarter', with_predictors=False):
+    predictors = make_predictors(models, config=config, model_path=model_path, gbdt_refit=gbdt_refit)
     matches = prepare_matches(df)
-    return walk_forward(matches, predictors, start, end, freq=freq, log=log), [p.name for p in predictors]
+    predictions = walk_forward(matches, predictors, start, end, freq=freq, log=log, warmup=warmup)
+    names = [p.name for p in predictors]
+    return (predictions, names, predictors) if with_predictors else (predictions, names)
 
 
 def save(predictions, path=PREDICTIONS_PATH):
@@ -106,31 +112,92 @@ def _fmt(df, pct=()):
     return df.to_string(index=False, float_format=lambda v: f"{v:.4f}")
 
 
-def report(predictions, models, bet_model=None, venues=None, staking=None, n_boot=2000, seed=0, log=print):
+def coverage(predictions, models, sources=metrics.SHARP_SOURCES):
+    """Anteil der gespielten Matches mit scharfem Marktpreis, für die das Modell ein p hat."""
+    base = predictions[predictions['market_source'].isin(sources) & (predictions['status'] != 'W/O')]
+    return {m: float(base[f'p_{m}'].notna().mean()) if len(base) else 0.0 for m in models}
+
+
+def split_by_coverage(predictions, models, min_share=0.9):
+    """
+    Modelle mit (fast) voller Abdeckung und solche, die nur einen Teil der Jahre vorhersagen (z.B. der
+    Transformer erst nach seinem Validierungsjahr). Die Teil-Modelle bekommen eine eigene Stichprobe,
+    damit sie die Hauptstichprobe nicht verkleinern.
+    """
+    cov = coverage(predictions, models)
+    top = max(cov.values()) if cov else 0.0
+    full = [m for m in models if cov[m] >= min_share * top]
+    return full, [m for m in models if m not in full]
+
+
+def _compare(predictions, models, n_boot, seed, log, title):
     sample = metrics.common_sample(predictions, models)
-    n_total = int((predictions['status'] != 'W/O').sum())
-    log(f"\nVergleichs-Stichprobe: {len(sample)} von {n_total} Matches "
-        f"(mit Pinnacle-Quote und Vorhersage von allen Modellen)")
+    log(f"\n=== {title}: {len(sample)} Matches mit scharfem Marktpreis (Pinnacle, sonst Betfair Exchange) "
+        f"und Vorhersage von {', '.join(models)} ===")
     if sample.empty:
-        log("Keine Matches mit Pinnacle-Quote – Markt-Vergleich nicht möglich.")
+        return None
+    by_source = sample['market_source'].value_counts().to_dict()
+    log("Marktquelle: " + ", ".join(f"{k} {v}" for k, v in by_source.items()))
+    log("\n--- Metriken pro Modell und Jahr (gleiche Stichprobe) ---")
+    log(_fmt(metrics.metric_table(predictions, models)))
+    sig = metrics.significance_vs_market(predictions, models, n_boot=n_boot, seed=seed)
+    log("\n--- Log-Loss-Differenz gegen den Markt (negativ = besser als der Markt) ---")
+    log(_fmt(sig))
+    for m in models:
+        if m != 'market':
+            log(f"Go/No-Go {m}: {'GO' if metrics.go_no_go(sig, m) else 'NO-GO'}")
+    return sig
+
+
+def report(predictions, models, bet_model=None, venues=None, staking=None, n_boot=2000, seed=0, log=print,
+           predictors=None):
+    n_total = int((predictions['status'] != 'W/O').sum())
+    has_market = predictions['market_source'].isin(metrics.SHARP_SOURCES).any()
+    go = []
+    if not has_market:
+        log(f"\nKeine Matches mit scharfem Marktpreis – Markt-Vergleich nicht möglich ({n_total} gespielte Matches).")
         others = [m for m in models if m != 'market' and predictions[f'p_{m}'].notna().any()]
-        played = predictions[(predictions['status'] != 'W/O') & predictions[[f'p_{m}' for m in others]].notna().all(axis=1)]
-        if others and len(played):
-            log("\n=== Metriken ohne Markt (alle gespielten Matches, NICHT mit dem Markt vergleichbar) ===")
-            log(_fmt(metrics.metric_table(played.assign(market_source='ps'), others)))
+        full, partial = split_by_coverage(predictions.assign(market_source='ps'), others)
+        for group, title in ((full, "alle Modelle"), (full + partial, "inkl. Teil-Modelle")):
+            if not group or (title != "alle Modelle" and not partial):
+                continue
+            sample = metrics.common_sample(predictions, group, sources=None)
+            log(f"\n=== Metriken ohne Markt ({title}, {len(sample)} gespielte Matches, NICHT mit dem Markt "
+                f"vergleichbar) ===")
+            log(_fmt(metrics.metric_table(predictions, group, sources=None)))
+            ref = 'elo2' if 'elo2' in group else group[0]
+            sig = metrics.significance_vs_market(predictions, group, n_boot=n_boot, seed=seed, ref_model=ref,
+                                                 sources=None)
+            log(f"\n--- Log-Loss-Differenz gegen {ref} (negativ = besser als {ref}) ---")
+            log(_fmt(sig))
     else:
-        log("\n=== Metriken pro Modell und Jahr (gleiche Stichprobe) ===")
-        log(_fmt(metrics.metric_table(predictions, models)))
-        sig = metrics.significance_vs_market(predictions, models, n_boot=n_boot, seed=seed)
-        log("\n=== Log-Loss-Differenz gegen den Markt (negativ = besser als Pinnacle) ===")
-        log(_fmt(sig))
-        blends = [m for m in models if m.startswith('blend')]
-        for b in blends:
-            verdict = "GO" if metrics.go_no_go(sig, b) else "NO-GO"
-            log(f"Go/No-Go {b}: {verdict} (Blend muss den Log Loss des Markts signifikant senken)")
+        full, partial = split_by_coverage(predictions, models)
+        sig = _compare(predictions, full, n_boot, seed, log, "Hauptstichprobe")
+        if sig is not None:
+            go += [m for m in full if m != 'market' and metrics.go_no_go(sig, m)]
+        if partial:
+            sig_p = _compare(predictions, full + partial, n_boot, seed, log,
+                             f"Teilstichprobe mit {', '.join(partial)}")
+            if sig_p is not None:
+                go += [m for m in partial if metrics.go_no_go(sig_p, m)]
+        if go:
+            for m in go:
+                group = full + (partial if m in partial else [])
+                log(f"\n=== {m} schlägt den Markt signifikant: Segmente (Log-Loss-Differenz gegen den Markt) ===")
+                log(_fmt(metrics.segment_table(predictions, m, group, n_boot=min(n_boot, 500), seed=seed)))
+        else:
+            log("\nKein Modell senkt den Log Loss des Markts signifikant (alle NO-GO).")
+
+    for p in predictors or []:
+        if hasattr(p, 'weights') and p.weights():
+            log(f"\nGewichte {p.name} (letzter Fit, Logits; Markt allein = 1, 0, ...): "
+                + ", ".join(f"{k} {v:+.3f}" for k, v in p.weights().items()))
+        if hasattr(p, 'importance') and len(p.importance()):
+            log(f"\n=== Feature-Importance {p.name} (mittlerer Gain-Anteil über {len(p.fits)} Fits, Top 25) ===")
+            log(p.importance().head(25).to_string(float_format=lambda v: f"{v:.3f}"))
 
     bet_model = bet_model or next((m for m in reversed(models) if m != 'market'), 'market')
-    venues = venues or list(VENUES.values())
+    venues = venues or [VENUES[v] for v in DEFAULT_VENUES]
     grid = betting.run_grid(predictions, betting.default_strategies(bet_model), venues,
                             staking or betting.Flat(), n_boot=n_boot, seed=seed)
     log(f"\n=== Wetten pro Strategie und Venue ({(staking or betting.Flat()).name}) ===")
@@ -141,8 +208,8 @@ def report(predictions, models, bet_model=None, venues=None, staking=None, n_boo
         cols = ['venue', 'strategy', 'n_bets', 'n_void', 'hit_rate', 'avg_odds', 'yield', 'yield_ci_low',
                 'yield_ci_high', 'roi', 'max_drawdown']
         log(_fmt(shown[cols], pct=('hit_rate', 'yield', 'yield_ci_low', 'yield_ci_high', 'roi', 'max_drawdown')))
-        log("Proxy = Preis aus fairer Pinnacle-Wahrscheinlichkeit, keine echten historischen Kurse. "
-            "CLV folgt mit den Quoten-Snapshots (Phase 2).")
+        log("betfair = echte Exchange-Kurse (ab August 2025), 5 % Kommission auf Gewinne. "
+            "Proxy = Preis aus fairer Pinnacle-Wahrscheinlichkeit. CLV folgt mit den Quoten-Snapshots (Phase 2).")
     return grid
 
 
@@ -153,14 +220,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Walk-forward-Backtest gegen den Markt")
     ap.add_argument('--start', type=int, default=default_config.test_year - 2)
     ap.add_argument('--end', type=int, default=default_config.test_year)
-    ap.add_argument('--models', default='market,rank,elo,blend',
-                    help="Kommagetrennt: market, rank, elo, transformer, blend, blend_<modell>")
+    ap.add_argument('--models', default='market,rank,elo,elo2,gbdt,stack',
+                    help="Kommagetrennt: market, rank, elo, elo2, gbdt, transformer, blend, blend_<modell>, "
+                         "stack, stack_bands, stack_tf")
+    ap.add_argument('--gbdt-refit', default='quarter', help="month | quarter | year")
+    ap.add_argument('--warmup', type=int, default=1, help="Jahre vor --start, die schon mitlaufen (für Stack/Blend)")
     ap.add_argument('--freq', default='month', help="month | week | quarter | year (oder Pandas-Alias)")
     ap.add_argument('--data-start', type=int, default=default_config.data_years_start,
                     help="Ab diesem Jahr werden Matches geladen (Historie für Elo und Fits)")
     ap.add_argument('--model-path', default=None, help="Transformer-Gewichte (Standard: config.best_model_path)")
     ap.add_argument('--bet-model', default=None, help="Modell für die Wett-Strategien (Standard: letztes in --models)")
-    ap.add_argument('--venues', default=','.join(VENUES), help="Kommagetrennte Venue-Profile")
+    ap.add_argument('--venues', default=','.join(DEFAULT_VENUES),
+                    help=f"Kommagetrennte Venue-Profile (bekannt: {', '.join(VENUES)})")
     ap.add_argument('--kelly', type=float, default=None, help="Fraktionales Kelly statt flat, z.B. 0.25")
     ap.add_argument('--kelly-cap', type=float, default=0.02)
     ap.add_argument('--bootstrap', type=int, default=2000)
@@ -177,10 +248,11 @@ def main(argv=None):
     results = []
     for tour in tours:
         print(f"\n{'#' * 20} {tour.upper()} {'#' * 20}")
-        predictions, names = run(df[df['tour'] == tour], args.models.split(','), args.start, args.end,
-                                 freq=args.freq, model_path=args.model_path)
+        predictions, names, predictors = run(df[df['tour'] == tour], args.models.split(','), args.start, args.end,
+                                             freq=args.freq, model_path=args.model_path, warmup=args.warmup,
+                                             gbdt_refit=args.gbdt_refit, with_predictors=True)
         report(predictions, names, bet_model=args.bet_model, venues=venues, staking=staking,
-               n_boot=args.bootstrap, seed=args.seed)
+               n_boot=args.bootstrap, seed=args.seed, predictors=predictors)
         results.append(predictions)
     predictions = pd.concat(results, ignore_index=True)
     print(f"Vorhersagen gespeichert: {save(predictions, args.out)} ({len(predictions)} Matches)")

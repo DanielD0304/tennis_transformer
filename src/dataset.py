@@ -1,5 +1,5 @@
 import torch
-from .preprocessing import FEATURE_NAMES, STAT_FEATURES
+from .preprocessing import EXTRA_FEATURES, FEATURE_NAMES, STAT_FEATURES
 
 # Spalten, die beim Stats-Dropout genullt werden (inkl. has_stats)
 _STAT_IDX = torch.tensor([FEATURE_NAMES.index(f) for f in STAT_FEATURES + ['has_stats']])
@@ -53,6 +53,7 @@ class DataSet(torch.utils.data.Dataset):
         segment_ids = torch.tensor(sample['segment_ids'], dtype=torch.long)
         label = torch.tensor(sample['label'], dtype=torch.long)
         
+        extra = torch.tensor([float(sample.get(k, 0.0)) for k in EXTRA_FEATURES], dtype=torch.float)
         odds_a = torch.tensor(sample.get('odds_a', 0.0), dtype=torch.float)
         odds_b = torch.tensor(sample.get('odds_b', 0.0), dtype=torch.float)
 
@@ -71,6 +72,7 @@ class DataSet(torch.utils.data.Dataset):
             'player_b_recent_pos': player_b_recent_pos,
             'segment_ids': segment_ids,
             'label': label,
+            'extra': extra,
             'odds_a': odds_a,
             'odds_b': odds_b
         }

@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 
 from ..names import candidate_keys
-from .common import ODDS_COLUMNS
+from .common import ODDS_COLUMNS, ODDS_PAIRS
 from .places import tourney_country
 
 # Fälle, die sich automatisch nicht sicher zuordnen lassen (andere Vornamen/Abkürzungen je Quelle).
@@ -454,12 +454,21 @@ def _odd(value):
         return None
 
 
+# Plausible Summe der Kehrwerte (1/Quote Sieger + 1/Quote Verlierer) je Quelle
+ODDS_RANGE = {
+    'default': (0.95, 1.35),
+    'BFEW': (0.98, 1.10),  # Exchange: Back-Kurse fast ohne Marge, darüber dünner Markt
+    'MaxW': (0.90, 1.35),  # Bestkurs über alle Bücher, kann knapp unter 100 % liegen
+}
+
+
 def clean(rows, stats):
     """
     Letzte Bereinigung, Zähler landen in stats (und in data/update_state.json):
       - exakte Doppel-Einträge (gleiches Turnier, Paar, Runde, Ergebnis) entfernen
       - fehlender Untergrund -> Hard (so behandelt das Modell unbekannten Untergrund ohnehin)
-      - unplausible Quoten leeren (<= 1.0, ohne Gegenquote oder Buchmacher-Marge außerhalb 95-135 %)
+      - unplausible Quoten leeren (<= 1.0, ohne Gegenquote oder Summe der Kehrwerte außerhalb von
+        ODDS_RANGE: Buchmacher 95-135 %, Exchange nahe 100 %, Maximum über alle Bücher auch knapp unter 100 %)
     """
     seen, out = set(), []
     for r in rows:
@@ -474,11 +483,12 @@ def clean(rows, stats):
         if r.get('surface') not in VALID_SURFACES:
             r['surface'] = 'Hard'
             stats['clean_surface_filled'] += 1
-        for w, l in (('B365W', 'B365L'), ('PSW', 'PSL'), ('AvgW', 'AvgL')):
+        for w, l in ODDS_PAIRS:
             ow, ol = _odd(r.get(w)), _odd(r.get(l))
             if ow is None and ol is None:
                 continue
-            if ow is None or ol is None or min(ow, ol) <= 1.0 or not 0.95 <= 1 / ow + 1 / ol <= 1.35:
+            low, high = ODDS_RANGE.get(w, ODDS_RANGE['default'])
+            if ow is None or ol is None or min(ow, ol) <= 1.0 or not low <= 1 / ow + 1 / ol <= high:
                 r[w] = r[l] = None
                 stats['clean_odds_removed'] += 1
     return out

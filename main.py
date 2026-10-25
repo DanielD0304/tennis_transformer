@@ -18,12 +18,13 @@ CALIBRATION_BINS = [0.0, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 def evaluate(config=default_config, with_transformer=True, refresh=True):
     """
-    Walk-forward ab dem ersten Jahr nach dem Training (val_year), damit der Blend auf früheren
-    Transformer-Vorhersagen lernen kann. Ausgewertet wird das Testjahr.
+    Walk-forward ab dem ersten Jahr nach dem Training (val_year), damit Blend und Stack auf früheren
+    out-of-sample-Vorhersagen lernen können. Ausgewertet wird das Testjahr.
     """
     from src.data_loader import load_matches
 
-    models = ['market', 'rank', 'elo'] + (['transformer'] if with_transformer else []) + ['blend']
+    models = ['market', 'rank', 'elo', 'elo2', 'gbdt'] + (['transformer', 'blend'] if with_transformer else []) \
+        + ['stack']
     df = load_matches(first_year=config.data_years_start, last_year=config.test_year, refresh=refresh)
     predictions, names = backtest.run(df, models, config.train_years_end + 1, config.test_year, config=config)
     print(f"Vorhersagen gespeichert: {backtest.save(predictions)}")
@@ -38,10 +39,10 @@ def evaluate(config=default_config, with_transformer=True, refresh=True):
         if len(sub):
             print(f"{m:<12} {metrics.accuracy(sub['label'], sub[f'p_{m}']):.2%}  (n={len(sub)})")
 
-    backtest.report(test, names, venues=[VENUES['bet365_de'], VENUES['pinnacle']])
+    backtest.report(test, names, venues=[VENUES['bet365_de'], VENUES['pinnacle'], VENUES['betfair']])
 
-    # Transformer, sonst Blend; ohne Quoten (kein Blend möglich) Elo
-    candidates = (['transformer'] if with_transformer else []) + ['blend', 'elo']
+    # Transformer, sonst Stack; ohne Quoten (kein Stack möglich) Elo
+    candidates = (['transformer'] if with_transformer else []) + ['stack', 'elo']
     model = next(m for m in candidates if played[f'p_{m}'].notna().any() or m == 'elo')
     sub = played[played[f'p_{model}'].notna()]
     print("\n" + "=" * 60)
@@ -58,7 +59,7 @@ def evaluate(config=default_config, with_transformer=True, refresh=True):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--eval-only', action='store_true', help="Nicht trainieren, nur auswerten")
-    ap.add_argument('--no-transformer', action='store_true', help="Nur market, rank, elo, blend")
+    ap.add_argument('--no-transformer', action='store_true', help="Ohne Transformer (market, rank, elo, elo2, gbdt, stack)")
     args = ap.parse_args()
 
     if not args.eval_only and not args.no_transformer:
