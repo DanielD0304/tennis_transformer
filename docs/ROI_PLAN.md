@@ -163,3 +163,19 @@ In `betscraper/dataProcessing/value.py` + `src/evaluation/betting.py`:
   das Quoten-Alignment (W/L-Tausch in `build._copy_odds`) kaputt.
 - Collector 48 h laufen lassen: Snapshots aller Venues vorhanden, Match-Abgleich-Quote > 90 %
 - Paper-Loop eine Woche laufen lassen: Wetten werden korrekt abgerechnet, CLV erscheint im Dashboard
+
+## Ergebnisse Phase 4/5 (Stand 25.10.2026)
+
+Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PHASE45.md).
+
+- **Kein Edge, kein GO.** Im Timing-Backtest (Polymarket, Kalshi × Haupttour/Challenger/ITF × Eröffnung/−24 h/−6 h/
+  −1 h/Closing × elo2/gbdt/Blend) besteht nach Gebühren, Spread, Holm-Korrektur und der Zwei-Quartale-Regel kein
+  Segment.
+- **Eröffnungsgewinne sind ein Artefakt:** Polymarket startet mit leerem Orderbuch (0,5), und auch der erste echte
+  Kurs ist ohne Orderbuch-Tiefe nicht handelbar. Bei Kalshi mit echtem Ask verliert dieselbe Strategie.
+- **Kandidat fürs Paper-Trading:** Polymarket Challenger −24 h (gbdt +6,9 % [+0,1 %, +14,1 %], 1.452 Wetten). Er
+  verschwindet bei 4 % Spread.
+- **Lücken:** Kalshi nur 2.000 von 23.112 Märkten (429 auf geteilter Cloud-IP), Kalshi-ITF fehlt. Sharp vs. Rest ohne
+  Odds-API-Snapshots nicht auswertbar (keine aktiven Tennis-Events, 0 Credits verbraucht).
+- Nächster Schritt: Paper-Loop lokal dauerhaft laufen lassen (`python -m src.paper.run --loop 30`, mit
+  `--odds-api` für Sharp vs. Rest) und am Kriterium messen: ≥ 300 Wetten, CLV > +2 %, untere Yield-KI-Grenze > 0.

@@ -504,8 +504,11 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
 - Wette, wenn p × Netto-Quote − 1 > Schwelle. Die Schwelle kommt pro Quartal aus den Quartalen davor.
 - Ausgabe pro Venue × Level × Zeitpunkt × Modell: Wetten, Yield mit Bootstrap-KI, CLV gegen das Closing
   der Venue (und gegen Pinnacle/Betfair, wo vorhanden) sowie der Log Loss von p gegen den Preis zum
-  Zeitpunkt t. GO gilt nur, wenn alle drei Bedingungen erfüllt sind: Holm-korrigiertes p < 0,05,
-  KI-Untergrenze > 0 und CLV > 0.
+  Zeitpunkt t. GO gilt nur, wenn alle vier Bedingungen erfüllt sind: Holm-korrigiertes p < 0,05,
+  KI-Untergrenze > 0, CLV > 0 und Wetten in mindestens zwei Quartalen. Die Polymarket-Eröffnung gilt als
+  nicht handelbar und zählt nicht zum Mehrfachtest: Ohne Orderbuch-Tiefe ist ihr Gewinn ein Artefakt, bei Kalshi
+  mit echtem Ask verliert dieselbe Strategie.
+- **Ergebnis (25.10.2026): kein GO**, siehe [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md).
 - Ablage: `data/eval/timing.{parquet,md}` und `timing_bets.parquet`. Dazu `timing_blend.json`
   (Blend-Gewichte für das Paper-Trading).
 
