@@ -168,6 +168,6 @@ def load(years, tour='atp'):
                     'status': status,
                     **{c: _num(r.get(c)) for c in ODDS_COLUMNS},
                     'location': location,
-                    'source': 'tuk',
+                    'source': 'tuk', 'level': 'main',
                 })
     return rows

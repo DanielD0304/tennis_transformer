@@ -25,10 +25,11 @@ TOURS = ('atp', 'wta')
 # Spieler-Metadaten (aus Sackmann *_players.csv), pro Match für Sieger und Verlierer
 PLAYER_COLUMNS = [f"{p}_{s}" for p in ("winner", "loser") for s in ("ioc", "hand", "dob")]
 
-# Sackmann-Schema plus tour, match_date (echtes Matchdatum, falls bekannt), status und source.
+LEVELS = ('main', 'challenger', 'itf')
+# Sackmann-Schema plus tour, level ('main' | 'challenger' | 'itf'), match_date (echtes Matchdatum, falls bekannt), status und source.
 # court (Indoor/Outdoor), location und tourney_ioc (Land des Turniers) ergänzt build.py.
 COLUMNS = [
-    'tour', 'tourney_id', 'tourney_name', 'surface', 'court', 'tourney_level', 'tourney_date', 'match_date',
+    'tour', 'level', 'tourney_id', 'tourney_name', 'surface', 'court', 'tourney_level', 'tourney_date', 'match_date',
     'match_num', 'round', 'best_of', 'winner_name', 'loser_name', 'winner_rank', 'loser_rank',
     'score', 'minutes', 'status', 'location', 'tourney_ioc',
 ] + PLAYER_COLUMNS + STAT_COLUMNS + ODDS_COLUMNS + ['source']

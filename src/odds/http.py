@@ -18,8 +18,11 @@ class HttpError(RuntimeError):
 class JsonClient:
     """
     get_json/post_json mit höchstens max_per_sec Anfragen pro Sekunde (thread-sicher).
-    429 und 5xx werden mit Backoff wiederholt, andere Fehler sofort als HttpError gemeldet.
+    429 und 5xx werden mit Backoff wiederholt, andere Fehler sofort als HttpError gemeldet. Ein 429 bremst alle
+    Threads (gemeinsame Pause) und senkt die Rate dauerhaft um ein Fünftel (höchstens bis MAX_INTERVAL), damit
+    parallele Worker nicht weiter ins Limit laufen.
     """
+    MAX_INTERVAL = 2.0
 
     def __init__(self, max_per_sec=8.0, retries=6, timeout=30):
         self.session = requests.Session()
@@ -30,6 +33,7 @@ class JsonClient:
         self.calls = Counter()
         self._lock = threading.Lock()
         self._next = 0.0
+        self.throttled = 0  # Anzahl 429-Antworten
 
     def _wait(self):
         with self._lock:
@@ -55,7 +59,13 @@ class JsonClient:
                 return r
             if r.status_code == 429 or r.status_code >= 500:
                 last = HttpError(url, r.status_code, r.text)
-                time.sleep(float(r.headers.get('Retry-After') or min(60, 2 ** (attempt + 1))))
+                pause = float(r.headers.get('Retry-After') or min(60, 2 ** (attempt + 1)))
+                if r.status_code == 429:
+                    with self._lock:
+                        self._next = max(self._next, time.monotonic() + pause)
+                        self.min_interval = min(self.MAX_INTERVAL, max(self.min_interval, 0.05) * 1.25)
+                        self.throttled += 1
+                time.sleep(pause)
                 continue
             raise HttpError(url, r.status_code, r.text)
         raise last if isinstance(last, HttpError) else HttpError(url, 'Netzwerk', str(last))

@@ -35,8 +35,9 @@ def enforce_schema(df):
         dates = pd.to_datetime(df['tourney_date'].astype(str).str[:8], format='%Y%m%d', errors='coerce')
         df['tourney_date'] = dates.dt.strftime('%Y%m%d')
 
-    # Ältere matches.csv kennen nur ATP
+    # Ältere matches.csv kennen nur ATP und nur die Haupttour
     df['tour'] = df['tour'].fillna('atp') if 'tour' in df.columns else 'atp'
+    df['level'] = df['level'].fillna('main') if 'level' in df.columns else 'main'
     return df
 
 
