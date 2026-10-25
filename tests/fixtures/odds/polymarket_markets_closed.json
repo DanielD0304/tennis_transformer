@@ -1,0 +1,74 @@
+{
+ "markets": [
+  {
+   "id": "603336",
+   "question": "Hangzhou Open: Francisco Cabral / Lucas Miedler vs Ariel Behar / Joran Vliegen",
+   "slug": "atp-miedler-vs-vliegen-2025-09-19",
+   "sportsMarketType": "moneyline",
+   "outcomes": "[\"Cabral/Miedler\", \"Behar/Vliegen\"]",
+   "outcomePrices": "[\"1\", \"0\"]",
+   "clobTokenIds": "[\"24323433571869840506805250992628815081781074117929522167176993451372799480493\", \"91896180698829304053555676568004292227767452872135784132303998546321257074428\"]",
+   "bestBid": 0.999,
+   "bestAsk": 1,
+   "volumeNum": null,
+   "liquidityNum": 0,
+   "gameStartTime": "2025-09-19 05:00:00+00",
+   "startDate": "2025-09-18T22:16:38.415208Z",
+   "closed": true,
+   "umaResolutionStatus": "resolved",
+   "events": [
+    {
+     "slug": "atp-miedler-vs-vliegen-2025-09-19",
+     "title": "Hangzhou Open: Francisco Cabral / Lucas Miedler vs Ariel Behar / Joran Vliegen"
+    }
+   ]
+  },
+  {
+   "id": "603343",
+   "question": "Hangzhou Open: Arthur Cazaux vs Matteo Arnaldi",
+   "slug": "atp-cazaux-vs-arnaldi-2025-09-19",
+   "sportsMarketType": "moneyline",
+   "outcomes": "[\"Cazaux\", \"Arnaldi\"]",
+   "outcomePrices": "[\"1\", \"0\"]",
+   "clobTokenIds": "[\"33727852196999406298606411331581432883490989043226758512784464094831709624666\", \"10686497603315388793498643058149492449250415926436791200030160841316807569243\"]",
+   "bestBid": 0.99,
+   "bestAsk": 0.999,
+   "volumeNum": 9862.881608,
+   "liquidityNum": null,
+   "gameStartTime": "2025-09-19 07:00:00+00",
+   "startDate": "2025-09-18T22:17:05.111349Z",
+   "closed": true,
+   "umaResolutionStatus": "resolved",
+   "events": [
+    {
+     "slug": "atp-cazaux-vs-arnaldi-2025-09-19",
+     "title": "Hangzhou Open: Arthur Cazaux vs Matteo Arnaldi"
+    }
+   ]
+  },
+  {
+   "id": "603345",
+   "question": "Hangzhou Open: Adam Walton vs Sebastian Korda",
+   "slug": "atp-walton-vs-korda-2025-09-19",
+   "sportsMarketType": "moneyline",
+   "outcomes": "[\"Walton\", \"Korda\"]",
+   "outcomePrices": "[\"0\", \"1\"]",
+   "clobTokenIds": "[\"74356969395968001488412805869628710863719253739639244662861313101554432018874\", \"67533911410325851393344598347444632367120918029544731621963192781240601020856\"]",
+   "bestBid": null,
+   "bestAsk": 0.001,
+   "volumeNum": 1694.7111,
+   "liquidityNum": null,
+   "gameStartTime": "2025-09-19 05:30:00+00",
+   "startDate": "2025-09-18T22:17:05.622332Z",
+   "closed": true,
+   "umaResolutionStatus": "resolved",
+   "events": [
+    {
+     "slug": "atp-walton-vs-korda-2025-09-19",
+     "title": "Hangzhou Open: Adam Walton vs Sebastian Korda"
+    }
+   ]
+  }
+ ],
+ "next_cursor": null
+}

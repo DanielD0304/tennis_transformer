@@ -1,0 +1,28 @@
+{
+ "milestones": [
+  {
+   "id": "8e3b5aa6-ffe6-4c80-a340-051b38eb644a",
+   "type": "tennis_tournament_singles",
+   "start_date": "2026-10-26T12:00:00Z",
+   "title": "Berrettini vs Etcheverry",
+   "details": {
+    "best_of": "3",
+    "first_competitor_id": "c2d9e167-2fd6-484f-938e-0f8ba768fa88",
+    "gender": "men",
+    "main_game_event_ticker": "KXATPMATCH-26OCT25BERETC",
+    "round": "Round Of 32",
+    "second_competitor_id": "1a6577a3-f592-47fd-a84e-eb7e97ff61b8",
+    "status": "not_started",
+    "tour": "ATP",
+    "tournament_name": "ATP Vienna"
+   },
+   "primary_event_tickers": [
+    "KXATPMATCH-26OCT25BERETC",
+    "KXATPSETWINNER-26OCT25BERETC-1",
+    "KXATPSETWINNER-26OCT25BERETC-2",
+    "KXATPEXACTMATCH-26OCT25BERETC"
+   ]
+  }
+ ],
+ "cursor": ""
+}

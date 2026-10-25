@@ -1,0 +1,40 @@
+[
+ {
+  "id": "e912304de2b2ce35b473ce2ecd3d1502",
+  "sport_key": "tennis_atp_vienna",
+  "sport_title": "ATP Vienna Open",
+  "commence_time": "2026-10-26T12:00:00Z",
+  "home_team": "Matteo Berrettini",
+  "away_team": "Tomas Martin Etcheverry",
+  "bookmakers": [
+   {"key": "pinnacle", "title": "Pinnacle", "last_update": "2026-10-25T14:30:12Z",
+    "markets": [{"key": "h2h", "last_update": "2026-10-25T14:30:12Z",
+                 "outcomes": [{"name": "Matteo Berrettini", "price": 1.6}, {"name": "Tomas Martin Etcheverry", "price": 2.45}]}]},
+   {"key": "betfair_ex_uk", "title": "Betfair", "last_update": "2026-10-25T14:29:50Z",
+    "markets": [{"key": "h2h", "last_update": "2026-10-25T14:29:50Z",
+                 "outcomes": [{"name": "Matteo Berrettini", "price": 1.63}, {"name": "Tomas Martin Etcheverry", "price": 2.56}]}]},
+   {"key": "betfair_ex_eu", "title": "Betfair", "last_update": "2026-10-25T14:29:55Z",
+    "markets": [{"key": "h2h", "last_update": "2026-10-25T14:29:55Z",
+                 "outcomes": [{"name": "Matteo Berrettini", "price": 1.64}, {"name": "Tomas Martin Etcheverry", "price": 2.58}]}]},
+   {"key": "bet365", "title": "Bet365", "last_update": "2026-10-25T14:28:40Z",
+    "markets": [{"key": "h2h", "last_update": "2026-10-25T14:28:40Z",
+                 "outcomes": [{"name": "Matteo Berrettini", "price": 1.57}, {"name": "Tomas Martin Etcheverry", "price": 2.37}]}]},
+   {"key": "unibet_eu", "title": "Unibet", "last_update": "2026-10-25T14:28:40Z",
+    "markets": [{"key": "spreads", "last_update": "2026-10-25T14:28:40Z",
+                 "outcomes": [{"name": "Matteo Berrettini", "price": 1.9, "point": -2.5}, {"name": "Tomas Martin Etcheverry", "price": 1.9, "point": 2.5}]}]}
+  ]
+ },
+ {
+  "id": "c2a7f0b1d5e64f0f8d3a1b2c3d4e5f60",
+  "sport_key": "tennis_wta_guangzhou",
+  "sport_title": "WTA Guangzhou",
+  "commence_time": "2026-10-26T03:00:00Z",
+  "home_team": "Panna Udvardy",
+  "away_team": "Sinja Kraus",
+  "bookmakers": [
+   {"key": "pinnacle", "title": "Pinnacle", "last_update": "2026-10-25T14:30:12Z",
+    "markets": [{"key": "h2h", "last_update": "2026-10-25T14:30:12Z",
+                 "outcomes": [{"name": "Sinja Kraus", "price": 1.55}, {"name": "Panna Udvardy", "price": 2.55}]}]}
+  ]
+ }
+]
