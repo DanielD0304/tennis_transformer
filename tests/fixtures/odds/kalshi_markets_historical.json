@@ -1,0 +1,37 @@
+{
+ "markets": [
+  {
+   "ticker": "KXATPMATCH-26AUG25VANKOV-VAN",
+   "event_ticker": "KXATPMATCH-26AUG25VANKOV",
+   "yes_sub_title": "Luca Van Assche",
+   "custom_strike": {
+    "tennis_competitor": "f0e4436f-e2d5-454c-95be-b6a1e5d16693"
+   },
+   "yes_bid_dollars": "0.0000",
+   "yes_ask_dollars": "1.0000",
+   "last_price_dollars": "0.0100",
+   "volume_fp": "1467993.09",
+   "open_time": "2026-08-25T01:06:00Z",
+   "close_time": "2026-08-25T21:21:35Z",
+   "result": "no",
+   "status": "finalized"
+  },
+  {
+   "ticker": "KXATPMATCH-26AUG25VANKOV-KOV",
+   "event_ticker": "KXATPMATCH-26AUG25VANKOV",
+   "yes_sub_title": "Aleksandar Kovacevic",
+   "custom_strike": {
+    "tennis_competitor": "dae019bd-4698-457d-95dd-a34d1c229274"
+   },
+   "yes_bid_dollars": "0.0000",
+   "yes_ask_dollars": "1.0000",
+   "last_price_dollars": "0.9900",
+   "volume_fp": "639984.01",
+   "open_time": "2026-08-25T01:06:00Z",
+   "close_time": "2026-08-25T21:21:35Z",
+   "result": "yes",
+   "status": "finalized"
+  }
+ ],
+ "cursor": ""
+}

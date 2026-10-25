@@ -407,3 +407,49 @@ Confidence      | Count    | Real Win Rate   | Diff
 ```
 
 **Hinweis:** Negative 'Diff' bedeutet, das Modell ist zu optimistisch (overconfident). Die Sniper-Strategie nutzt den kalibrierten Bereich (0.6-0.8) optimal aus
+
+
+## Quoten-Collector (`src/odds/`)
+
+Sammelt Quoten mit Zeitstempel und lädt historische Prediction-Market-Preise (ROI-Plan, Phase 2, Punkte 7–8).
+Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb dauerhaft laufen.
+
+| Venue | Quelle | Voraussetzung |
+|---|---|---|
+| `polymarket` | Gamma-API (Märkte) + CLOB (Midpoints, `prices-history`) | keine |
+| `kalshi` | öffentliche Market-Data-API (Serien `KX{ATP,WTA}MATCH`, `KX{ATP,WTA}CHALLENGERMATCH`) | keine |
+| `pinnacle`, `betfair`, `bet365`, … | The Odds API (Regionen `eu,uk`, Markt `h2h`) | `ODDS_API_KEY` (ohne Key übersprungen) |
+| `tipico`, `bwin` | bestehende Playwright-Scraper (`betscraper/scraper/sites.py`) | `playwright install chromium` |
+
+```bash
+python -m src.odds.collect                    # alle Venues einmal abfragen
+python -m src.odds.collect --loop 20          # alle 20 Minuten (Odds API nur jede 6. Runde)
+python -m src.odds.collect --venues polymarket,kalshi
+python -m src.odds.collect --history          # historische Polymarket-/Kalshi-Preise (dauert ~1-2 h)
+python -m src.odds.report                     # Log Loss / Kalibrierung der PM-Closing-Preise
+```
+
+Ablage (unter `data/`, nicht im Repo):
+- `data/odds/snapshots/YYYY-MM-DD.parquet`: ein Snapshot pro Venue, Match und Abfrage (`src/odds/schema.py`,
+  laden mit `load_snapshots(start, end)`)
+- `data/odds/history/{polymarket,kalshi}.parquet`: pro Match Eröffnung, Closing (letzter Preis vor der geplanten
+  Startzeit), Closing 1 h vorher, Volumen und Sieger aus der Markt-Auflösung
+
+**Dauerhaft laufen lassen** (in einer Cloud-Session läuft nichts dauerhaft). Vorher einmal `mkdir -p data/odds`
+(Windows: `mkdir data\odds`), damit die Log-Umleitung funktioniert:
+- Linux/macOS mit cron (alle 20 Minuten, Historie einmal pro Nacht nachladen):
+  ```
+  */20 * * * * cd /pfad/zu/tennis_transformer && python -m src.odds.collect --venues polymarket,kalshi,softbooks >> data/odds/collect.log 2>&1
+  5 */2 * * *  cd /pfad/zu/tennis_transformer && ODDS_API_KEY=... python -m src.odds.collect --venues odds_api >> data/odds/collect.log 2>&1
+  15 4 * * *   cd /pfad/zu/tennis_transformer && python -m src.odds.collect --history >> data/odds/history.log 2>&1
+  ```
+  Mit cron läuft jede Runde einzeln, die Odds API deshalb in einer eigenen, selteneren Zeile (Kontingent).
+- Windows (Aufgabenplanung), in der Eingabeaufforderung im Repo-Ordner:
+  ```
+  schtasks /Create /SC MINUTE /MO 20 /TN "TennisOdds" /TR "cmd /c cd /d %CD% && python -m src.odds.collect --venues polymarket,kalshi,softbooks >> data\odds\collect.log 2>&1"
+  schtasks /Create /SC HOURLY /MO 2 /TN "TennisOddsApi" /TR "cmd /c cd /d %CD% && python -m src.odds.collect --venues odds_api >> data\odds\collect.log 2>&1"
+  schtasks /Create /SC DAILY /ST 04:15 /TN "TennisOddsHistory" /TR "cmd /c cd /d %CD% && python -m src.odds.collect --history >> data\odds\history.log 2>&1"
+  ```
+  Den Key einmal mit `setx ODDS_API_KEY "..."` setzen. Die Aufgaben laufen nur, solange der Rechner an ist.
+- Auf einem Server: `nohup python -m src.odds.collect --loop 20 >> data/odds/collect.log 2>&1 &` oder als
+  systemd-Service mit `Restart=always`.
