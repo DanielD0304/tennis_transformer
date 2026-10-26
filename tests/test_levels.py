@@ -73,9 +73,11 @@ def test_market_rows_from_resolution():
         ['1', 'atp', 'challenger', 'Lima', pd.Timestamp('2026-10-20 15:00', tz='UTC'), 'Ann Alpha', 'Bea Beta', 'b'],
         ['2', 'atp', 'itf', 'M15', pd.Timestamp('2026-10-20 15:00', tz='UTC'), 'X Y', 'Z W', None],  # 50-50
         ['3', None, 'main', 'Davis', pd.Timestamp('2026-10-20 15:00', tz='UTC'), 'Q R', 'S T', 'a'],  # Tour fehlt
+        ['4', 'wta', float('nan'), 'Birmingham', pd.Timestamp('2026-10-21 15:00', tz='UTC'), 'U V', 'W X', 'a'],
     ])
     rows = markets.market_rows(df, 'polymarket')
-    assert len(rows) == 1
+    assert len(rows) == 2
+    assert rows[1]['level'] is None  # NaN aus dem Parquet = Level unbekannt, nicht verworfen
     r = rows[0]
     assert (r['winner_name'], r['loser_name']) == ('Bea Beta', 'Ann Alpha')
     assert (r['source'], r['level'], r['score'], r['match_date'], r['tourney_level']) == \

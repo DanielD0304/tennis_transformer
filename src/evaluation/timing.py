@@ -63,6 +63,11 @@ DEFAULT_THRESHOLD = 0.05
 EXTREME = 0.03  # Preis unter 3 % / über 97 %: Verdacht auf Live-Handel oder schon entschieden
 MAX_STALE = pd.Timedelta(hours=2)  # wie odds/report.py: Closing viel älter als der Start -> Startzeit verschoben
 MIN_BETS = 30  # Segmente mit weniger Wetten gehen nicht in den Mehrfachtest
+# GO verlangt Wetten in mindestens so vielen Quartalen (je MIN_BETS), ein einzelner Monat reicht nicht
+MIN_PERIODS = 2
+# Polymarket-Eröffnung: nur Mittel-/Letztkurs ohne Orderbuch-Tiefe. Bei Kalshi (echtes Ask) verliert dieselbe
+# Strategie zur Eröffnung, der PM-Gewinn ist deshalb nicht handelbar und geht nicht in den Mehrfachtest.
+NOT_TRADABLE = {('polymarket', 'open')}
 ALPHA = 0.05
 GO_MIN_CLV = 0.0
 
@@ -316,14 +321,16 @@ def summarize_bets(bets, n_boot=2000, seed=0):
     n = len(bets)
     if n == 0:
         return {'n_bets': 0, 'yield': np.nan, 'yield_ci_low': np.nan, 'yield_ci_high': np.nan, 'p_yield': np.nan,
-                'clv': np.nan, 'clv_sharp': np.nan, 'n_sharp': 0, 'avg_price': np.nan, 'hit_rate': np.nan}
+                'clv': np.nan, 'clv_sharp': np.nan, 'n_sharp': 0, 'avg_price': np.nan, 'hit_rate': np.nan,
+                'n_periods': 0}
     stakes = np.ones(n)
     low, high = bootstrap_yield(bets['profit'], stakes, n_boot=n_boot, seed=seed)
     sharp = bets['clv_sharp'].dropna()
     return {'n_bets': n, 'yield': float(bets['profit'].mean()), 'yield_ci_low': low, 'yield_ci_high': high,
             'p_yield': yield_p_value(bets['profit']), 'clv': float(bets['clv'].mean()),
             'clv_sharp': float(sharp.mean()) if len(sharp) else np.nan, 'n_sharp': len(sharp),
-            'avg_price': float(bets['price'].mean()), 'hit_rate': float(bets['won'].mean())}
+            'avg_price': float(bets['price'].mean()), 'hit_rate': float(bets['won'].mean()),
+            'n_periods': int((bets.groupby('period').size() >= MIN_BETS).sum()) if 'period' in bets else 0}
 
 
 def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=0.0, min_volume=None,
@@ -372,16 +379,23 @@ def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=
     return table, bets, weights
 
 
-def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS):
-    """Holm über alle Einzel-Segmente (ohne 'all') mit >= min_bets Wetten. GO: p_holm < alpha, KI-Untergrenze > 0
-    und mittlerer CLV > 0. Kandidat: Yield > 0 und nominal p < 0,1 (nur Hinweis, keine Entscheidung)."""
+def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS, min_periods=MIN_PERIODS):
+    """
+    Holm über alle Einzel-Segmente (ohne 'all') mit >= min_bets Wetten, ohne nicht handelbare Zeitpunkte
+    (NOT_TRADABLE). GO: p_holm < alpha, KI-Untergrenze > 0, mittlerer CLV > 0 und Wetten in >= min_periods
+    Quartalen. Kandidat: Yield > 0 und nominal p < 0,1 bzw. GO-Werte in nur einem Quartal (Hinweis, keine
+    Entscheidung).
+    """
     table = table.copy()
-    test = (table['level'] != 'all') & (table['n_bets'] >= min_bets)
+    tradable = ~pd.Series([(v, p) in NOT_TRADABLE for v, p in zip(table['venue'], table['point'])], index=table.index)
+    test = (table['level'] != 'all') & (table['n_bets'] >= min_bets) & tradable
     table['p_holm'] = np.nan
     table.loc[test, 'p_holm'] = holm(table.loc[test, 'p_yield'].to_numpy())
-    go = test & (table['p_holm'] < alpha) & (table['yield_ci_low'] > 0) & (table['clv'] > GO_MIN_CLV)
-    candidate = test & ~go & (table['yield'] > 0) & (table['p_yield'] < 0.1)
-    table['decision'] = np.where(go, 'GO', np.where(candidate, 'Kandidat', np.where(test, 'NO-GO', 'zu wenig')))
+    strong = test & (table['p_holm'] < alpha) & (table['yield_ci_low'] > 0) & (table['clv'] > GO_MIN_CLV)
+    go = strong & (table['n_periods'] >= min_periods)
+    candidate = test & ~go & ((table['yield'] > 0) & (table['p_yield'] < 0.1) | strong)
+    table['decision'] = np.where(go, 'GO', np.where(candidate, 'Kandidat', np.where(
+        test, 'NO-GO', np.where(tradable, 'zu wenig', 'nicht handelbar'))))
     return table
 
 
@@ -407,7 +421,7 @@ def markdown(table, cols=None):
     return "\n".join(lines)
 
 
-SHOW = ['venue', 'level', 'point', 'model', 'n_markets', 'n_bets', 'yield', 'yield_ci_low', 'yield_ci_high', 'clv',
+SHOW = ['venue', 'level', 'point', 'model', 'n_markets', 'n_bets', 'n_periods', 'yield', 'yield_ci_low', 'yield_ci_high', 'clv',
         'clv_sharp', 'll_diff', 'll_ci_low', 'll_ci_high', 'p_holm', 'decision']
 
 

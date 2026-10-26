@@ -179,6 +179,19 @@ def test_run_segments_end_to_end():
     row = table[(table['level'] == 'itf')].iloc[0]
     # Wahres p gegen einen Eröffnungspreis von 0,5: klarer Vorteil, Log Loss besser als der Preis
     assert row['n_bets'] > 50 and row['yield'] > 0 and row['ll_diff'] < 0
-    assert set(table['decision']) <= {'GO', 'Kandidat', 'NO-GO', 'zu wenig'}
+    assert set(table['decision']) <= {'GO', 'Kandidat', 'NO-GO', 'zu wenig', 'nicht handelbar'}
     w_price, w_model, n_fit = weights['polymarket']['open']['elo2']
     assert w_model > w_price and n_fit == 400  # Eröffnungspreis konstant 0,48: nur das Modell trägt Information
+
+
+def _row(**kw):
+    base = {'venue': 'kalshi', 'level': 'itf', 'point': '6h', 'model': 'elo2', 'n_bets': 500, 'p_yield': 1e-6,
+            'yield_ci_low': 0.05, 'clv': 0.03, 'yield': 0.1, 'n_periods': 3}
+    return {**base, **kw}
+
+
+def test_decision_rules():
+    t = pd.DataFrame([_row(), _row(level='challenger', n_periods=1), _row(level='main', venue='polymarket', point='open'),
+                      _row(level='all'), _row(level='main', point='1h', n_bets=10), _row(level='itf', point='1h', clv=-0.01)])
+    d = timing.add_decision(t)['decision'].tolist()
+    assert d == ['GO', 'Kandidat', 'nicht handelbar', 'zu wenig', 'zu wenig', 'Kandidat']
