@@ -95,19 +95,21 @@ def fill_levels(bets, level_rows):
 
 
 def run_once(args, log=print, prob=None, model_name=None):
-    now = now_utc()
+    # Predictor vor dem Abfragen aufbauen (dauert Minuten), damit die Preise beim Signal frisch sind
+    if 'modell' in args.strategies and prob is None:
+        prob, model_name = make_prob(args.model, log)
     if args.collect:
         from ..odds.collect import collect_once
         venues = ['polymarket', 'kalshi'] + (['odds_api'] if args.odds_api else []) + (['softbooks'] if args.softbooks else [])
         collect_once(venues, args.snapshots, log=log)
+    # erst nach dem Abfragen, sonst fallen die eben geholten Snapshots aus dem Fenster ts_utc <= now
+    now = now_utc()
     snaps = load_snapshots(now - timedelta(days=args.days), None, args.snapshots)
     bets = load_bets(args.bets)
     log(f"[{now:%Y-%m-%d %H:%M}] {len(snaps)} Snapshots, {len(bets)} Wetten bisher")
 
     new = []
     if 'modell' in args.strategies and not snaps.empty:
-        if prob is None:
-            prob, model_name = make_prob(args.model, log)
         new.append(signals.model_signals(snaps, prob, pd.Timestamp(now), report.bankroll(bets, 'modell'),
                                          args.threshold, strategy='modell', log=log,
                                          blend=None if args.raw else signals.load_blend(), model=model_name))
