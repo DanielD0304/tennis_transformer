@@ -371,13 +371,16 @@ class MatchPredictor:
         return 1 / (1 + math.exp(-z_sym / self.temperature))
 
     def _gbdt_proba(self, pA, pB, surface, match_date, tourney_ioc, best_of):
+        from .evaluation.predictors import MISSING_RANK
         from .models.gbdt import add_elo2
         tour = self.tour.get(pA, 'atp')
         meta_a, meta_b = self.meta.get(pA, {}), self.meta.get(pB, {})
+        # Ohne bekannten Rang wie im Training (prepare_matches) MISSING_RANK. Rang 0 würde zu NaN, und NaN setzt
+        # LightGBM bei Features, die im Training nie NaN waren, auf 0: wie ein Rang besser als Platz 1.
         m = {'tour': tour, 'player_a': pA, 'player_b': pB, 'label': 1, 'date': match_date, 'surface': surface,
              'tourney_ioc': tourney_ioc, 'best_of': best_of, 'court': '',
              'elo_a': self.elo.get(pA, 1500), 'elo_b': self.elo.get(pB, 1500),
-             'rank_a': self.ranks.get(pA, 0), 'rank_b': self.ranks.get(pB, 0),
+             'rank_a': self.ranks.get(pA, MISSING_RANK), 'rank_b': self.ranks.get(pB, MISSING_RANK),
              **{f'winner_{k}': meta_a.get(k, '') for k in ('dob', 'hand', 'ioc')},
              **{f'loser_{k}': meta_b.get(k, '') for k in ('dob', 'hand', 'ioc')}}
         row = pd.DataFrame([self.features.row(m)])

@@ -1,4 +1,6 @@
 """Tests für Download-Auswertung und Zusammenführung (ohne Netz, ohne pandas/torch)."""
+import os
+
 from src.names import candidate_keys
 from src.sources import build, espn, tuk
 from src.sources.common import round_code, status_from_score
@@ -257,7 +259,7 @@ def test_tuk_links_per_tour():
     assert links[('atp', 2025)].endswith('/hrjk/2025/2025.xlsx')
     assert links[('wta', 2025)].endswith('/hrjk/2025w/2025.xlsx')
     assert ('atp', 2014) in links
-    assert tuk.path(2025, 'wta').endswith('tuk_wta/2025.xlsx')
+    assert tuk.path(2025, 'wta').endswith(os.path.join('tuk_wta', '2025.xlsx'))  # Windows: '\'
 
 
 def test_build_keeps_tours_apart():

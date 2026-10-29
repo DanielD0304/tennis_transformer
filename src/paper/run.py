@@ -54,16 +54,18 @@ def make_prob(model='elo2', log=print):
 
 
 MATCH_DAYS = 30  # Matchdaten für die Abrechnung: nur die letzten Tage (data/matches.csv hat > 600.000 Zeilen)
-LEVEL_DAYS = 730  # Turniernamen für die Level-Zuordnung
+LEVEL_DAYS = 730  # Turniere für die Level-Zuordnung
+LEVEL_KEYS = ('tour', 'tourney_name', 'tourney_date', 'level', 'location')
 
 
 def recent_matches(now, path=None):
     """
-    data/matches.csv zeilenweise lesen: (Matches der letzten MATCH_DAYS für die Abrechnung, Sackmann-Zeilen der
-    letzten LEVEL_DAYS mit Turniername/Level für fill_levels). Spart Speicher gegenüber dem ganzen Datensatz.
+    data/matches.csv zeilenweise lesen: (Matches der letzten MATCH_DAYS für die Abrechnung, Turniere der letzten
+    LEVEL_DAYS aus Quellen mit verlässlichem Level für fill_levels). Spart Speicher gegenüber dem ganzen Datensatz.
     """
     import csv
     import os
+    from ..sources.build import LEVEL_SOURCES
     from ..sources.common import MATCHES_PATH
     path = path or MATCHES_PATH
     if not os.path.exists(path):
@@ -72,25 +74,40 @@ def recent_matches(now, path=None):
     since_level = f"{now - timedelta(days=LEVEL_DAYS):%Y%m%d}"
     keep = ('winner_name', 'loser_name', 'match_date', 'tourney_date', 'status', 'source', 'tourney_name', 'level',
             'location')
-    matches, level_rows = [], []
+    matches, tournaments = [], {}
     with open(path, newline='', encoding='utf-8') as f:
         for r in csv.DictReader(f):
             day = r.get('match_date') or r.get('tourney_date') or ''
             if day >= since:
                 matches.append({k: r.get(k) for k in keep})
-            if day >= since_level and r.get('source') == 'sackmann' and r.get('level') in ('challenger', 'itf'):
-                level_rows.append({k: r.get(k) for k in ('tourney_name', 'tourney_date', 'level', 'location')})
-    return matches, level_rows
+            if day >= since_level and r.get('source') in LEVEL_SOURCES:
+                t = tuple(r.get(k) for k in LEVEL_KEYS)
+                tournaments.setdefault(t, dict(zip(LEVEL_KEYS, t)))
+    return matches, list(tournaments.values())
+
+
+def snapshot_levels(snaps):
+    """Kalshi-Snapshots als Level-Referenz für fill_levels: dieselben Turniere in derselben Woche."""
+    k = snaps[(snaps['venue'] == 'kalshi') & snaps['level'].notna() & snaps['tourney'].notna()]
+    when = pd.to_datetime(k['start_time_utc'], utc=True).fillna(k['ts_utc'])
+    return [{'tour': t, 'tourney_name': n, 'tourney_date': f"{d:%Y%m%d}", 'level': lv}
+            for t, n, d, lv in zip(k['tour'], k['tourney'], when, k['level'])]
 
 
 def fill_levels(bets, level_rows):
-    """Fehlendes Level (Polymarket trennt Challenger und Haupttour nicht) über den Turniernamen (Sackmann-Zeilen)."""
-    from ..sources.build import _tourney_lookup
+    """
+    Fehlendes Level (Polymarket trennt Challenger und Haupttour nicht, die Odds API kennzeichnet nichts) über
+    Turniername, Termin und Tour (build._level_lookup).
+    """
+    from ..sources.build import _level_lookup
     missing = bets['level'].isna() if len(bets) else []
     if not len(bets) or not missing.any():
         return bets
-    lookup = _tourney_lookup(level_rows, 'level', ('challenger', 'itf'), None)
-    bets.loc[missing, 'level'] = [lookup(t or '') or 'main' for t in bets.loc[missing, 'tourney']]
+    lookup = _level_lookup(level_rows)
+    todo = bets[missing]
+    when = pd.to_datetime(todo['start_time_utc'], utc=True).fillna(pd.to_datetime(todo['created_utc'], utc=True))
+    bets.loc[missing, 'level'] = [lookup(t or '', f"{d:%Y%m%d}", tour)
+                                  for t, d, tour in zip(todo['tourney'], when, todo['tour'])]
     return bets
 
 
@@ -116,6 +133,7 @@ def run_once(args, log=print, prob=None, model_name=None):
     if 'sharp' in args.strategies and not snaps.empty:
         new.append(signals.sharp_signals(snaps, pd.Timestamp(now), report.bankroll(bets, 'sharp'), args.sharp_threshold))
     matches, level_rows = recent_matches(now)
+    level_rows += snapshot_levels(snaps)
     for part in new:
         fill_levels(part, level_rows)
         bets, n = add_bets(bets, part)

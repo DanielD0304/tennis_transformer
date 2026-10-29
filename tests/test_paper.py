@@ -59,6 +59,27 @@ def test_line_shopping_net_of_tax_and_fees():
     assert only_tipico.empty or only_tipico['edge'].max() < p_fair * 2.0 - 1
 
 
+def test_buy_odds_ignore_ask_below_mid():
+    """Polymarket: Mitte live aus dem CLOB, Bid/Ask aus Gamma (teils veraltet). Ein Ask unter der Mitte zählt nicht."""
+    df = frame(snap('polymarket', NOW, price_a=0.625, price_b=0.375, best_bid_a=0.72, best_ask_a=0.73,
+                    best_bid_b=0.27, best_ask_b=0.28),
+               snap('kalshi', NOW, price_a=0.40, price_b=0.60, best_bid_a=0.39, best_ask_a=0.41,
+                    best_bid_b=0.59, best_ask_b=0.61))
+    buy_a, buy_b = sharp.buy_odds(df, pm_spread=0.02)
+    assert buy_a[0] == pytest.approx(1 / 0.73)  # über der Mitte: der Ask gilt
+    assert buy_b[0] == pytest.approx(1 / (0.375 + 0.01))  # 0,28 < 0,375: Preis + halber Spread
+    assert (buy_a[1], buy_b[1]) == (pytest.approx(1 / 0.41), pytest.approx(1 / 0.61))
+
+
+def test_implausible_sharp_book_is_no_fair_price():
+    """Betfair 1,06/1,10 (Buch 185 %) ist kein fairer Preis: kein Signal, Closing aus dem letzten plausiblen Kurs."""
+    df = frame(snap('betfair', NOW, price_a=1.06, price_b=1.10), snap('tipico', NOW, price_a=1.25, price_b=4.0))
+    assert sharp.signals(df, threshold=0.0).empty
+    close = sharp.closing_fair(frame(snap('betfair', NOW, price_a=1.27, price_b=4.4),
+                                     snap('betfair', NOW + timedelta(minutes=30), price_a=1.06, price_b=1.10)))
+    assert close.iloc[0] == pytest.approx((1 / 1.27) / (1 / 1.27 + 1 / 4.4))
+
+
 def test_kelly_cap_and_shrink():
     k = Kelly(0.25, 0.02)
     assert k.amount(1000, 0.9, 3.0) == pytest.approx(20.0)  # Deckel 2 %
@@ -186,9 +207,41 @@ def test_recent_matches_and_level_fill(tmp_path):
     matches, level_rows = run.recent_matches(NOW, str(path))
     assert [m['winner_name'] for m in matches] == ['A']  # nur die letzten 30 Tage
     assert [r['tourney_name'] for r in level_rows] == ['Lima Challenger']
-    bets = pd.DataFrame({'level': [None, 'itf'], 'tourney': ['Lima', 'M15 X']})
+    bets = pd.DataFrame({'level': [None, 'itf'], 'tourney': ['Lima', 'M15 X'], 'tour': ['atp', 'atp'],
+                         'start_time_utc': [pd.Timestamp(START)] * 2, 'created_utc': [pd.Timestamp(NOW)] * 2})
     run.fill_levels(bets, level_rows)
     assert list(bets['level']) == ['challenger', 'itf']
+
+
+def test_fill_levels_marker_tour_and_calendar_week():
+    """Haupttour wird nicht mehr zu Challenger/ITF, nur weil die Stadt auch ein kleines Turnier hat."""
+    from src.paper import run
+    rows = [{'tour': 'atp', 'tourney_name': 'M15 Vienna', 'tourney_date': '20250901', 'level': 'itf'},
+            {'tour': 'atp', 'tourney_name': 'Shanghai CH', 'tourney_date': '20250908', 'level': 'challenger'},
+            {'tour': 'atp', 'tourney_name': 'Shanghai Masters', 'tourney_date': '20251001', 'level': 'main'},
+            {'tour': 'atp', 'tourney_name': 'Ningbo CH', 'tourney_date': '20251020', 'level': 'challenger'},
+            {'tour': 'wta', 'tourney_name': 'Ningbo', 'tourney_date': '20251013', 'level': 'main'}]
+    bets = pd.DataFrame({'level': None, 'tour': ['atp', 'atp', 'atp', 'atp'],
+                         'tourney': ['ATP Vienna Open', 'Shanghai', 'Shanghai', 'Ningbo'],
+                         'start_time_utc': pd.to_datetime(['2026-10-27', '2026-09-10', '2026-10-05', '2026-10-28'],
+                                                          utc=True),
+                         'created_utc': pd.Timestamp(NOW)})
+    run.fill_levels(bets, rows)
+    # Marker 'ATP ...' (Odds API), Challenger im September, Masters im Oktober, Ningbo der Herren ist ein Challenger
+    assert list(bets['level']) == ['main', 'challenger', 'main', 'challenger']
+
+
+def test_fill_levels_uses_kalshi_snapshots_of_the_same_week():
+    from src.paper import run
+    rows = [{'tour': 'atp', 'tourney_name': 'Shanghai CH', 'tourney_date': '20250908', 'level': 'challenger'}]
+    bets = pd.DataFrame({'level': [None], 'tour': ['atp'], 'tourney': ['Shanghai'],
+                         'start_time_utc': [pd.Timestamp(START)], 'created_utc': [pd.Timestamp(NOW)]})
+    run.fill_levels(bets, rows)
+    assert bets['level'].iloc[0] == 'challenger'  # nur Sackmann: der Challenger im September
+    snaps = frame(snap('kalshi', NOW, price_a=0.5, price_b=0.5, event_id='KX-SH', tourney='ATP Shanghai', level='main'))
+    bets['level'] = None
+    run.fill_levels(bets, rows + run.snapshot_levels(snaps))
+    assert bets['level'].iloc[0] == 'main'  # Kalshi führt das Turnier in dieser Woche als Haupttour
 
 
 def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
