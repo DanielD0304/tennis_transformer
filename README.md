@@ -439,8 +439,8 @@ Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb da
 
 | Venue | Quelle | Voraussetzung |
 |---|---|---|
-| `polymarket` | Gamma-API (Märkte) + CLOB (Midpoints, `prices-history`) | keine |
-| `kalshi` | öffentliche Market-Data-API (Serien `KX{ATP,WTA}MATCH`, `KX{ATP,WTA}CHALLENGERMATCH`) | keine |
+| `polymarket` | Gamma-API (Serien `atp`, `wta`, `itf`) + CLOB (Midpoints, `prices-history`) | keine |
+| `kalshi` | öffentliche Market-Data-API (Serien `KX{ATP,WTA}MATCH`, `KX{ATP,WTA}CHALLENGERMATCH`, `KXITF{,W}MATCH`) | keine |
 | `pinnacle`, `betfair`, `bet365`, … | The Odds API (Regionen `eu,uk`, Markt `h2h`) | `ODDS_API_KEY` (ohne Key übersprungen) |
 | `tipico`, `bwin` | bestehende Playwright-Scraper (`betscraper/scraper/sites.py`) | `playwright install chromium` |
 

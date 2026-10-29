@@ -2,8 +2,8 @@
 Tests für src/odds (ohne Netzwerk).
 
 Die Fixtures in tests/fixtures/odds/ sind echte, gekürzte Antworten von Polymarket (Gamma/CLOB) und
-Kalshi vom 25.10.2026. Ausnahme: odds_api_odds_doku_format.json folgt dem dokumentierten Format der
-Odds API v4, weil in der Cloud-Session kein API-Key vorhanden war.
+Kalshi vom 25.10.2026, die ITF-Fixtures (*_itf*) vom 29.10.2026. Ausnahme: odds_api_odds_doku_format.json
+folgt dem dokumentierten Format der Odds API v4, weil in der Cloud-Session kein API-Key vorhanden war.
 """
 import json
 import math
@@ -154,6 +154,32 @@ def test_polymarket_skips_futures():
     assert polymarket.match_market(event) is None
 
 
+def test_polymarket_fetch_current_includes_itf_series():
+    """ITF-Matches liegen in der eigenen Serie 'itf', die Serien atp/wta allein finden sie nicht."""
+    itf = fixture('polymarket_events_itf_open.json')
+    asked = []
+
+    class Client:
+        def get_json(self, url, params=None):
+            asked.append(params['series_id'])
+            return itf if params['series_id'] == '11634' else []
+
+        def post_json(self, url, payload):
+            return {}  # ohne CLOB-Mitte: Gamma-Preise
+
+    snaps = {s.player_a: s for s in polymarket.fetch_current(Client(), log=lambda *a: None)}
+    assert '11634' in asked
+    assert len(snaps) == 2  # der Satz-Handicap-Markt hat auch Spieler als Outcomes und fällt trotzdem weg
+    men, women = snaps['Digvijay Pratap Singh'], snaps['Raluca Georgiana Serban']
+    # Herren und Damen in einer Serie: das Geschlecht steht nur in der Liga ('M15 …', 'W50 …')
+    assert (men.tour, men.level, men.tourney, men.player_b) == ('atp', 'itf', 'M15 Fergana', 'Dmitry Bessonov')
+    assert (women.tour, women.level, women.tourney) == ('wta', 'itf', 'W50 Istanbul')
+    assert men.price_a == pytest.approx(0.78) and men.event_id == '6387340'
+    assert men.start_time_utc == datetime(2026, 10, 30, 6, tzinfo=timezone.utc)
+    for s in snaps.values():
+        validate(s)
+
+
 # -------------------------------------------------------------------- Kalshi
 
 def test_kalshi_parse_open_event():
@@ -190,6 +216,31 @@ def test_kalshi_winner():
     assert kalshi.winner_of(markets[0]) == 'b'  # Van Assche verliert gegen Kovacevic
     assert kalshi.winner_of(markets[1]) == 'a'
     assert kalshi.winner_of({'result': 'scalar'}) is None
+
+
+def test_kalshi_fetch_current_includes_itf_series():
+    """ITF Herren (KXITFMATCH) und Damen (KXITFWMATCH): Level 'itf', Tour, Startzeit und Turnier aus dem Milestone."""
+    events = {e['series_ticker']: e for e in fixture('kalshi_events_itf_open.json')['events']}
+    milestones = fixture('kalshi_milestones_itf.json')
+
+    class Client:
+        def get_json(self, url, params=None):
+            if url.endswith('/milestones'):
+                return milestones
+            event = events.get(params['series_ticker'])
+            return {'events': [event] if event else [], 'cursor': ''}
+
+    snaps = {s.event_id: s for s in kalshi.fetch_current(Client(), log=lambda *a: None)}
+    men, women = snaps['KXITFMATCH-26OCT28COVDEL'], snaps['KXITFWMATCH-26OCT29CHAKOZ']
+    assert (men.tour, men.level, men.tourney) == ('atp', 'itf', 'M15 Mazatlan')  # am Event steht nur 'ITF'
+    assert (women.tour, women.level, women.tourney) == ('wta', 'itf', 'W35 Sydney')
+    assert (men.player_a, men.player_b, men.best_bid_a, men.best_ask_a) == ('Matteo Covato', 'Gerardo Delgado', 0.79, 0.86)
+    assert men.start_time_utc == datetime(2026, 10, 30, 17, 30, tzinfo=timezone.utc)
+    for s in snaps.values():
+        validate(s)
+    # ohne Milestone: Tour und Level aus der Serie
+    s = kalshi.parse_event(events['KXITFWMATCH'], TS)
+    assert (s.tour, s.level, s.start_time_utc) == ('wta', 'itf', None)
 
 
 # ------------------------------------------------------------------ Odds API
