@@ -529,23 +529,32 @@ python -m src.paper.run                 # eine Runde: Snapshots holen, Signale -
 python -m src.paper.run --loop 30       # dauerhaft alle 30 Minuten
 python -m src.paper.run --no-collect    # wenn der Collector schon separat läuft
 python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent, für „sharp“ nötig)
+python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-2   # eigene Segmente
 ```
 
 - Strategien: `modell` (gbdt bzw. elo2 im Blend mit dem aktuellen Preis bei Polymarket/Kalshi, Gewichte
   aus `data/eval/timing_blend.json`; `--raw` nimmt das rohe Modell) und `sharp` (Sharp vs. Rest).
+- `modell` wettet nur in Segmenten aus Venue × Level × Stunden bis zum Start. Standard (`--segments auto`)
+  sind die Segmente, die der Timing-Backtest in `data/eval/timing.parquet` für das genutzte Modell als
+  Kandidat oder GO ausweist. Der Zeitpunkt wird dabei zum Fenster: −24 h → 18–30 h, −6 h → 4,5–7,5 h,
+  −1 h → 0,5–1,5 h, Closing → 0–0,5 h vor dem Start. Fehlt die Datei, gelten die Kandidaten aus
+  [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md). `--segments alle` wettet wie früher auf alles, was
+  in den nächsten 48 h beginnt. Das Level fehlt bei Polymarket außer ITF und kommt vorher aus der
+  Level-Zuordnung (Marker im Turniernamen, sonst dasselbe Turnier in derselben Kalenderwoche).
 - Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
-  Strategie, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals verfügbare
-  Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match.
+  Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
+  verfügbare Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes Segment ist
+  eine eigene Hypothese, wie im Backtest zählt ein Match deshalb in jedem Segment, durch dessen Fenster es läuft.
 - Abrechnung frühestens 3 h nach der geplanten Startzeit, über die PM/Kalshi-Auflösung (die Historie der
   letzten 10 Tage wird nachgeladen) oder die Matchdaten (ESPN, Märkte). W/O ist void. RET richtet sich
   nach der Venue: Polymarket und Kalshi zahlen den Spieler aus, der weiterkommt. Deutsche Bücher werden
   als void angenommen, das bitte in den AGB prüfen. Eine 50-50-Auflösung ist void.
 - CLV = genommene Quote / Schlussquote − 1. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
   dem Start, dazu wird gegen Sharp verglichen, wo vorhanden.
-- **Kriterium für echtes Geld** (im Dashboard angezeigt): ≥ 300 abgerechnete Paper-Wetten, mittlerer CLV
-  > +2 % und untere Grenze des Yield-KI > 0 nach Gebühren. Vorher rechtlich prüfen, ob Polymarket und
-  Kalshi aus Deutschland nutzbar sind (Kalshi ist im Wesentlichen nur für die USA). Das ist keine
-  Rechtsberatung.
+- **Kriterium für echtes Geld** (im Dashboard angezeigt, insgesamt und je Segment): ≥ 300 abgerechnete
+  Paper-Wetten, mittlerer CLV > +2 % und untere Grenze des Yield-KI > 0 nach Gebühren. Vorher rechtlich
+  prüfen, ob Polymarket und Kalshi aus Deutschland nutzbar sind (Kalshi ist im Wesentlichen nur für die
+  USA). Das ist keine Rechtsberatung.
 
 **Dauerhaft laufen lassen** (lokal, in der Cloud-Session läuft nichts dauerhaft). Der Paper-Lauf holt selbst
 Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlich der Odds-API-Collector laufen

@@ -99,7 +99,8 @@ def _curve_points(curve, width=640, height=180, pad=6):
 
 
 def paper_trading(request):
-    """Paper-Trading-Dashboard: Bankroll-Kurve, Yield mit KI, CLV pro Venue/Strategie/Level, offene und abgerechnete Wetten."""
+    """Paper-Trading-Dashboard: Bankroll-Kurve, Yield mit KI, CLV pro Venue/Strategie/Level/Segment, Go/No-Go insgesamt
+    und je Segment, offene und abgerechnete Wetten."""
     from src.paper import report
     from src.paper.store import load_bets
 
@@ -117,8 +118,9 @@ def paper_trading(request):
     table = report.summary(shown, n_boot=1000) if len(shown) else None
     rows = [] if table is None else table.to_dict('records')
     decision = report.go_no_go(shown, n_boot=1000)
-    cols = ['created_utc', 'strategy', 'venue', 'level', 'player', 'player_a', 'player_b', 'start_time_utc', 'odds',
-            'net_odds', 'p', 'edge', 'stake', 'status', 'profit', 'clv']
+    segments = [{'name': name, **d} for name, d in report.go_no_go_by_segment(shown, n_boot=1000).items()]
+    cols = ['created_utc', 'strategy', 'segment', 'venue', 'level', 'player', 'player_a', 'player_b', 'start_time_utc',
+            'odds', 'net_odds', 'p', 'edge', 'stake', 'status', 'profit', 'clv']
     recent = shown.sort_values('created_utc', ascending=False)
     return render(request, 'scraper/paper.html', {
         'error': error,
@@ -128,6 +130,7 @@ def paper_trading(request):
         'start_bankroll': report.START_BANKROLL,
         'rows': _fmt_rows(rows),
         'decision': decision,
+        'segments': segments,
         'open_bets': _fmt_rows(recent[recent['status'] == 'open'][cols].head(200).to_dict('records')),
         'settled_bets': _fmt_rows(recent[recent['status'] != 'open'][cols].head(200).to_dict('records')),
     })
