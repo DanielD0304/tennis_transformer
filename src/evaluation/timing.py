@@ -22,7 +22,8 @@ Ablauf:
    Schwelle mit dem höchsten Gewinn in allen Quartalen davor (erstes Quartal: DEFAULT_THRESHOLD).
 5. Kennzahlen pro Venue x Level x Zeitpunkt x Modell: Wetten, Yield mit Bootstrap-KI, CLV gegen das Closing
    der Venue und (wo vorhanden) gegen Pinnacle/Betfair, Log Loss von p gegen den Preis zum Zeitpunkt t
-   (gepaarter Bootstrap aus metrics). Go/No-Go mit Holm-Korrektur über alle Segmente.
+   (gepaarter Bootstrap aus metrics). Go/No-Go mit Holm-Korrektur über alle Segmente und Robustheit über die
+   Quartale (Gewinn in mindestens zwei Quartalen einzeln bestätigt, kein Quartal mit mehr als 60 % der Wetten).
 
 Ausgewertet wird das Ergebnis der Markt-Auflösung (das zahlt die Venue aus). Märkte mit 50-50-Auflösung fehlen.
 Ehrliche Grenzen: Polymarket hat historisch nur Mittel-/Letztkurse in 10-Minuten-Auflösung, das Volumen ist
@@ -63,8 +64,13 @@ DEFAULT_THRESHOLD = 0.05
 EXTREME = 0.03  # Preis unter 3 % / über 97 %: Verdacht auf Live-Handel oder schon entschieden
 MAX_STALE = pd.Timedelta(hours=2)  # wie odds/report.py: Closing viel älter als der Start -> Startzeit verschoben
 MIN_BETS = 30  # Segmente mit weniger Wetten gehen nicht in den Mehrfachtest
-# GO verlangt Wetten in mindestens so vielen Quartalen (je MIN_BETS), ein einzelner Monat reicht nicht
+# GO verlangt, dass sich der Gewinn in mindestens so vielen Quartalen einzeln bestätigt (je >= MIN_BETS Wetten und
+# untere Grenze des Yield-KI > 0 im Quartal). Ein einzelner Monat reicht nicht.
 MIN_PERIODS = 2
+# ... und dass kein Quartal mehr als diesen Anteil der Wetten trägt. Anlass: Polymarket ITF -1 h, blend_gbdt (Lauf
+# 27.10.2026) mit 97 % der Wetten im Oktober 2026, als Polymarket viele dünne ITF-Märkte ohne aussagekräftigen
+# Preis listete. Zwei Quartale mit je >= 30 Wetten waren dort nur formal erfüllt.
+MAX_PERIOD_SHARE = 0.6
 # Polymarket-Eröffnung: nur Mittel-/Letztkurs ohne Orderbuch-Tiefe. Bei Kalshi (echtes Ask) verliert dieselbe
 # Strategie zur Eröffnung, der PM-Gewinn ist deshalb nicht handelbar und geht nicht in den Mehrfachtest.
 NOT_TRADABLE = {('polymarket', 'open')}
@@ -317,12 +323,29 @@ def log_loss_vs_price(df, point, model, venue, n_boot=1000, seed=0):
             'll_diff': boot['mean_diff'], 'll_ci_low': boot['ci_low'], 'll_ci_high': boot['ci_high']}
 
 
+def period_stats(bets, n_boot=2000, seed=0):
+    """
+    Robustheit über die Zeit: n_periods (Quartale mit >= MIN_BETS Wetten), n_periods_pos (davon mit unterer Grenze
+    des Yield-KI > 0 im Quartal) und max_period_share (größter Anteil eines Quartals an allen Wetten).
+    """
+    if 'period' not in bets or len(bets) == 0:
+        return {'n_periods': 0, 'n_periods_pos': 0, 'max_period_share': np.nan}
+    sizes = bets.groupby('period').size()
+    n_pos = 0
+    for period in sizes.index[sizes >= MIN_BETS]:
+        profit = bets.loc[bets['period'] == period, 'profit']
+        low, _ = bootstrap_yield(profit, np.ones(len(profit)), n_boot=n_boot, seed=seed)
+        n_pos += bool(low > 0)
+    return {'n_periods': int((sizes >= MIN_BETS).sum()), 'n_periods_pos': n_pos,
+            'max_period_share': float(sizes.max() / len(bets))}
+
+
 def summarize_bets(bets, n_boot=2000, seed=0):
     n = len(bets)
     if n == 0:
         return {'n_bets': 0, 'yield': np.nan, 'yield_ci_low': np.nan, 'yield_ci_high': np.nan, 'p_yield': np.nan,
                 'clv': np.nan, 'clv_sharp': np.nan, 'n_sharp': 0, 'avg_price': np.nan, 'hit_rate': np.nan,
-                'n_periods': 0}
+                **period_stats(bets)}
     stakes = np.ones(n)
     low, high = bootstrap_yield(bets['profit'], stakes, n_boot=n_boot, seed=seed)
     sharp = bets['clv_sharp'].dropna()
@@ -330,7 +353,7 @@ def summarize_bets(bets, n_boot=2000, seed=0):
             'p_yield': yield_p_value(bets['profit']), 'clv': float(bets['clv'].mean()),
             'clv_sharp': float(sharp.mean()) if len(sharp) else np.nan, 'n_sharp': len(sharp),
             'avg_price': float(bets['price'].mean()), 'hit_rate': float(bets['won'].mean()),
-            'n_periods': int((bets.groupby('period').size() >= MIN_BETS).sum()) if 'period' in bets else 0}
+            **period_stats(bets, n_boot, seed)}
 
 
 def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=0.0, min_volume=None,
@@ -379,12 +402,12 @@ def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=
     return table, bets, weights
 
 
-def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS, min_periods=MIN_PERIODS):
+def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS, min_periods=MIN_PERIODS, max_share=MAX_PERIOD_SHARE):
     """
     Holm über alle Einzel-Segmente (ohne 'all') mit >= min_bets Wetten, ohne nicht handelbare Zeitpunkte
-    (NOT_TRADABLE). GO: p_holm < alpha, KI-Untergrenze > 0, mittlerer CLV > 0 und Wetten in >= min_periods
-    Quartalen. Kandidat: Yield > 0 und nominal p < 0,1 bzw. GO-Werte in nur einem Quartal (Hinweis, keine
-    Entscheidung).
+    (NOT_TRADABLE). GO: p_holm < alpha, KI-Untergrenze > 0, mittlerer CLV > 0, in >= min_periods Quartalen
+    einzeln KI-Untergrenze > 0 (n_periods_pos) und kein Quartal mit mehr als max_share der Wetten. Kandidat:
+    Yield > 0 und nominal p < 0,1 bzw. GO-Werte ohne diese Robustheit über die Zeit (Hinweis, keine Entscheidung).
     """
     table = table.copy()
     tradable = ~pd.Series([(v, p) in NOT_TRADABLE for v, p in zip(table['venue'], table['point'])], index=table.index)
@@ -392,7 +415,7 @@ def add_decision(table, alpha=ALPHA, min_bets=MIN_BETS, min_periods=MIN_PERIODS)
     table['p_holm'] = np.nan
     table.loc[test, 'p_holm'] = holm(table.loc[test, 'p_yield'].to_numpy())
     strong = test & (table['p_holm'] < alpha) & (table['yield_ci_low'] > 0) & (table['clv'] > GO_MIN_CLV)
-    go = strong & (table['n_periods'] >= min_periods)
+    go = strong & (table['n_periods_pos'] >= min_periods) & (table['max_period_share'] <= max_share)
     candidate = test & ~go & ((table['yield'] > 0) & (table['p_yield'] < 0.1) | strong)
     table['decision'] = np.where(go, 'GO', np.where(candidate, 'Kandidat', np.where(
         test, 'NO-GO', np.where(tradable, 'zu wenig', 'nicht handelbar'))))
@@ -409,8 +432,10 @@ def markdown(table, cols=None):
         if isinstance(v, float):
             if not np.isfinite(v):
                 return '–'
-            if c in ('yield', 'yield_ci_low', 'yield_ci_high', 'clv', 'clv_sharp', 'hit_rate'):
-                return f"{v:+.1%}" if c != 'hit_rate' else f"{v:.0%}"
+            if c in ('yield', 'yield_ci_low', 'yield_ci_high', 'clv', 'clv_sharp'):
+                return f"{v:+.1%}"
+            if c in ('hit_rate', 'max_period_share'):
+                return f"{v:.0%}"
             if c.startswith('ll'):
                 return f"{v:+.4f}" if c in ('ll_diff', 'll_ci_low', 'll_ci_high') else f"{v:.4f}"
             return f"{v:.3f}"
@@ -421,8 +446,8 @@ def markdown(table, cols=None):
     return "\n".join(lines)
 
 
-SHOW = ['venue', 'level', 'point', 'model', 'n_markets', 'n_bets', 'n_periods', 'yield', 'yield_ci_low', 'yield_ci_high', 'clv',
-        'clv_sharp', 'll_diff', 'll_ci_low', 'll_ci_high', 'p_holm', 'decision']
+SHOW = ['venue', 'level', 'point', 'model', 'n_markets', 'n_bets', 'n_periods', 'n_periods_pos', 'max_period_share',
+        'yield', 'yield_ci_low', 'yield_ci_high', 'clv', 'clv_sharp', 'll_diff', 'll_ci_low', 'll_ci_high', 'p_holm', 'decision']
 
 
 def load_linked(venues, predictions, root=None, log=print):
@@ -506,7 +531,8 @@ def main(argv=None):
     print(f"\nGO-Segmente (Holm, alpha={ALPHA}): {len(go)}")
     for r in table[table['decision'].isin(['GO', 'Kandidat'])].to_dict('records'):
         print(f"  {r['decision']}: {r['venue']} {r['level']} {r['point']} {r['model']}: {r['n_bets']} Wetten, "
-              f"Yield {r['yield']:+.1%} [{r['yield_ci_low']:+.1%}, {r['yield_ci_high']:+.1%}], CLV {r['clv']:+.1%}")
+              f"Yield {r['yield']:+.1%} [{r['yield_ci_low']:+.1%}, {r['yield_ci_high']:+.1%}], CLV {r['clv']:+.1%}, "
+              f"Quartale mit KI > 0: {r['n_periods_pos']}/{r['n_periods']}, größtes Quartal {r['max_period_share']:.0%}")
     print(f"Gespeichert: {OUT_DIR}/timing.parquet, timing_bets.parquet, timing.md, timing_blend.json")
 
 

@@ -16,20 +16,20 @@ python -m src.evaluation.timing --models elo2,gbdt --pm-spread 0.04 --venues pol
 
 ## Daten-Abdeckung pro Level
 
-Matchdaten `data/matches.csv` (2015 bis 25.10.2026, 651.974 Matches):
+Matchdaten `data/matches.csv` (2015 bis 29.10.2026, 669.205 Matches):
 
 | Tour | Level | Sackmann (bis 01.06.2026) | tennis-data | ESPN | Polymarket | Kalshi |
 |---|---|---:|---:|---:|---:|---:|
-| ATP | main (inkl. Quali) | 46.814 | 1.061 | 29 | 646 | – |
-| ATP | challenger | 90.052 | – | 54 | 2.386 | 1.448 |
-| ATP | itf | 186.802 | – | 1 | 8.714 | – |
-| WTA | main (inkl. Quali) | 46.040 | – | 1.225 | 643 | – |
-| WTA | challenger (WTA 125) | 8.264 | – | 459 | 35 | – |
-| WTA | itf | 250.292 | – | 420 | 6.589 | – |
+| ATP | main (inkl. Quali) | 46.814 | 1.142 | 48 | 171 | 372 |
+| ATP | challenger | 90.052 | – | – | 49 | 5.317 |
+| ATP | itf | 186.802 | – | 1 | 2.750 | 13.718 |
+| WTA | main (inkl. Quali) | 46.040 | 1.149 | 436 | 143 | 421 |
+| WTA | challenger (WTA 125) | 8.264 | – | 419 | – | 351 |
+| WTA | itf | 250.292 | – | 249 | 1.367 | 12.838 |
 
-ESPN zeigt nur vereinzelt Challenger/WTA 125 (ohne Kennzeichnung, Level über den Turniernamen), kein ITF und keine
+ESPN zeigt nur vereinzelt Challenger, WTA 125 und ITF (ohne Kennzeichnung, Level über den Turniernamen) und keine
 Qualifikation. Nach dem Sackmann-Ende tragen deshalb die Markt-Auflösungen Challenger und ITF (ohne Score, RET nicht
-erkennbar). WTA-Quoten von tennis-data fehlen auf dem Daten-Branch ganz.
+erkennbar). Seit Kalshi vollständig geladen ist, stammen die meisten davon aus Kalshi.
 
 Prediction-Market-Historie (`data/odds/history`):
 - **Polymarket:** 42.817 abgerechnete Match-Märkte (09/2025 bis 10/2026). 10.433 davon haben keine erkennbare
@@ -56,7 +56,79 @@ Der erste Lauf zeigte bei der Polymarket-Eröffnung +25 bis +32 % Yield auf Taus
 3. Daneben wurde ein Fehler im Code von #11 behoben: Polymarket-Märkte ohne Level (`NaN` im Parquet) fielen als
    Ergebnisquelle durch den Level-Filter (17.047 Märkte).
 4. Zusätzliche Regel für GO: Wetten in mindestens zwei Quartalen mit je ≥ 30 Wetten. Anlass war ITF −1 h mit
-   `blend_gbdt` (+21,9 % auf 1.394 Wetten, aber fast alle im Oktober 2026 und CLV nur +1,4 %).
+   `blend_gbdt` (+21,9 % auf 1.394 Wetten, aber fast alle im Oktober 2026 und CLV nur +1,4 %). Die Regel reichte
+   nicht, siehe nächster Abschnitt.
+
+## Das GO vom 27.10.: Polymarket ITF −1 h ist ein Artefakt
+
+Der Lauf vom 27.10. mit vollständigen Kalshi-Daten ergab ein einziges GO: Polymarket ITF −1 h, `blend_gbdt`,
++23,8 % [+17,1 %, +31,0 %] auf 1.669 Wetten, CLV aber nur +2,0 %. Es ist kein handelbarer Vorteil:
+
+1. **Ein Monat statt zwei Quartale:** 1.618 Wetten liegen im Oktober 2026, das Q3 hat nur 47 (August 15,
+   September 32). Die Regel „zwei Quartale mit je ≥ 30 Wetten“ war nur formal erfüllt. Hinzu kommt: PM-ITF-Märkte
+   tragen erst ab August 2026 eine Tour. Von Mai bis Juli fehlt bei 8.932 von 9.050 Märkten das Geschlecht, und der
+   Backtest ordnet sie nicht zu. PM ITF umfasst also nur August bis Oktober.
+2. **Zur selben Zeit bricht die Preisqualität ein** (alle abgerechneten PM-ITF-Märkte, Preis −1 h):
+
+   | Monat | Märkte | ohne Tour | genau 0,5 | 0,46–0,54 | ohne Volumenangabe | Log Loss Preis |
+   |---|---:|---:|---:|---:|---:|---:|
+   | 05/2026 | 1.660 | 100 % | 2 % | 12 % | 1 % | 0,551 |
+   | 06/2026 | 3.217 | 100 % | 1 % | 12 % | 0 % | 0,533 |
+   | 07/2026 | 3.818 | 97 % | 1 % | 12 % | 0 % | 0,535 |
+   | 08/2026 | 3.924 | 37 % | 11 % | 22 % | 11 % | 0,560 |
+   | 09/2026 | 6.181 | 0 % | 24 % | 34 % | 25 % | 0,575 |
+   | 10/2026 | 6.876 | 0 % | 12 % | 25 % | 25 % | 0,566 |
+
+3. **Der Gewinn stammt aus Märkten ohne echten Handel.** Dieselben 1.669 Wetten, aufgeteilt. Kalshi-Gegenstück
+   heißt: Kalshi-Markt zum selben Match, gezählt werden die bis −1 h gehandelten Kontrakte. Das PM-Gesamtvolumen in $
+   gilt für die ganze Laufzeit des Markts:
+
+   | Merkmal | Gruppe | Wetten | Yield | Trefferquote | Ø Kaufpreis | CLV |
+   |---|---|---:|---:|---:|---:|---:|
+   | Kalshi-Gegenstück | ≥ 100 Kontrakte bis −1 h | 406 | −1,8 % | 50 % | 0,50 | −1,9 % |
+   | | < 100 Kontrakte | 639 | +9,6 % | 54 % | 0,49 | −0,4 % |
+   | | keines | 624 | +55,0 % | 72 % | 0,48 | +6,9 % |
+   | PM-Gesamtvolumen | ohne Angabe | 511 | +49,1 % | 72 % | 0,48 | +6,4 % |
+   | | < 100 $ | 171 | +21,8 % | 52 % | 0,45 | +2,6 % |
+   | | ≥ 100 $ | 987 | +11,0 % | 54 % | 0,50 | −0,4 % |
+   | Abstand des Preises zu 0,5 | ≤ 0,02 | 225 | +64,8 % | 84 % | 0,51 | +0,3 % |
+   | | 0,02–0,04 | 208 | +35,3 % | 67 % | 0,50 | +1,8 % |
+   | | 0,04–0,10 | 419 | +32,4 % | 64 % | 0,49 | +5,2 % |
+   | | > 0,10 | 817 | +5,1 % | 49 % | 0,48 | +0,8 % |
+
+   Auch die 47 Wetten im Q3 (+80 %) liegen fast alle (43) in Märkten ohne liquides Kalshi-Gegenstück. Doppelte
+   Märkte am selben Tag sind als Ursache ausgeschlossen (Review vom 29.10.).
+4. **PM-ITF-Märkte ohne Kalshi-Gegenstück sind −1 h praktisch Münzwürfe.** Ab August: 1.312 solche Märkte,
+   39 % der Preise zwischen 0,46 und 0,54, Log Loss des Preises 0,684 (ln 2 = 0,693). gbdt allein ist dort besser
+   (0,600). Mit Kalshi-Gegenstück ist es umgekehrt: Preis 0,516 bis 0,541, gbdt 0,560 bis 0,580. Wo Kalshi bis −1 h
+   mindestens 100 Kontrakte gehandelt hat, folgt der PM-Preis dem Kalshi-Preis (Korrelation 0,99, im Mittel 0,02
+   Abstand). Der Anteil der PM-ITF-Märkte ohne Kalshi-Gegenstück stieg von 5 % (August, September) auf 19 % im
+   Oktober.
+5. **Dieselbe Strategie bei Kalshi** (echtes Ask, ≥ 100 Kontrakte): ITF −1 h, `blend_gbdt` −9,8 %
+   [−27,8 %, +10,4 %] auf 464 Wetten.
+
+Warum gerade der Blend: Seine Gewichte für das Q4 stammen aus den Quartalen davor. Dort war der PM-Preis −1 h gut,
+der Blend folgt ihm also stark (Gewicht Preis 0,90, Modell 0,19). In den dünnen Oktober-Märkten steht der Preis ohne
+Information bei etwa 0,5. Dann entscheidet das Modell, und der Blend wettet auf dessen Favoriten zu einer Quote
+von etwa 2,0. Bei Preisen nahe 0,5 gibt gbdt der gewetteten Seite im Mittel 0,73, getroffen werden 76 %: Das
+Modell liegt richtig, der Preis ist keiner. gbdt allein bringt im selben Segment nichts (+0,6 % [−4,1 %, +5,6 %]), weil es auch in
+liquiden Märkten gegen gute Preise wettet. Der Gewinn misst also Modell gegen Münzwurf, nicht Modell gegen Markt.
+
+**Sollen Preise nahe 0,5 wie der Platzhalter 0,5 behandelt werden? Nein.** In liquiden Märkten (Kalshi-Gegenstück
+mit ≥ 100 Kontrakten, PM-Volumen > 2.000 $) sind Preise um 0,5 echte enge Matches. Dort ist der Preis besser als
+gbdt (298 Märkte ab August, Log Loss 0,693 gegen 0,731), der gbdt-Favorit gewinnt nur 50 %. Ein Band um 0,5 würde solche echten Kurse
+streichen und dünne Märkte mit Preisen abseits von 0,5 behalten (GO-Wetten mit 0,04 bis 0,10 Abstand: +32 %).
+Das Problem ist der fehlende Handel, nicht der Preis. Die PM-Historie hat aber keine Orderbuch-Tiefe, nur das
+Gesamtvolumen (inklusive Live-Handel, also ein Blick in die Zukunft). Deshalb fängt die Robustheitsregel solche
+Effekte ab, und im Paper-Trading zählt das echte Ask.
+
+**Neue Regel** (`timing.add_decision`): Zusätzlich zu Holm-p < 0,05, KI-Untergrenze > 0 und CLV > 0 verlangt GO:
+- in mindestens zwei Quartalen mit je ≥ 30 Wetten einzeln eine KI-Untergrenze des Yields > 0 (`n_periods_pos`),
+- kein Quartal mit mehr als 60 % der Wetten (`max_period_share`).
+
+Auf den Lauf vom 27.10. angewendet bleibt kein GO, das frühere GO wird zum Kandidaten. Die erste Bedingung allein
+hätte nicht gereicht: Die 47 Q3-Wetten bestätigen den Gewinn mit +80 %, weil sie aus denselben dünnen Märkten
+stammen. Erst die Konzentration (97 % der Wetten im Q4) stoppt es.
 
 ## Timing-Tabelle (gbdt und Blend aus gbdt + Preis)
 
