@@ -12,7 +12,6 @@ Functions:
     - create_training_samples: Generate training samples from match data
 """
 
-import torch
 import math
 import random
 import pandas as pd
@@ -532,9 +531,11 @@ def save_preprocessed_samples(df, out_path, n_matches=10, n_recent=15, max_rank=
         n_matches (int): Surface-Matches
         n_recent (int): Recent-Matches
     """
+    import torch  # erst hier: Predictor und Paper-Lauf brauchen preprocessing ohne torch
+
     from .elo import compute_elo_ratings
     df = compute_elo_ratings(df)
-    
+
     samples = create_training_samples(df, n_matches=n_matches, n_recent=n_recent, max_rank=max_rank)
     torch.save(samples, out_path)
     print(f"Saved {len(samples)} samples to {out_path}")

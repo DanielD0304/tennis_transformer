@@ -9,6 +9,11 @@ Datenbasis ist data/matches.csv (siehe src/update_data.py): Sackmann mit Aufschl
 danach tennis-data.co.uk und ESPN (jedes beendete Match, auch im laufenden Turnier, ohne Stats).
 Die Daten werden beim Start automatisch aktualisiert, wenn sie älter als 24 Stunden sind.
 
+Der aufgebaute Zustand (Elo, Elo2, H2H, Historien bzw. Feature-Stand) landet in data/cache/predictor_<modell>.pkl
+und wird wiederverwendet, solange data/matches.csv (Pfad, Änderungszeit, Größe), config.data_years_start und der
+Code, der ihn baut (STATE_SOURCES), unverändert sind: neu gerechnet wird also einmal nach jedem Daten-Update.
+Die Modelle selbst (models/gbdt_<tour>.pkl, best_model.pt) werden jedes Mal frisch geladen.
+
 Der Untergrund wird, wenn nicht angegeben, aus dem Turniernamen bestimmt (build._tourney_lookup),
 sonst aus dem Turnier, das beide Spieler gerade spielen. Ein expliziter Untergrund hat Vorrang.
 
@@ -29,26 +34,26 @@ Nutzung:
 import math
 import os
 import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from difflib import get_close_matches
+from functools import lru_cache
+from itertools import repeat
 
 import pandas as pd
-import torch
 
+from . import cache
 from . import data_loader as dl
-from .chronology import chronological, match_dates
+from .chronology import match_dates
 from .config import default_config
-from .dataset import DataSet
 from .elo import Elo2, compute_elo_ratings
-from .model import load_model
 from .names import candidate_keys, player_key
 from .preprocessing import (context_features, elo2_logit, extract_match_features, get_h2h_pct, inject_context,
                             is_home, is_walkover, pad_sequence)
 from .sources.build import GRAND_SLAMS, VALID_SURFACES, _tourney_lookup
 from .sources.places import tourney_country
-from .train import custom_collate_fn, model_inputs
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,6 +64,19 @@ MIN_HISTORY = 5
 CURRENT_TOURNEY_DAYS = 10
 DEFAULT_SURFACE = 'Hard'
 LIVE_MODELS = ('transformer', 'gbdt', 'elo2')
+
+# Spalten, die der Durchlauf in _build_history liest (liest er ein neues Feld, gehört es hierher).
+# Die Transformer-Historie braucht zusätzlich alles, was preprocessing.extract_match_features liest.
+ROW_COLUMNS = ('winner_name', 'loser_name', 'status', 'score', 'tour', 'surface', 'tourney_level', 'tourney_name',
+               'round', 'played_on', 'minutes', 'winner_rank', 'loser_rank', 'w_svpt', 'winner_elo_after',
+               'loser_elo_after') + tuple(f'{side}_{k}' for side in ('winner', 'loser') for k in ('dob', 'hand', 'ioc'))
+HISTORY_COLUMNS = ROW_COLUMNS + ('winner_elo', 'loser_elo', 'best_of', 'court', 'tourney_ioc', 'match_date_obj') + tuple(
+    f'{p}_{s}' for p in ('w', 'l') for s in ('ace', 'df', 'svpt', '1stIn', '1stWon', '2ndWon', 'bpSaved', 'bpFaced'))
+# Was im Cache landet, und der Code, von dem es abhängt: ändert sich eine dieser Dateien, wird neu gebaut
+STATE = ('history', 'h2h', 'players', '_index', 'matches', 'ranks', 'elo', 'tour', 'meta', 'elo2', 'features',
+         'last_match_date', '_surface_rows')
+STATE_SOURCES = ('predict.py', 'elo.py', 'features.py', 'preprocessing.py', 'chronology.py', 'data_loader.py',
+                 'names.py', 'score.py', 'evaluation/predictors.py', 'sources/build.py', 'sources/common.py')
 
 
 @dataclass
@@ -76,10 +94,11 @@ class Prediction:
 
 
 class MatchPredictor:
-    def __init__(self, config=default_config, matches=None, model_path=None, model=None, gbdt_dir=None):
+    def __init__(self, config=default_config, matches=None, model_path=None, model=None, gbdt_dir=None, use_cache=True):
         """
-        matches: DataFrame im Schema von data/matches.csv (für Tests). Standard: dl.load_matches()
-        ab config.data_years_start, damit ELO dieselbe Basis hat wie im Training.
+        matches: DataFrame im Schema von data/matches.csv (für Tests, ohne Cache). Standard: dl.load_matches()
+        ab config.data_years_start, damit ELO dieselbe Basis hat wie im Training; der Zustand dazu kommt aus
+        data/cache/, solange Daten und Code gleich sind (use_cache=False: immer neu aufbauen, nichts speichern).
         model: 'transformer', 'gbdt' oder 'elo2' (Standard: config.live_model).
         model_path: Transformer-Gewichte, gbdt_dir: Ordner mit gbdt_<tour>.pkl (Standard: models/).
         """
@@ -87,27 +106,30 @@ class MatchPredictor:
         self.model_name = model or config.live_model
         if self.model_name not in LIVE_MODELS:
             raise ValueError(f"Unbekanntes Live-Modell {self.model_name!r} (bekannt: {', '.join(LIVE_MODELS)})")
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        if matches is None:
-            matches = dl.load_matches(first_year=config.data_years_start)
-        self._build_history(matches)
-
-        self.model, self.temperature = None, 1.0
+        self.model, self.temperature, self.device = None, 1.0, None
         if self.model_name == 'transformer':
             model_path = model_path or os.path.join(REPO_ROOT, config.best_model_path)
             if not os.path.exists(model_path):
                 raise FileNotFoundError(
                     f"Kein trainiertes Modell unter {model_path}. Erst 'python main.py' laufen lassen."
                 )
+
+        if matches is None:
+            self._load_state(use_cache)
+        else:
+            self._build_history(matches)
+
+        if self.model_name == 'transformer':
+            import torch  # nur der Transformer braucht torch (gbdt/elo2 und der Paper-Lauf laden es nicht)
+
+            from .model import load_model
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.model, self.temperature = load_model(model_path, config, self.device)
         elif self.model_name == 'gbdt':
             self._init_gbdt(gbdt_dir or os.path.join(REPO_ROOT, 'models'))
 
     def _init_gbdt(self, folder):
-        """LightGBM pro Tour laden und den Feature-Stand (features.FeatureBuilder) bis heute aufbauen."""
-        from .evaluation.predictors import prepare_matches
-        from .features import FeatureBuilder, feature_table
+        """LightGBM pro Tour laden (den Feature-Stand bis heute baut _build_history bzw. liefert der Cache)."""
         from .models.gbdt import GBDTModel
 
         self.gbdt = {}
@@ -116,17 +138,43 @@ class MatchPredictor:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Kein LightGBM-Modell unter {path} (python -m src.models.gbdt --tour {tour}).")
             self.gbdt[tour] = GBDTModel.load(path)
-        self.features = FeatureBuilder()
-        feature_table(prepare_matches(self._history_df), self.features)
 
     # ------------------------------------------------------------------ Daten
 
+    def _load_state(self, use_cache=True):
+        """Zustand zu data/matches.csv aus data/cache/predictor_<modell>.pkl oder neu aufbauen (und speichern)."""
+        dl.refresh_matches()
+        name = f"predictor_{self.model_name}"
+        key = {'matches': cache.file_stamp(dl.MATCHES_PATH), 'first_year': self.config.data_years_start,
+               'code': cache.code_hash(STATE_SOURCES), 'versions': (sys.version, pd.__version__)}
+        state = cache.load(name, key) if use_cache else None
+        if state is not None:
+            self._restore(state)
+            print(f"Predictor ({self.model_name}): Stand bis {self.last_match_date:%Y-%m-%d} aus dem Cache")
+            return
+        self._build_history(dl.load_matches(first_year=self.config.data_years_start, refresh=False))
+        if use_cache:
+            cache.save(name, key, {k: getattr(self, k) for k in STATE})
+
+    def _restore(self, state):
+        for k in STATE:
+            setattr(self, k, state[k])
+        self._surface_lookup = _tourney_lookup(self._surface_rows, 'surface', VALID_SURFACES, None)
+
     def _build_history(self, df):
+        """
+        Stand aller Spieler nach dem letzten Match, in einem Durchlauf in echter Reihenfolge: H2H, Matches fürs
+        Interface, Ranking, Metadaten, Elo (vorher einmal pro Tour gerechnet) und Elo2, dazu je nach Modell die
+        Transformer-Historie (history, nur 'transformer') bzw. der LightGBM-Feature-Stand (features, nur 'gbdt').
+        """
+        from .evaluation.predictors import match_status
+        from .features import FeatureBuilder
+
         df = df.dropna(subset=['winner_name', 'loser_name', 'tourney_date'])
         df = dl.enforce_schema(df.copy())
         if 'match_num' not in df.columns:
             df['match_num'] = range(len(df))
-        df = compute_elo_ratings(df)  # pro Tour, in echter Reihenfolge
+        df = compute_elo_ratings(df)  # pro Tour, in echter Reihenfolge (die behält df ab hier)
         # Echtes Matchdatum (sonst Turnierstart), wie im Training
         df['match_date_obj'] = match_dates(df)
         df = df.dropna(subset=['match_date_obj'])
@@ -142,13 +190,15 @@ class MatchPredictor:
             for col in ('winner_name', 'loser_name'):
                 df.loc[wta & df[col].isin(clash), col] = df.loc[wta & df[col].isin(clash), col] + " (WTA)"
 
-        rows = df[['tourney_name', 'tourney_date', 'surface']].astype(str).to_dict('records')
+        rows = df[['tourney_name', 'tourney_date', 'surface']].astype(str)
         if 'location' in df.columns:
-            for r, loc in zip(rows, df['location']):
-                r['location'] = _text(loc)
-        self._surface_lookup = _tourney_lookup(rows, 'surface', VALID_SURFACES, None)
+            rows['location'] = [_text(loc) for loc in df['location']]
+        # Gleiche Zeilen nur einmal, jeweils die letzte (der Lookup nimmt den neuesten Eintrag): gleiches Ergebnis
+        self._surface_rows = rows.drop_duplicates(keep='last').to_dict('records')
+        self._surface_lookup = _tourney_lookup(self._surface_rows, 'surface', VALID_SURFACES, None)
 
-        self.history = defaultdict(list)
+        with_history = self.model_name == 'transformer'
+        self.history = defaultdict(list)  # Name -> Transformer-Features je Match (nur Modell 'transformer')
         self.h2h = {}
         self.players = {}  # player_key -> Name wie in den Daten
         self._index = defaultdict(set)  # alle Kandidaten-Schlüssel -> Namen
@@ -157,8 +207,12 @@ class MatchPredictor:
         self.elo = {}
         self.tour = {}  # Name -> 'atp'/'wta'
         self.meta = {}  # Name -> {'dob', 'hand', 'ioc'} (neuester Stand)
+        self.elo2 = Elo2()  # Stand nach dem letzten Match, für predict_proba und als Transformer-Input
+        self.features = FeatureBuilder() if self.model_name == 'gbdt' else None
+        keys = {}  # Name -> player_key; die Kandidaten-Schlüssel stehen dann schon im Index
 
-        for _, row in df.iterrows():
+        statuses = match_status(df) if self.features is not None else repeat(None)
+        for row, status in zip(dl.records(df, HISTORY_COLUMNS if with_history else ROW_COLUMNS), statuses):
             if is_walkover(row):
                 continue
             winner, loser = row['winner_name'], row['loser_name']
@@ -166,11 +220,11 @@ class MatchPredictor:
             h2h_key = tuple(sorted((winner, loser)))
             if h2h_key not in self.h2h:
                 self.h2h[h2h_key] = {'p1': h2h_key[0], 'wins1': 0, 'wins2': 0}
-            win_h2h = get_h2h_pct(winner, loser, self.h2h)
-            los_h2h = get_h2h_pct(loser, winner, self.h2h)
-
-            self.history[winner].append(extract_match_features(row, 'winner', win_h2h))
-            self.history[loser].append(extract_match_features(row, 'loser', los_h2h))
+            if with_history:
+                win_h2h = get_h2h_pct(winner, loser, self.h2h)
+                los_h2h = get_h2h_pct(loser, winner, self.h2h)
+                self.history[winner].append(extract_match_features(row, 'winner', win_h2h))
+                self.history[loser].append(extract_match_features(row, 'loser', los_h2h))
 
             entry = self.h2h[h2h_key]
             if winner == entry['p1']:
@@ -179,22 +233,25 @@ class MatchPredictor:
                 entry['wins2'] += 1
 
             for name in (winner, loser):
-                key = player_key(name)
-                if key:
-                    self.players[key] = name
-                for k in candidate_keys(name, reverse=False):
-                    self._index[k].add(name)
+                if name not in keys:
+                    keys[name] = player_key(name)
+                    for k in candidate_keys(name, reverse=False):
+                        self._index[k].add(name)
+                if keys[name]:
+                    self.players[keys[name]] = name
 
             score = _text(row.get('score'))
+            tour = _text(row.get('tour')) or 'atp'
             for name, side in ((winner, 'winner'), (loser, 'loser')):
-                self.tour[name] = _text(row.get('tour')) or 'atp'
+                self.tour[name] = tour
                 meta = {k: _text(row.get(f'{side}_{k}')) for k in ('dob', 'hand', 'ioc')}
                 self.meta[name] = {k: v or self.meta.get(name, {}).get(k, '') for k, v in meta.items()}
 
+            day = row['played_on'].date()
             for name, opp, won, rank in ((winner, loser, True, row['winner_rank']),
                                          (loser, winner, False, row['loser_rank'])):
                 self.matches[name].append({
-                    'date': row['played_on'].date(), 'opponent': opp, 'won': won,
+                    'date': day, 'opponent': opp, 'won': won,
                     'surface': row['surface'], 'tournament': _text(row.get('tourney_name')),
                     'round': _text(row.get('round')), 'score': score if won else _flip_score(score),
                     'has_stats': row['w_svpt'] > 0,
@@ -205,17 +262,18 @@ class MatchPredictor:
             # ELO nach dem Match
             self.elo[winner] = row['winner_elo_after']
             self.elo[loser] = row['loser_elo_after']
+            self.elo2.observe(row)
+            if self.features is not None:
+                # wie feature_table(prepare_matches(...)): für den Stand ist egal, wer Spieler A ist
+                self.features.update({'tour': row.get('tour'), 'player_a': winner, 'player_b': loser, 'label': 1,
+                                      'date': row['played_on'], 'surface': row.get('surface'),
+                                      'score': row.get('score'), 'status': status, 'minutes': row.get('minutes')})
 
         self.last_match_date = df['played_on'].max()
-        # Elo2 (Stand nach dem letzten Match) für predict_proba und als Transformer-Input
-        self.elo2 = Elo2()
-        for row in chronological(df).to_dict('records'):
-            self.elo2.observe(row)
-        self._history_df = df
 
     def resolve(self, name):
         """Name in beliebigem Format (Bookie, Kurzform) -> Name in den Daten, oder None (z.B. WTA/Doppel)."""
-        if name in self.history:
+        if name in self.matches:
             return name
         keys = candidate_keys(name)
         for key in keys:
@@ -334,7 +392,7 @@ class MatchPredictor:
 
         prob_a = float(self._proba(pA, pB, surface, match_date, tourney_ioc, best_of))
 
-        n_a, n_b = len(self.history[pA]), len(self.history[pB])
+        n_a, n_b = len(self.matches[pA]), len(self.matches[pB])
         warnings = [f"{p}: nur {n} Matches in der Historie" for p, n in ((pA, n_a), (pB, n_b)) if n < MIN_HISTORY]
         if self.tour.get(pA) != self.tour.get(pB):
             warnings.append(f"{pA} und {pB} spielen auf verschiedenen Touren")
@@ -357,15 +415,20 @@ class MatchPredictor:
             return self._gbdt_proba(pA, pB, surface, match_date, tourney_ioc, best_of)
         return self._transformer_proba(pA, pB, surface, match_date, tourney_ioc, best_of)
 
-    @torch.no_grad()
     def _transformer_proba(self, pA, pB, surface, match_date, tourney_ioc, best_of):
+        import torch
+
+        from .dataset import DataSet
+        from .train import custom_collate_fn, model_inputs
+
         # Beide Reihenfolgen rechnen, Logits mitteln (A/B-Position spielt keine Rolle), dann Temperatur
         batch = custom_collate_fn([DataSet([s])[0] for s in (
             self._sample(pA, pB, surface, match_date, tourney_ioc, best_of),
             self._sample(pB, pA, surface, match_date, tourney_ioc, best_of),
         )])
-        x, pos, seg, mask, extra = model_inputs(batch, self.device)
-        logits = self.model(x, pos, seg, mask, extra if self.model.transformer.extra_dim else None)
+        with torch.no_grad():
+            x, pos, seg, mask, extra = model_inputs(batch, self.device)
+            logits = self.model(x, pos, seg, mask, extra if self.model.transformer.extra_dim else None)
         z = logits[:, 1] - logits[:, 0]  # Label 1 = Spieler A gewinnt
         z_sym = (z[0] - z[1]).item() / 2
         return 1 / (1 + math.exp(-z_sym / self.temperature))
@@ -393,6 +456,7 @@ class MatchPredictor:
         return float(self.gbdt[tour].predict(row)[0])
 
 
+@lru_cache(maxsize=200_000)
 def _flip_score(score):
     """Ergebnis aus Sicht des Verlierers: '6-4 6-7(1) RET' -> '4-6 7(1)-6 RET'."""
     def flip(token):

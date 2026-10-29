@@ -256,3 +256,75 @@ def test_live_gbdt_unknown_rank_like_training(tmp_path, monkeypatch):
     row = rows[0].iloc[0]
     assert row['log_rank_b'] == pytest.approx(math.log(MISSING_RANK + 1))
     assert math.isfinite(row['log_rank_diff'])
+
+
+def _feature_state(builder):
+    """FeatureBuilder-Stand ohne leere Einträge (row() legt für Abfragen leere Defaults an)."""
+    players = {k: (list(s.recent), {sf: list(d) for sf, d in s.surface.items() if d}, list(s.days), s.n, s.last_date,
+                   s.last_retired) for k, s in builder.players.items() if s.n}
+    return players, {k: v for k, v in builder.h2h.items() if v}
+
+
+def test_live_gbdt_state_like_feature_table(tmp_path):
+    """Der Feature-Stand aus dem einen Durchlauf von _build_history ist der von feature_table(prepare_matches(...))."""
+    pytest.importorskip('lightgbm')
+    from src.evaluation.predictors import prepare_matches
+    from src.features import FeatureBuilder, feature_table
+    from src.models.gbdt import GBDTParams, train_live
+
+    df = fake_matches(years=(2022, 2023, 2024, 2025))
+    df.loc[3, ['status', 'score']] = ['RET', '6-4 2-1 RET']
+    train_live(prepare_matches(df), params=GBDTParams(max_rounds=30, min_data_in_leaf=5),
+               val_months=6).save(str(tmp_path / "gbdt_atp.pkl"))
+    pred = MatchPredictor(matches=df, model='gbdt', gbdt_dir=str(tmp_path))
+    ref = FeatureBuilder()
+    feature_table(prepare_matches(df), ref)
+    assert _feature_state(pred.features) == _feature_state(ref)
+    assert not pred.history  # Transformer-Historie nur für das Transformer-Modell
+
+
+@pytest.fixture
+def matches_csv(tmp_path, monkeypatch):
+    """Standard-Datenpfad auf eine eigene matches.csv, Cache in tmp_path/cache, kein Daten-Update."""
+    from src import cache, data_loader, update_data
+    path = tmp_path / "matches.csv"
+    fake_matches().to_csv(path, index=False)
+    monkeypatch.setattr(data_loader, 'MATCHES_PATH', str(path))
+    monkeypatch.setattr(update_data, 'is_stale', lambda *a, **k: False)
+    monkeypatch.setattr(cache, 'CACHE_DIR', str(tmp_path / "cache"))
+    return path
+
+
+@pytest.mark.parametrize("model", ['elo2', 'gbdt'])
+def test_state_cache_until_matches_change(matches_csv, tmp_path, monkeypatch, model):
+    """Zweiter Aufbau kommt aus data/cache (gleiche Vorhersagen), eine neue matches.csv baut neu."""
+    kwargs = {}
+    if model == 'gbdt':
+        pytest.importorskip('lightgbm')
+        from src.evaluation.predictors import prepare_matches
+        from src.models.gbdt import GBDTParams, train_live
+        train_live(prepare_matches(fake_matches(years=(2022, 2023, 2024, 2025))),
+                   params=GBDTParams(max_rounds=30, min_data_in_leaf=5),
+                   val_months=6).save(str(tmp_path / "gbdt_atp.pkl"))
+        kwargs['gbdt_dir'] = str(tmp_path)
+    built = []
+    build = MatchPredictor._build_history
+    monkeypatch.setattr(MatchPredictor, '_build_history', lambda self, df: built.append(len(df)) or build(self, df))
+    match = {'player_a': "Daniil Medvedev", 'player_b': "Nuno Borges", 'surface': "Clay", 'date': "2026-01-10"}
+
+    first = MatchPredictor(model=model, **kwargs)
+    assert (tmp_path / "cache" / f"predictor_{model}.pkl").exists() and len(built) == 1
+    second = MatchPredictor(model=model, **kwargs)
+    assert len(built) == 1  # aus dem Cache
+    assert second.predict_proba(match) == first.predict_proba(match)
+    assert second.player_info("Daniil Medvedev", "Clay") == first.player_info("Daniil Medvedev", "Clay")
+    assert second.surface_for("Wimbledon") == first.surface_for("Wimbledon")
+    assert MatchPredictor(model=model, use_cache=False, **kwargs).predict_proba(match) == first.predict_proba(match)
+    assert len(built) == 2
+
+    df = fake_matches()
+    df = pd.concat([df, df.iloc[[0]].assign(match_num=1000, winner_name="Nuno Borges", loser_name="Daniil Medvedev")])
+    df.to_csv(matches_csv, index=False)
+    third = MatchPredictor(model=model, **kwargs)
+    assert len(built) == 3 and third.h2h_record("Nuno Borges", "Daniil Medvedev") != first.h2h_record(
+        "Nuno Borges", "Daniil Medvedev")

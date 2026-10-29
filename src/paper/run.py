@@ -11,12 +11,20 @@ Pro Runde:
 1. (Standard) Snapshots von Polymarket und Kalshi holen, die Odds API nur mit --odds-api (Kontingent!).
 2. Strategie „modell“: elo2/gbdt (MatchPredictor) gegen den aktuellen Preis bei Polymarket/Kalshi.
    Strategie „sharp“: Pinnacle/Betfair ohne Marge gegen den besten Netto-Preis aller anderen Venues.
-3. Abrechnung über die PM/Kalshi-Auflösung (Historie der letzten Tage wird nachgeladen) bzw. die Matchdaten,
-   CLV gegen den letzten Snapshot vor dem Start.
+3. Abrechnung über die PM/Kalshi-Auflösung bzw. die Matchdaten, CLV gegen den letzten Snapshot vor dem Start.
+   Fällige offene Wetten werden gezielt per Markt-ID (Polymarket) bzw. Event-Ticker (Kalshi) abgefragt, die volle
+   Historie lädt der Nightly-Lauf (python -m src.odds.collect --history).
 Wetten liegen in data/paper/bets.parquet, das Dashboard unter /scraper/paper/.
+
+Der Predictor-Zustand kommt aus data/cache/ (predict.py) und wird nur nach einem Update von data/matches.csv neu
+gebaut. Mit --loop bleibt der Prozess offen: pandas & Co. werden einmal geladen, der Predictor bleibt im Speicher und
+wird neu gebaut, sobald sich data/matches.csv ändert (spätestens nach PREDICTOR_MAX_AGE); eine fehlgeschlagene Runde
+beendet den Loop nicht.
 """
 import argparse
+import sys
 import time
+import traceback
 from datetime import timedelta
 
 import pandas as pd
@@ -26,7 +34,6 @@ from . import report, settle, signals
 from .store import BETS_PATH, add_bets, load_bets, save_bets
 
 PREDICTOR_MAX_AGE = 24 * 3600  # Sekunden
-HISTORY_DAYS = 10  # so weit zurück wird die PM/Kalshi-Historie für die Abrechnung nachgeladen
 
 
 def make_prob(model='elo2', log=print):
@@ -62,11 +69,15 @@ def recent_matches(now, path=None):
     """
     data/matches.csv zeilenweise lesen: (Matches der letzten MATCH_DAYS für die Abrechnung, Turniere der letzten
     LEVEL_DAYS aus Quellen mit verlässlichem Level für fill_levels). Spart Speicher gegenüber dem ganzen Datensatz.
+    Ohne path (data/matches.csv) gecacht: data/cache/recent_matches.pkl gilt für dieselbe Datei und dieselben Tage.
     """
     import csv
     import os
+
+    from .. import cache
     from ..sources.build import LEVEL_SOURCES
     from ..sources.common import MATCHES_PATH
+    use_cache = path is None
     path = path or MATCHES_PATH
     if not os.path.exists(path):
         return [], []
@@ -74,6 +85,11 @@ def recent_matches(now, path=None):
     since_level = f"{now - timedelta(days=LEVEL_DAYS):%Y%m%d}"
     keep = ('winner_name', 'loser_name', 'match_date', 'tourney_date', 'status', 'source', 'tourney_name', 'level',
             'location')
+    key = {'matches': cache.file_stamp(path), 'since': (since, since_level), 'keep': keep, 'level': LEVEL_KEYS,
+           'sources': LEVEL_SOURCES}
+    found = cache.load('recent_matches', key) if use_cache else None
+    if found is not None:
+        return found
     matches, tournaments = [], {}
     with open(path, newline='', encoding='utf-8') as f:
         for r in csv.DictReader(f):
@@ -83,7 +99,10 @@ def recent_matches(now, path=None):
             if day >= since_level and r.get('source') in LEVEL_SOURCES:
                 t = tuple(r.get(k) for k in LEVEL_KEYS)
                 tournaments.setdefault(t, dict(zip(LEVEL_KEYS, t)))
-    return matches, list(tournaments.values())
+    found = matches, list(tournaments.values())
+    if use_cache:
+        cache.save('recent_matches', key, found)
+    return found
 
 
 def snapshot_levels(snaps):
@@ -109,6 +128,38 @@ def fill_levels(bets, level_rows):
     bets.loc[missing, 'level'] = [lookup(t or '', f"{d:%Y%m%d}", tour)
                                   for t, d, tour in zip(todo['tourney'], when, todo['tour'])]
     return bets
+
+
+def open_results(bets, now, history, log=print):
+    """
+    Auflösung der fälligen offenen Wetten bei Polymarket/Kalshi, die history noch nicht kennt, gezielt per Markt-ID
+    bzw. Event-Ticker statt über die ganze Historie (die lädt der Nightly-Lauf). -> {venue: DataFrame(event_id,
+    winner)} mit winner 'a', 'b' oder 'void' (50-50, Absage); noch offene Märkte fehlen.
+    """
+    from ..odds import kalshi, polymarket
+    from ..odds.history import RATE, RETRIES
+    from ..odds.http import JsonClient
+    known = settle.market_results(history)
+    todo = bets[settle.due(bets, now)]
+    out = {}
+    for venue, fetch in (('polymarket', polymarket.fetch_resolution), ('kalshi', kalshi.fetch_resolution)):
+        mine = todo[todo['venue'] == venue]
+        items = sorted({(str(e), a) for e, a in zip(mine['event_id'], mine['player_a']) if (venue, str(e)) not in known})
+        if not items:
+            continue
+        client = JsonClient(max_per_sec=RATE[venue], retries=RETRIES[venue])
+        rows = []
+        for event_id, player_a in items:
+            try:
+                winner = fetch(client, event_id, player_a)
+            except Exception as e:  # die Wette bleibt offen: nächste Runde, Matchdaten oder Nightly-Historie
+                log(f"  {venue} {event_id}: Ergebnis nicht abrufbar ({type(e).__name__}: {e})")
+                continue
+            if winner is not None:
+                rows.append({'event_id': event_id, 'winner': winner})
+        log(f"  {venue}: {len(items)} fällige Märkte abgefragt, {len(rows)} aufgelöst")
+        out[venue] = pd.DataFrame(rows, columns=['event_id', 'winner'])
+    return out
 
 
 def run_once(args, log=print, prob=None, model_name=None):
@@ -140,12 +191,11 @@ def run_once(args, log=print, prob=None, model_name=None):
         if len(part):
             log(f"  {part['strategy'].iloc[0]}: {len(part)} Signale, {n} neue Wetten")
 
-    if args.history:
-        from ..odds.history import update
-        update(('polymarket', 'kalshi'), since=now - timedelta(days=HISTORY_DAYS),
-               levels=('main', 'challenger', 'itf'), log=lambda *a: None)
     from ..odds.history import read_history
     history = {v: read_history(v) for v in ('polymarket', 'kalshi')}
+    if args.history:
+        for venue, found in open_results(bets, pd.Timestamp(now), history, log).items():
+            history[venue] = pd.concat([history[venue][['event_id', 'winner']], found], ignore_index=True)
     bets, n = settle.settle(bets, pd.Timestamp(now), history, matches, snaps)
     log(f"  {n} Wetten abgerechnet")
     save_bets(bets, args.bets)
@@ -165,7 +215,8 @@ def main(argv=None):
     ap.add_argument('--no-collect', dest='collect', action='store_false', help="keine neuen Snapshots holen")
     ap.add_argument('--odds-api', action='store_true', help="auch die Odds API abfragen (kostet Kontingent)")
     ap.add_argument('--softbooks', action='store_true', help="auch Tipico/bwin scrapen (Playwright)")
-    ap.add_argument('--no-history', dest='history', action='store_false', help="PM/Kalshi-Historie nicht nachladen")
+    ap.add_argument('--no-history', dest='history', action='store_false',
+                    help="fällige PM/Kalshi-Wetten nicht gezielt abfragen (nur Historie und Matchdaten)")
     ap.add_argument('--strategies', default='modell,sharp')
     ap.add_argument('--model', default='gbdt', help="elo2 | gbdt (ohne models/gbdt_<tour>.pkl: elo2)")
     ap.add_argument('--threshold', type=float, default=signals.MODEL_THRESHOLD, help="Mindest-Edge Modell")
@@ -176,19 +227,43 @@ def main(argv=None):
     ap.add_argument('--snapshots', default=SNAPSHOT_DIR)
     args = ap.parse_args(argv)
     args.strategies = [s for s in args.strategies.split(',') if s]
+    if args.loop:
+        try:  # Dauerbetrieb mit Umleitung in eine Log-Datei: jede Zeile sofort schreiben
+            sys.stdout.reconfigure(line_buffering=True)
+        except AttributeError:
+            pass
 
-    prob, model_name, built = None, None, 0.0
+    prob, model_name, built, stamp = None, None, 0.0, None
     try:
         while True:
             t0 = time.time()
-            if t0 - built > PREDICTOR_MAX_AGE:  # Predictor (Elo, Form) einmal am Tag neu aufbauen
-                prob, built = None, t0
-            _, prob, model_name = run_once(args, prob=prob, model_name=model_name)
+            if t0 - built > PREDICTOR_MAX_AGE or _matches_stamp() != stamp:
+                # Predictor (Elo, Form) neu, sobald sich data/matches.csv ändert, spätestens nach einem Tag
+                # (der Aufbau aktualisiert data/matches.csv, wenn sie älter als 24 Stunden ist)
+                prob, built, stamp = None, t0, _matches_stamp()
+            try:
+                if prob is None and 'modell' in args.strategies:
+                    prob, model_name = make_prob(args.model)
+                run_once(args, prob=prob, model_name=model_name)
+            except Exception:
+                if not args.loop:
+                    raise
+                print(f"Runde fehlgeschlagen, nächster Versuch in {args.loop:g} Minuten:")
+                traceback.print_exc()
             if not args.loop:
                 break
             time.sleep(max(0.0, args.loop * 60 - (time.time() - t0)))
     except KeyboardInterrupt:
         print("Beendet.")
+
+
+def _matches_stamp():
+    from .. import cache
+    from ..sources.common import MATCHES_PATH
+    try:
+        return cache.file_stamp(MATCHES_PATH)
+    except OSError:
+        return None
 
 
 if __name__ == '__main__':

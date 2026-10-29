@@ -36,7 +36,10 @@ TIMING_COLUMNS = ['open_bid_a', 'open_ask_a', 'close_volume', 'move_ts', 'move_p
 COLUMNS = COLUMNS + TIMING_COLUMNS
 POLY_FIDELITY = 10  # Minuten
 MAX_WINDOW = timedelta(days=14)  # so weit vor dem Start wird höchstens geladen
-DEFAULT_LEVELS = ('main', 'challenger')
+# Kalshi-Level, die standardmäßig geladen werden. ITF gehört dazu, seit der Paper-Lauf die Historie nicht mehr
+# selbst nachlädt (er hat bis dahin die letzten 10 Tage inkl. ITF geholt; update_data nutzt die Märkte als
+# Ergebnisquelle). Auf geteilten IPs drosselt Kalshi: dort --levels main,challenger.
+DEFAULT_LEVELS = ('main', 'challenger', 'itf')
 SETTLE_DELAY = timedelta(hours=6)  # jüngere Matches sind oft noch nicht abgerechnet
 # Zusätzlich der letzte Preis mindestens 1 h vor der geplanten Startzeit: robust gegen Matches, die früher
 # beginnen, und gegen Kalshis Stunden-Candles, deren letzte Periode bis genau zur Startzeit reicht

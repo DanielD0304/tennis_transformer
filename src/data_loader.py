@@ -41,20 +41,37 @@ def enforce_schema(df):
     return df
 
 
-def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24, tour=None):
+def records(df, columns):
     """
-    Gemeinsamer Datensatz aus data/matches.csv (Sackmann + tennis-data + ESPN, siehe src/update_data.py).
-    Ist er älter als max_age_hours oder fehlt, wird er vorher aktualisiert.
-    tour: 'atp' oder 'wta' filtert, None = beide.
+    Zeilen von df als Dicts, aber nur mit den vorhandenen Spalten aus columns. Gleiche Werte wie iterrows bzw.
+    to_dict('records'), nur ohne den Umweg über alle Spalten (bei data/matches.csv ein Vielfaches schneller).
     """
+    cols = [c for c in columns if c in df.columns]
+    if not cols:
+        return ({} for _ in range(len(df)))
+    return (dict(zip(cols, values)) for values in zip(*(df[c] for c in cols)))
+
+
+def refresh_matches(max_age_hours=24):
+    """data/matches.csv aktualisieren (src/update_data.py), wenn sie älter als max_age_hours ist oder fehlt."""
     from . import update_data
-    if refresh and update_data.is_stale(max_age_hours):
+    if update_data.is_stale(max_age_hours):
         try:
             update_data.update()
         except Exception as e:
             if not os.path.exists(MATCHES_PATH):
                 raise
             print(f"Warning: Update fehlgeschlagen ({e}), nutze vorhandene Daten.")
+
+
+def load_matches(first_year=None, last_year=None, refresh=True, max_age_hours=24, tour=None):
+    """
+    Gemeinsamer Datensatz aus data/matches.csv (Sackmann + tennis-data + ESPN, siehe src/update_data.py).
+    Ist er älter als max_age_hours oder fehlt, wird er vorher aktualisiert.
+    tour: 'atp' oder 'wta' filtert, None = beide.
+    """
+    if refresh:
+        refresh_matches(max_age_hours)
 
     df = pd.read_csv(MATCHES_PATH, low_memory=False,
                      dtype={'tourney_date': str, 'match_date': str, 'winner_dob': str, 'loser_dob': str})

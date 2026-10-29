@@ -422,3 +422,38 @@ def test_report_drops_stale_closing():
                        {'winner': 'a', 'close_price_a': 0.99, 'start_time_utc': start,
                         'close_ts': start - timedelta(hours=9), 'volume': 1.0}])
     assert list(report.evaluable(df)['close_price_a']) == [0.6]
+
+
+# ------------------------------------------------- Auflösung einzelner Märkte
+
+class _Client:
+    def __init__(self, responses):
+        self.responses, self.calls = responses, []
+
+    def get_json(self, url, params=None):
+        self.calls.append((url, params))
+        return self.responses[url]
+
+
+def test_polymarket_resolution_single_market():
+    m = fixture('polymarket_markets_closed.json')['markets'][0]  # outcomePrices ["1", "0"]
+    assert polymarket.resolution(m) == 'a'
+    assert polymarket.resolution({**m, 'outcomePrices': '["0", "1"]'}) == 'b'
+    assert polymarket.resolution({**m, 'outcomePrices': '["0.5", "0.5"]'}) == 'void'  # Absage, W/O
+    assert polymarket.resolution({**m, 'closed': False, 'outcomePrices': '["0.6", "0.4"]'}) is None
+    assert polymarket.resolution({**m, 'outcomePrices': '["0.9995", "0.0005"]'}) is None  # noch nicht aufgelöst
+    client = _Client({f"{polymarket.GAMMA}/markets/{m['id']}": m})
+    assert polymarket.fetch_resolution(client, m['id']) == 'a'
+    assert len(client.calls) == 1
+
+
+def test_kalshi_resolution_single_event():
+    a, b = fixture('kalshi_markets_historical.json')['markets']  # Van Assche verliert gegen Kovacevic
+    assert kalshi.resolution([a, b], 'Luca Van Assche') == 'b'
+    assert kalshi.resolution([b, a], 'Aleksandar Kovacevic') == 'a'  # Reihenfolge egal, es zählt der Name
+    assert kalshi.resolution([{**a, 'result': '', 'status': 'active'}, b], 'Luca Van Assche') is None
+    assert kalshi.resolution([{**a, 'result': ''}, b], 'Luca Van Assche') == 'void'  # finalisiert ohne Sieger
+    assert kalshi.resolution([a, b], 'Jemand Anderes') is None
+    client = _Client({f"{kalshi.API}/markets": {'markets': [a, b], 'cursor': ''}})
+    assert kalshi.fetch_resolution(client, a['event_ticker'], 'Luca Van Assche') == 'b'
+    assert client.calls[0][1]['event_ticker'] == a['event_ticker']

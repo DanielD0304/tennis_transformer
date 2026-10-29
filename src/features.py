@@ -12,6 +12,7 @@ gebaut, danach fließt das Ergebnis in den Stand ein. tests/test_features.py erz
 """
 import math
 from collections import defaultdict, deque
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -40,7 +41,8 @@ class _Player:
 
     def __init__(self):
         self.recent = deque(maxlen=FORM_WINDOW)          # (won, game_share, set_share, tiebreaks, retired)
-        self.surface = defaultdict(lambda: deque(maxlen=SURFACE_WINDOW))  # Untergrund -> [won]
+        # Untergrund -> [won]; partial statt lambda, damit der Stand picklebar ist (Cache in predict.py)
+        self.surface = defaultdict(partial(deque, maxlen=SURFACE_WINDOW))
         self.days = deque()                               # (Datum, Sätze, Minuten) für die Müdigkeit
         self.n = 0
         self.last_date = None
