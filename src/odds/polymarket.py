@@ -1,5 +1,6 @@
 """
-Polymarket: Tennis-Einzelmatch-Märkte (Sieger) über die Gamma-API, Preise aus dem CLOB.
+Polymarket: Tennis-Einzelmatch-Märkte (Sieger) über die Gamma-API, Preise sowie Bid und Ask aus dem CLOB (bestBid und
+bestAsk von Gamma sind teils veraltet).
 
 Seit Okt. 2025 liegen die Matches in den Serien 'atp' (10365) und 'wta' (10366), ältere nur unter
 dem Tag 'tennis' (864). ITF-Matches (seit Okt. 2026 die meisten Tennis-Märkte) stehen in der Serie 'itf'
@@ -171,8 +172,11 @@ def match_info(event):
     }
 
 
-def parse_events(events, ts=None, midpoints=None):
-    """Offene Match-Märkte -> Snapshots. midpoints: {token_id: Preis} aus dem CLOB (optional)."""
+def parse_events(events, ts=None, midpoints=None, books=None):
+    """
+    Offene Match-Märkte -> Snapshots. midpoints: {token_id: Preis} aus dem CLOB (optional). books: {token_id: (Bid, Ask)}
+    aus dem CLOB (best_prices), dann gilt nur dieses Bid/Ask und ein Token ohne Eintrag hat keines. Ohne books: Gamma.
+    """
     ts = ts or now_utc()
     midpoints = midpoints or {}
     out = []
@@ -184,6 +188,8 @@ def parse_events(events, ts=None, midpoints=None):
         prices = info['outcome_prices'] + [None, None]
         pa = _float(midpoints.get(info['token_a'])) or mid(bid, ask) or prices[0]
         pb = _float(midpoints.get(info['token_b'])) or (1 - pa if pa is not None else prices[1])
+        if books is not None:
+            bid, ask = books.get(info['token_a'], (None, None))
         out.append(Snapshot(
             ts_utc=ts, venue=VENUE, event_id=info['event_id'], player_a=info['player_a'],
             player_b=info['player_b'], price_a=pa, price_b=pb, price_type='probability', tour=info['tour'],
@@ -217,6 +223,17 @@ def midpoints(client, tokens, batch=500):
     return out
 
 
+def best_prices(client, tokens, batch=500):
+    """Bestes Bid und Ask je Token aus dem CLOB-Orderbuch: {token_id: (Bid, Ask)}, None = diese Seite ist leer."""
+    out = {}
+    tokens = list(dict.fromkeys(tokens))
+    for i in range(0, len(tokens), batch):
+        for book in client.post_json(f"{CLOB}/books", [{'token_id': t} for t in tokens[i:i + batch]]):
+            bids, asks = ([_float(o['price']) for o in book.get(side) or []] for side in ('bids', 'asks'))
+            out[str(book['asset_id'])] = (max(bids, default=None), min(asks, default=None))
+    return out
+
+
 def fetch_current(client=None, log=print):
     client = client or JsonClient()
     events = open_events(client)
@@ -226,4 +243,9 @@ def fetch_current(client=None, log=print):
     except Exception as e:  # ohne Mitte gehen auch die Gamma-Preise
         log(f"  Polymarket: CLOB-Midpoints fehlgeschlagen ({e}), nehme Gamma-Preise")
         mids = {}
-    return parse_events(events, midpoints=mids)
+    try:
+        books = best_prices(client, [i['token_a'] for i in infos])  # Token B ist das Spiegelbild, siehe parse_events
+    except Exception as e:  # ohne Orderbuch kein Ask, also in dieser Runde keine Polymarket-Wetten
+        log(f"  Polymarket: CLOB-Orderbücher fehlgeschlagen ({e}), Snapshots ohne Bid/Ask")
+        books = {}
+    return parse_events(events, midpoints=mids, books=books)

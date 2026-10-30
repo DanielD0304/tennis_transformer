@@ -439,7 +439,7 @@ Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb da
 
 | Venue | Quelle | Voraussetzung |
 |---|---|---|
-| `polymarket` | Gamma-API (Serien `atp`, `wta`, `itf`) + CLOB (Midpoints, `prices-history`) | keine |
+| `polymarket` | Gamma-API (Serien `atp`, `wta`, `itf`) + CLOB (Midpoints, Orderbuch für Bid/Ask, `prices-history`) | keine |
 | `kalshi` | öffentliche Market-Data-API (Serien `KX{ATP,WTA}MATCH`, `KX{ATP,WTA}CHALLENGERMATCH`, `KXITF{,W}MATCH`) | keine |
 | `pinnacle`, `betfair`, `bet365`, … | The Odds API (Regionen `eu,uk`, Markt `h2h`) | `ODDS_API_KEY` (ohne Key übersprungen) |
 | `tipico`, `bwin` | bestehende Playwright-Scraper (`betscraper/scraper/sites.py`) | `playwright install chromium` |
@@ -522,7 +522,8 @@ die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei d
 Gebühren. Ein Signal entsteht, wenn p_fair × netto − 1 > Schwelle. Snapshots verschiedener Venues werden
 nur verknüpft, wenn sie höchstens 5 Minuten auseinanderliegen. Einsatz: Viertel-Kelly mit Deckel 2 % der
 Bankroll, p vorher zur Hälfte Richtung Venue-Preis geschrumpft. Flat läuft zum Vergleich mit. Ohne
-Sharp-Snapshots (Odds API) gibt es keine Signale.
+Sharp-Snapshots (Odds API) gibt es keine Signale. Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe
+Paper-Trading: Die höchste Quote gewinnt, ein erfundener Preis würde also gerade wegen seiner Quote gewählt.
 
 ## Paper-Trading (`src/paper/`, Dashboard `/scraper/paper/`)
 
@@ -543,6 +544,14 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md). `--segments alle` wettet wie früher auf alles, was
   in den nächsten 48 h beginnt. Das Level fehlt bei Polymarket außer ITF und kommt vorher aus der
   Level-Zuordnung (Marker im Turniernamen, sonst dasselbe Turnier in derselben Kalenderwoche).
+- Kaufpreis: Polymarket wettet in beiden Strategien nur zum echten Ask, also zum besten Ask aus dem CLOB-Orderbuch
+  (bestAsk von Gamma ist teils veraltet). Der Timing-Backtest unterstellt mangels historischer Orderbücher die Mitte
+  + 1 Cent, hier soll sich zeigen, ob der Gewinn zum echten Preis bleibt. Deshalb gibt es keinen Rückfall auf den
+  Preis + halben Spread: Ohne brauchbares Ask (leeres Orderbuch, Ask unter der Mitte, Orderbuch nicht erreichbar)
+  gibt es keine Wette. Dasselbe gilt für einen Preis von genau 0,5, wie im Backtest der Platzhalter eines leeren
+  Orderbuchs. Ein Ask von genau 0,5 bei einer anderen Mitte ist ein echtes Buch und zählt. Kalshi kauft zum Ask, ohne
+  Ask zum Preis + 1 Cent. Die Orderbuch-Tiefe fließt nicht ein: Die Wette gilt zum besten Ask, auch wenn dort weniger
+  liegt als der Einsatz. Bei ITF ist das optimistisch.
 - Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
   Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
   verfügbare Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes Segment ist
