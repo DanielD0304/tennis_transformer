@@ -19,13 +19,16 @@ Staking: Viertel-Kelly mit Deckel (2 % der Bankroll), p vorher Richtung des Venu
 import numpy as np
 import pandas as pd
 
-from ..sources.build import MatchIndex
+from ..sources.build import ODDS_RANGE, MatchIndex
 from ..sources.common import yyyymmdd
 from .betting import Kelly
 from .predictors import remove_margin
 from .venues import DE_BET_TAX, VENUES, Venue
 
 SHARP = ('pinnacle', 'betfair')  # Reihenfolge = Priorität
+# Plausibles Buch (Summe der Kehrwerte) einer Sharp-Quote, wie bei den historischen Exchange-Quoten: Pinnacle liegt
+# bei ~1,03, Betfair nahe 1,00. Außerhalb ist der Markt dünn oder veraltet (z.B. 1,06/1,10) und kein fairer Preis.
+SHARP_BOOK = ODDS_RANGE['BFEW']
 WINDOW = pd.Timedelta(minutes=5)
 DEFAULT_THRESHOLD = 0.02
 SHRINK = 0.5  # Anteil, um den p für Kelly Richtung Venue-Preis geschrumpft wird
@@ -94,21 +97,31 @@ def _oriented(df):
 
 
 def buy_odds(df, pm_spread=PM_SPREAD):
-    """Bruttoquoten zum Kaufen (A, B): Buchmacher die Quote, Prediction Markets 1 / Ask (sonst Preis + halber Spread)."""
+    """
+    Bruttoquoten zum Kaufen (A, B): Buchmacher die Quote, Prediction Markets 1 / Ask (sonst Preis + halber Spread).
+    Ein Ask unter dem Preis (Mitte) kommt in keinem echten Orderbuch vor. Bei Polymarket stammt die Mitte live aus dem
+    CLOB, Bid/Ask aber aus Gamma, und die sind dann veraltet: Solche Asks zählen nicht.
+    """
     pm = df['venue'].isin(PREDICTION_MARKETS).to_numpy()
     out = []
     for side in ('a', 'b'):
         ask = df[f'best_ask_{side}'].to_numpy(float)
         price = df[f'price_{side}'].to_numpy(float)
-        buy = np.where(np.isfinite(ask) & (ask > 0) & (ask < 1), ask, price + pm_spread / 2)
+        with np.errstate(invalid='ignore'):
+            usable = np.isfinite(ask) & (ask > 0) & (ask < 1) & ~(ask < price)
+        buy = np.where(usable, ask, price + pm_spread / 2)
         with np.errstate(divide='ignore', invalid='ignore'):
             out.append(np.where(pm, np.where((buy > 0) & (buy < 1), 1 / buy, np.nan), df[f'odds_{side}'].to_numpy(float)))
     return out
 
 
 def sharp_fair(df):
-    """Faire Wahrscheinlichkeit für A aus den Sharp-Snapshots (ohne Marge)."""
-    return remove_margin(df['odds_a'], df['odds_b'])
+    """Faire Wahrscheinlichkeit für A aus den Sharp-Snapshots (ohne Marge), NaN bei unplausiblem Buch (SHARP_BOOK)."""
+    odds_a, odds_b = df['odds_a'].to_numpy(float), df['odds_b'].to_numpy(float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        book = 1 / odds_a + 1 / odds_b
+    low, high = SHARP_BOOK
+    return np.where((book >= low) & (book <= high), remove_margin(odds_a, odds_b), np.nan)
 
 
 def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
@@ -199,7 +212,7 @@ def closing_fair(snaps):
     snaps = _oriented(link_events(snaps))
     sharp = snaps[snaps['venue'].isin(SHARP)]
     sharp = sharp[sharp['start_time_utc'].isna() | (sharp['ts_utc'] < sharp['start_time_utc'])]
-    sharp = sharp.assign(p_close=sharp_fair(sharp)).sort_values('ts_utc')
+    sharp = sharp.assign(p_close=sharp_fair(sharp)).dropna(subset=['p_close']).sort_values('ts_utc')
     return sharp.drop_duplicates('match_key', keep='last').set_index('match_key')['p_close']
 
 

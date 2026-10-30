@@ -409,6 +409,9 @@ def test_polymarket_itf_tour_and_level():
          'closed': True, 'gameStartTime': '2026-09-30 10:30:00+00'}
     info = polymarket.match_info({'slug': 'itf-mi1-tomase-2026-09-30', 'title': m['question'], 'markets': [m]})
     assert (info['tour'], info['level']) == ('wta', 'itf')
+    open_event = {'slug': 'itf-mi1-tomase-2026-09-30', 'title': m['question'], 'markets': [{**m, 'closed': False}]}
+    snap = polymarket.parse_events([open_event], TS)[0]
+    assert (snap.tour, snap.level) == ('wta', 'itf')  # das Level landet auch im Snapshot
 
 
 def test_report_drops_stale_closing():

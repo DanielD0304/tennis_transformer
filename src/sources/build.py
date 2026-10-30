@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 
 from ..names import candidate_keys
-from .common import ODDS_COLUMNS, ODDS_PAIRS
+from .common import LEVELS, ODDS_COLUMNS, ODDS_PAIRS
 from .places import tourney_country
 
 # Fälle, die sich automatisch nicht sicher zuordnen lassen (andere Vornamen/Abkürzungen je Quelle).
@@ -237,6 +237,74 @@ def _norm_words(text):
     return "".join(c for c in s if not unicodedata.combining(c)).lower()
 
 
+# Eindeutige Marker im Turniernamen, in dieser Reihenfolge geprüft: 'ATP Challenger Ningbo', 'Poznan CH',
+# 'WTA 125K Queretaro', 'W35 Monastir', 'ATP Vienna Open' (Kalshi, Odds API)
+LEVEL_MARKERS = (
+    (re.compile(r"\bchallenger\b|\bch\b|\b125k?\b"), 'challenger'),
+    (re.compile(r"\bitf\b|\b[mw]\d{2,3}\b"), 'itf'),
+    (re.compile(r"^(atp|wta)\b"), 'main'),
+)
+# Quellen mit verlässlichem Level (ESPN setzt immer 'main', Polymarket kennzeichnet nur ITF)
+LEVEL_SOURCES = ('sackmann', 'tuk', 'kalshi')
+LEVEL_WINDOW = 21  # Tage im Kalenderjahr, bis zu denen ein gleichnamiges Turnier als dasselbe gilt
+
+
+def level_from_name(name):
+    """'main', 'challenger' oder 'itf' aus eindeutigen Markern im Turniernamen, sonst None."""
+    text = _norm_words(name or '')
+    for pattern, level in LEVEL_MARKERS:
+        if pattern.search(text):
+            return level
+    return None
+
+
+@lru_cache(maxsize=None)
+def _level_words(name, location=''):
+    return frozenset(w for text in (name, location) if text for w in re.findall(r"[a-z]+", _norm_words(text))
+                     if len(w) > 3 and w not in STOPWORDS)
+
+
+def _days_apart(a, b):
+    """Abstand im Kalenderjahr ohne das Jahr: der 3. Januar und der 29. Dezember liegen 5 Tage auseinander."""
+    d = abs(a.timetuple().tm_yday - b.timetuple().tm_yday)
+    return min(d, 365 - d)
+
+
+def _level_lookup(rows, window=LEVEL_WINDOW):
+    """
+    Level eines Turniers aus Name, Datum ('YYYYMMDD') und Tour. Zuerst Marker im Namen (level_from_name), sonst das
+    Turnier aus rows (Quellen aus LEVEL_SOURCES) mit gemeinsamem Namenswort, dessen Termin im Kalenderjahr am
+    nächsten liegt: Turniere kehren jährlich in derselben Woche wieder, so trennt sich 'Shanghai CH' (September)
+    vom Masters (Oktober), und Kalshi-Zeilen derselben Woche geben das Level direkt vor. Ist keins näher als window
+    Tage, hat die Haupttour Vorrang, ohne Treffer gilt 'main'.
+    Geprüft gegen die Kalshi-Level derselben Matches (10/2026, das eigene Match nie als Referenz): 99 % richtig bei
+    ESPN und Polymarket, der frühere Abgleich nur über Challenger/ITF-Namen 46 % (ESPN) bzw. 63 % (Polymarket).
+    """
+    tournaments = {(r.get('tour') or 'atp', r.get('tourney_name') or '', r.get('location') or '',
+                    str(r.get('tourney_date') or r.get('match_date') or '')[:8], r.get('level')) for r in rows}
+    by_word = defaultdict(set)  # (Tour, Wort) -> {(Datum, Level)}
+    for tour, name, location, day, level in tournaments:
+        if level in LEVELS and len(day) == 8:
+            for w in _level_words(name, location):
+                by_word[(tour, w)].add((_date(day), level))
+
+    def lookup(name, day, tour=None, location=None):
+        found = level_from_name(name)
+        if found:
+            return found
+        when = _date(day)
+        tours = (tour,) if isinstance(tour, str) and tour else ('atp', 'wta')
+        words = _level_words(name or '', location or '')
+        cands = {c for t in tours for w in words for c in by_word.get((t, w), ())}
+        if not cands:
+            return 'main'
+        best = min(cands, key=lambda c: (_days_apart(c[0], when), abs((c[0] - when).days), c[1]))
+        if _days_apart(best[0], when) <= window:
+            return best[1]
+        return 'main' if any(level == 'main' for _, level in cands) else max(cands)[1]
+    return lookup
+
+
 def _rank_lookup(rows):
     timeline = defaultdict(list)
     for r in rows:
@@ -435,16 +503,17 @@ def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=()):
     surface = _tourney_lookup(sackmann_rows + tuk_rows, 'surface', VALID_SURFACES, 'Hard')
     level = _tourney_lookup(sackmann_rows + tuk_rows, 'tourney_level', VALID_LEVELS, 'A')
     rank = _rank_lookup(out)
-    # ESPN zeigt auch einzelne Challenger/WTA-125-Turniere ohne Kennzeichnung, Polymarket trennt Challenger und
-    # Haupttour nicht: Level über den Turniernamen aus Sackmann (Standard Haupttour)
-    tour_level = _tourney_lookup(sackmann_rows, 'level', ('challenger', 'itf'), None)
+    # ESPN zeigt auch einzelne Challenger/WTA-125-Turniere ohne Kennzeichnung (Level dort immer 'main'), Polymarket
+    # trennt Challenger und Haupttour nicht: Level über Turniername und Termin. Kalshi kennt das Level selbst und dient
+    # mit allen Märkten als Referenz, auch denen, die als Duplikat eines ESPN-Matches weggefallen sind.
+    tour_level = _level_lookup(sackmann_rows + tuk_rows + [r for r in market_rows if r['source'] == 'kalshi'])
     for r in out:
         if r['source'] not in NO_DETAILS:
             continue
-        if r.get('level') in (None, '', 'main'):
-            found = tour_level(r['tourney_name'], r.get('location'))
-            r['level'] = found or 'main'
-            if found and not r.get('tourney_level'):
+        if not r.get('level') or (r['level'] == 'main' and r['source'] != 'kalshi'):
+            found = tour_level(r['tourney_name'], r['match_date'] or r['tourney_date'], r.get('tour'), r.get('location'))
+            r['level'] = found
+            if found != 'main' and not r.get('tourney_level'):
                 r['tourney_level'] = 'C' if found == 'challenger' else 'ITF'
         r['surface'] = surface(r['tourney_name'], r.get('location'))
         if not r.get('tourney_level'):

@@ -232,3 +232,27 @@ def test_live_model_gbdt(tmp_path):
     q = pred.predict_proba({'player_a': "Nuno Borges", 'player_b': "Daniil Medvedev", 'surface': "Hard",
                             'date': "2026-01-10"})
     assert 0 < p < 1 and p == pytest.approx(1 - q, abs=1e-9)
+
+
+def test_live_gbdt_unknown_rank_like_training(tmp_path, monkeypatch):
+    """Spieler ohne Rang: live wie im Training MISSING_RANK, nicht 0 (-> NaN, das LightGBM wie Rang 0 behandelt)."""
+    import math
+
+    pytest.importorskip('lightgbm')
+    from src.evaluation.predictors import MISSING_RANK, prepare_matches
+    from src.models.gbdt import GBDTParams, train_live
+
+    df = fake_matches(years=(2022, 2023, 2024, 2025))
+    df.loc[df['winner_name'] == "Nuno Borges", 'winner_rank'] = None
+    df.loc[df['loser_name'] == "Nuno Borges", 'loser_rank'] = None
+    train_live(prepare_matches(df), params=GBDTParams(max_rounds=30, min_data_in_leaf=5),
+               val_months=6).save(str(tmp_path / "gbdt_atp.pkl"))
+    pred = MatchPredictor(matches=df, model='gbdt', gbdt_dir=str(tmp_path))
+    rows = []
+    model = pred.gbdt['atp']
+    monkeypatch.setattr(model, 'predict', lambda row, f=model.predict: rows.append(row) or f(row))
+    pred.predict_proba({'player_a': "Daniil Medvedev", 'player_b': "Nuno Borges", 'surface': "Hard",
+                        'date': "2026-01-10"})
+    row = rows[0].iloc[0]
+    assert row['log_rank_b'] == pytest.approx(math.log(MISSING_RANK + 1))
+    assert math.isfinite(row['log_rank_diff'])

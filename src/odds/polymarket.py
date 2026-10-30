@@ -170,7 +170,8 @@ def parse_events(events, ts=None, midpoints=None):
         out.append(Snapshot(
             ts_utc=ts, venue=VENUE, event_id=info['event_id'], player_a=info['player_a'],
             player_b=info['player_b'], price_a=pa, price_b=pb, price_type='probability', tour=info['tour'],
-            tourney=info['tourney'], start_time_utc=info['start_time_utc'], best_bid_a=bid, best_ask_a=ask,
+            level=info['level'], tourney=info['tourney'], start_time_utc=info['start_time_utc'],
+            best_bid_a=bid, best_ask_a=ask,
             # Binärmarkt: Bid auf B = 1 - Ask auf A und umgekehrt
             best_bid_b=1 - ask if ask is not None else None, best_ask_b=1 - bid if bid is not None else None,
             volume=info['volume'], liquidity=info['liquidity'], source_url=info['source_url'],
