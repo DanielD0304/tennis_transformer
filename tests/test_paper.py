@@ -48,7 +48,7 @@ def test_line_shopping_net_of_tax_and_fees():
     p_fair = (1 / 1.8) / (1 / 1.8 + 1 / 2.1)
     df = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1),
                snap('tipico', NOW, price_a=2.00, price_b=1.80),  # 2,00 brutto, nach 5,3 % Steuer 1,894
-               snap('polymarket', NOW, price_a=0.50, price_b=0.50, best_ask_a=0.51, best_ask_b=0.51))  # 1,96
+               snap('polymarket', NOW, price_a=0.505, price_b=0.495, best_ask_a=0.51, best_ask_b=0.50))  # 1,96
     sig = sharp.signals(df, threshold=0.0)
     a = sig[sig['side'] == 'a'].iloc[0]
     assert a['venue'] == 'polymarket'
@@ -61,15 +61,47 @@ def test_line_shopping_net_of_tax_and_fees():
 
 
 def test_buy_odds_ignore_ask_below_mid():
-    """Polymarket: Mitte live aus dem CLOB, Bid/Ask aus Gamma (teils veraltet). Ein Ask unter der Mitte zählt nicht."""
+    """Polymarket: Ein Ask unter der Mitte zählt nicht und bekommt auch keinen Ersatzpreis, die Gegenseite bleibt."""
     df = frame(snap('polymarket', NOW, price_a=0.625, price_b=0.375, best_bid_a=0.72, best_ask_a=0.73,
                     best_bid_b=0.27, best_ask_b=0.28),
                snap('kalshi', NOW, price_a=0.40, price_b=0.60, best_bid_a=0.39, best_ask_a=0.41,
                     best_bid_b=0.59, best_ask_b=0.61))
     buy_a, buy_b = sharp.buy_odds(df, pm_spread=0.02)
     assert buy_a[0] == pytest.approx(1 / 0.73)  # über der Mitte: der Ask gilt
-    assert buy_b[0] == pytest.approx(1 / (0.375 + 0.01))  # 0,28 < 0,375: Preis + halber Spread
+    assert np.isnan(buy_b[0])  # 0,28 < 0,375: kein Kaufpreis (früher Preis + halber Spread)
     assert (buy_a[1], buy_b[1]) == (pytest.approx(1 / 0.41), pytest.approx(1 / 0.61))
+
+
+EMPTY_BOOK = dict(best_bid_a=0.0, best_ask_a=1.0, best_bid_b=0.0, best_ask_b=1.0)  # so meldet Gamma ein leeres Orderbuch
+
+
+def test_buy_odds_polymarket_needs_real_ask_and_no_placeholder():
+    """Polymarket: kein Kaufpreis ohne brauchbares Ask und bei einem Preis von genau 0,5. Kalshi behält den Rückfall."""
+    df = frame(snap('polymarket', NOW, price_a=0.5, price_b=0.5, **EMPTY_BOOK),
+               snap('polymarket', NOW, price_a=0.24, price_b=0.76, **EMPTY_BOOK),  # leer, der Preis ist nicht 0,5
+               snap('polymarket', NOW, price_a=0.40, price_b=0.60),  # kein Bid/Ask im Snapshot
+               snap('polymarket', NOW, price_a=0.5, price_b=0.5, best_bid_a=0.49, best_ask_a=0.51,  # wie der Backtest
+                    best_bid_b=0.49, best_ask_b=0.51),
+               snap('polymarket', NOW, price_a=0.495, price_b=0.505, best_bid_a=0.49, best_ask_a=0.50,  # echtes Buch
+                    best_bid_b=0.50, best_ask_b=0.51),
+               snap('kalshi', NOW, price_a=0.40, price_b=0.60),
+               snap('tipico', NOW, price_a=2.0, price_b=1.8))
+    buy_a, buy_b = sharp.buy_odds(df, pm_spread=0.02)
+    assert np.isnan(buy_a[:4]).all() and np.isnan(buy_b[:4]).all()
+    assert (buy_a[4], buy_b[4]) == (pytest.approx(1 / 0.50), pytest.approx(1 / 0.51))
+    assert (buy_a[5], buy_b[5]) == (pytest.approx(1 / 0.41), pytest.approx(1 / 0.61))
+    assert (buy_a[6], buy_b[6]) == (2.0, 1.8)
+
+
+def test_sharp_signals_ignore_polymarket_without_real_ask():
+    """Line Shopping nimmt die höchste Quote: Ein leeres Polymarket-Buch (0,5 + halber Spread wären 1,96) darf kein
+    Signal auslösen und die echte Quote eines anderen Anbieters nicht verdrängen."""
+    fair = snap('pinnacle', NOW, price_a=1.4, price_b=3.2)  # A fair ~ 0,70
+    empty = snap('polymarket', NOW, price_a=0.5, price_b=0.5, **EMPTY_BOOK)
+    assert sharp.signals(frame(fair, empty), threshold=0.02).empty
+    assert signals.sharp_signals(frame(fair, empty), pd.Timestamp(NOW + timedelta(minutes=1))).empty
+    sig = sharp.signals(frame(fair, empty, snap('tipico', NOW, price_a=1.6, price_b=2.4)), threshold=0.02)
+    assert list(sig['venue']) == ['tipico']
 
 
 def test_implausible_sharp_book_is_no_fair_price():
@@ -149,6 +181,36 @@ def test_paper_signal_bet_settle_clv(tmp_path):
 
 PLAYERS = [('Jannik Sinner', 'Carlos Alcaraz'), ('Daniil Medvedev', 'Alexander Zverev'), ('Casper Ruud', 'Holger Rune'),
            ('Taylor Fritz', 'Tommy Paul'), ('Lan Mi', 'Elza Tomase'), ('Ben Shelton', 'Jack Draper')]
+BOOK = dict(price_a=0.55, price_b=0.45, best_bid_a=0.54, best_ask_a=0.56, best_bid_b=0.44, best_ask_b=0.46)
+
+
+def test_model_signals_polymarket_only_at_real_ask():
+    """Das Modell sieht überall einen großen Vorteil auf A, gewettet wird nur, wo es dafür einen echten Preis gibt."""
+    def market(event_id, venue='polymarket', **prices):
+        return snap(venue, NOW, event_id=event_id, **prices)
+
+    snaps = frame(
+        market('leer', price_a=0.5, price_b=0.5, **EMPTY_BOOK),
+        market('leer-anderer-preis', price_a=0.24, price_b=0.76, **EMPTY_BOOK),
+        market('ohne-bid-ask', price_a=0.40, price_b=0.60),
+        market('platzhalter-mit-ask', price_a=0.5, price_b=0.5, best_bid_a=0.63, best_ask_a=0.68, best_bid_b=0.32,
+               best_ask_b=0.37),
+        # A nur zu einem Ask unter der Mitte, B hat ein Ask, aber keinen Vorteil: auch hier keine Wette
+        market('ask-unter-mitte', price_a=0.60, price_b=0.40, best_bid_a=0.45, best_ask_a=0.50, best_bid_b=0.50,
+               best_ask_b=0.55),
+        market('echtes-ask', price_a=0.40, price_b=0.60, best_bid_a=0.39, best_ask_a=0.41, best_bid_b=0.59,
+               best_ask_b=0.61),
+        market('ask-genau-0.5', price_a=0.495, price_b=0.505, best_bid_a=0.49, best_ask_a=0.50, best_bid_b=0.50,
+               best_ask_b=0.51),
+        market('nur-ask-auf-a', price_a=0.40, price_b=0.60, best_ask_a=0.41, best_bid_b=0.59),
+        market('kalshi-ohne-ask', venue='kalshi', price_a=0.40, price_b=0.60))
+    logs = []
+    out = signals.model_signals(snaps, lambda r: 0.8, pd.Timestamp(NOW), threshold=0.05, log=logs.append)
+    assert dict(zip(out['event_id'], 1 / out['odds'])) == pytest.approx(
+        {'echtes-ask': 0.41, 'ask-genau-0.5': 0.50, 'nur-ask-auf-a': 0.41, 'kalshi-ohne-ask': 0.41})
+    assert (out['side'] == 'a').all()
+    assert out.set_index('event_id')['p_market'].to_dict()['echtes-ask'] == 0.40  # Mitte der gewetteten Seite
+    assert any(m.startswith('  Modell: 4 von 9 Märkten ohne Kaufpreis') for m in logs)
 
 
 def test_model_signals_only_in_segments():
@@ -157,8 +219,7 @@ def test_model_signals_only_in_segments():
     cases = [('pm-ch-24', 'polymarket', 'challenger', 24), ('pm-ch-5', 'polymarket', 'challenger', 5),
              ('pm-main-24', 'polymarket', 'main', 24), ('kx-ch-24', 'kalshi', 'challenger', 24),
              ('pm-itf-1', 'polymarket', 'itf', 1), ('pm-itf-30.5', 'polymarket', 'itf', 30.5)]
-    snaps = frame(*[snap(venue, NOW, a, b, price_a=0.5, price_b=0.5, event_id=e, level=level,
-                         start=NOW + timedelta(hours=hours))
+    snaps = frame(*[snap(venue, NOW, a, b, event_id=e, level=level, start=NOW + timedelta(hours=hours), **BOOK)
                     for (e, venue, level, hours), (a, b) in zip(cases, PLAYERS)])
     out = signals.model_signals(snaps, lambda r: 0.8, pd.Timestamp(NOW), threshold=0.05, segments=segments,
                                 log=lambda *a: None)
@@ -350,8 +411,8 @@ def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
         ts = clock[0] + timedelta(seconds=2)
         clock[0] = ts + timedelta(seconds=2)
         append_snapshots([Snapshot(ts_utc=ts, venue='polymarket', event_id='pm-1', player_a='Jannik Sinner',
-                                   player_b='Carlos Alcaraz', price_a=0.5, price_b=0.5, price_type='probability',
-                                   tour='atp', start_time_utc=ts + timedelta(hours=5))], root)
+                                   player_b='Carlos Alcaraz', price_type='probability', tour='atp',
+                                   start_time_utc=ts + timedelta(hours=5), **BOOK)], root)
 
     monkeypatch.setattr(collect, 'collect_once', fake_collect)
     monkeypatch.setattr(run, 'now_utc', lambda: clock[0])
@@ -386,8 +447,8 @@ def test_run_once_bets_only_in_segments_of_the_timing_backtest(tmp_path, monkeyp
              ('main-24', 'ATP Paris', None, 24), ('itf-1', 'M15 Monastir', 'itf', 1), ('itf-6', 'M15 Monastir', 'itf', 6)]
     root = str(tmp_path / 'snaps')
     append_snapshots([Snapshot(ts_utc=NOW - timedelta(minutes=5), venue='polymarket', event_id=e, player_a=a,
-                               player_b=b, price_a=0.5, price_b=0.5, price_type='probability', tour='atp', level=level,
-                               tourney=tourney, start_time_utc=NOW + timedelta(hours=hours))
+                               player_b=b, price_type='probability', tour='atp', level=level, tourney=tourney,
+                               start_time_utc=NOW + timedelta(hours=hours), **BOOK)
                       for (e, tourney, level, hours), (a, b) in zip(cases, PLAYERS)], root)
     args = SimpleNamespace(collect=False, odds_api=False, softbooks=False, snapshots=root, days=1,
                            bets=str(tmp_path / 'bets.parquet'), strategies=['modell'], model='elo2', threshold=0.05,

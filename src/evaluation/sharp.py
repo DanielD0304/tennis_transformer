@@ -23,6 +23,7 @@ from ..sources.build import ODDS_RANGE, MatchIndex
 from ..sources.common import yyyymmdd
 from .betting import Kelly
 from .predictors import remove_margin
+from .timing import PLACEHOLDER
 from .venues import DE_BET_TAX, VENUES, Venue
 
 SHARP = ('pinnacle', 'betfair')  # Reihenfolge = Priorität
@@ -32,7 +33,7 @@ SHARP_BOOK = ODDS_RANGE['BFEW']
 WINDOW = pd.Timedelta(minutes=5)
 DEFAULT_THRESHOLD = 0.02
 SHRINK = 0.5  # Anteil, um den p für Kelly Richtung Venue-Preis geschrumpft wird
-PM_SPREAD = 0.02  # ohne Bid/Ask im Snapshot: Kauf zum Preis + halber Spread
+PM_SPREAD = 0.02  # Kalshi ohne Ask im Snapshot: Kauf zum Preis + halber Spread (Polymarket: kein Kauf, siehe buy_odds)
 # Buchmacher ohne eigenes Profil: deutsche Wettsteuer auf den Einsatz, RET void (Annahme, je Buch prüfen)
 DE_BOOK = Venue('de_book', price='none', stake_tax=DE_BET_TAX, ret_rule='void')
 PROFILES = {
@@ -98,18 +99,23 @@ def _oriented(df):
 
 def buy_odds(df, pm_spread=PM_SPREAD):
     """
-    Bruttoquoten zum Kaufen (A, B): Buchmacher die Quote, Prediction Markets 1 / Ask (sonst Preis + halber Spread).
-    Ein Ask unter dem Preis (Mitte) kommt in keinem echten Orderbuch vor. Bei Polymarket stammt die Mitte live aus dem
-    CLOB, Bid/Ask aber aus Gamma, und die sind dann veraltet: Solche Asks zählen nicht.
+    Bruttoquoten zum Kaufen (A, B), NaN = kein Kauf möglich. Buchmacher: die Quote. Prediction Markets: 1 / Ask, wobei
+    ein Ask unter dem Preis (Mitte) nicht zählt, das kommt in keinem echten Orderbuch vor.
+    Polymarket hat ohne brauchbares Ask keinen Kaufpreis: Preis + halber Spread wäre in leeren Orderbüchern (Bid 0,
+    Ask 1) ein Preis, den es nie gab, und beim Line Shopping (signals) gewänne er gerade wegen seiner hohen Quote. Ein
+    Preis von genau 0,5 ist wie im Timing-Backtest der Platzhalter eines leeren Orderbuchs. Ein Ask von genau 0,5 bei
+    einer anderen Mitte ist dagegen ein echtes Buch (0,49/0,50). Kalshi kauft ohne Ask zum Preis + halben Spread.
     """
     pm = df['venue'].isin(PREDICTION_MARKETS).to_numpy()
+    poly = (df['venue'] == 'polymarket').to_numpy()
     out = []
     for side in ('a', 'b'):
         ask = df[f'best_ask_{side}'].to_numpy(float)
         price = df[f'price_{side}'].to_numpy(float)
         with np.errstate(invalid='ignore'):
             usable = np.isfinite(ask) & (ask > 0) & (ask < 1) & ~(ask < price)
-        buy = np.where(usable, ask, price + pm_spread / 2)
+        buy = np.where(usable, ask, np.where(poly, np.nan, price + pm_spread / 2))
+        buy = np.where(poly & (price == PLACEHOLDER), np.nan, buy)
         with np.errstate(divide='ignore', invalid='ignore'):
             out.append(np.where(pm, np.where((buy > 0) & (buy < 1), 1 / buy, np.nan), df[f'odds_{side}'].to_numpy(float)))
     return out

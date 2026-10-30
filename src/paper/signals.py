@@ -2,7 +2,8 @@
 Neue Paper-Signale aus den aktuellen Snapshots.
 
 - model_signals (Strategie aus dem Timing-Backtest): eigenes Modell (elo2/gbdt) gegen den aktuellen Kaufpreis bei
-  Polymarket/Kalshi (Ask, sonst Preis + halber Spread), Gebühren laut venues.py. Liegen Blend-Gewichte aus dem
+  Polymarket/Kalshi, Gebühren laut venues.py. Polymarket wettet nur zu einem echten Ask und nicht bei einem Preis von
+  genau 0,5 (sharp.buy_odds), Kalshi kauft ohne Ask zum Preis + halben Spread. Liegen Blend-Gewichte aus dem
   Timing-Backtest vor (data/eval/timing_blend.json), ist p der Blend aus aktuellem Preis und Modell (Gewichte des
   Zeitpunkts, der der Zeit bis zum Start am nächsten liegt). Das rohe Modell weicht sonst bei sehr vielen Märkten
   weit vom Preis ab, meist weil es schlechter ist als der Markt.
@@ -176,6 +177,9 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
     if cur.empty:
         return normalize(pd.DataFrame())
     gross_a, gross_b = sharp.buy_odds(cur, pm_spread)
+    no_price = int((~np.isfinite(gross_a) & ~np.isfinite(gross_b)).sum())
+    if no_price:
+        log(f"  Modell: {no_price} von {len(cur)} Märkten ohne Kaufpreis (kein brauchbares Ask oder Preis genau 0,5)")
     rows, unknown, n_blend = [], 0, 0
     for i, r in enumerate(cur.to_dict('records')):
         p = prob(r)
