@@ -448,6 +448,7 @@ Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb da
 python -m src.odds.collect                    # alle Venues einmal abfragen
 python -m src.odds.collect --loop 20          # alle 20 Minuten (Odds API nur jede 6. Runde)
 python -m src.odds.collect --venues polymarket,kalshi
+python -m src.odds.collect --venues odds_api  # Odds API, Polymarket und Kalshi immer mit dabei (kein Kontingent)
 python -m src.odds.collect --history          # historische Polymarket-/Kalshi-Preise (dauert ~1-2 h)
 python -m src.odds.report                     # Log Loss / Kalibrierung der PM-Closing-Preise
 ```
@@ -466,7 +467,8 @@ Ablage (unter `data/`, nicht im Repo):
   5 */2 * * *  cd /pfad/zu/tennis_transformer && ODDS_API_KEY=... python -m src.odds.collect --venues odds_api >> data/odds/collect.log 2>&1
   15 4 * * *   cd /pfad/zu/tennis_transformer && python -m src.odds.collect --history >> data/odds/history.log 2>&1
   ```
-  Mit cron läuft jede Runde einzeln, die Odds API deshalb in einer eigenen, selteneren Zeile (Kontingent).
+  Mit cron läuft jede Runde einzeln, die Odds API deshalb in einer eigenen, selteneren Zeile (Kontingent). Diese
+  Zeile fragt Polymarket und Kalshi mit ab, siehe [Sharp vs. Rest](#sharp-vs-rest-srcevaluationsharppy).
 - Windows (Aufgabenplanung), in der Eingabeaufforderung im Repo-Ordner:
   ```
   schtasks /Create /SC MINUTE /MO 20 /TN "TennisOdds" /TR "cmd /c cd /d %CD% && python -m src.odds.collect --venues polymarket,kalshi,softbooks >> data\odds\collect.log 2>&1"
@@ -525,13 +527,30 @@ Bankroll, p vorher zur Hälfte Richtung Venue-Preis geschrumpft. Flat läuft zum
 Sharp-Snapshots (Odds API) gibt es keine Signale. Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe
 Paper-Trading: Die höchste Quote gewinnt, ein erfundener Preis würde also gerade wegen seiner Quote gewählt.
 
+Damit Polymarket und Kalshi im Fenster liegen, fragt jeder Lauf der Odds API sie mit ab (`--venues odds_api`, kein
+Kontingent, wenige Sekunden). Vorher hat sharp dort nie verglichen: Die 6 Odds-API-Läufe bis zum 30.10.2026 lagen 5,4
+bis 156 Minuten vom nächsten Polymarket-Snapshot entfernt, das ergab 0 von 3.247 Zeilen. Ein größeres Fenster löst das
+nicht:
+- 30 Minuten decken nur 4 der 6 Läufe ab (136 Zeilen), denn der Abstand hängt davon ab, ob gerade eine Paper-Runde lief.
+  Das Mitabfragen deckt alle 6 ab (174 Zeilen vor dem Start im Replay).
+- Der alte Preis kostet die Edge, um die es geht. Das typische Signal hat 3,7 % Edge bei Quote 4,3, ein Cent kostet dort
+  4,2 %, und von 12 Signalen im 30-Minuten-Fenster bleibt mit einem Cent mehr nur eines. In 20 bis 40 Minuten bewegen
+  sich zwar 80 % der Kaufpreise um weniger als einen Cent, aber jede fünfte Seite um mindestens einen.
+- Im Vergleich Kalshi-Mitte gegen Polymarket-Ask (eine Runde alt gegen frisch) sind 27 % (alter Kaufpreis, 37 Signale)
+  bzw. 31 % (alter fairer Preis, 45 Signale) der Signale zu frischen Preisen keine mehr. Mit echten Sharp-Preisen ist
+  die Stichprobe klein: 12 von 13 Signalen tragen auch mit dem Kaufpreis rund 30 Minuten später.
+
+Jede Paper-Runde schreibt ins Log, womit sharp verglichen hat (`Sharp: 137 Vergleiche vor dem Start, davon Polymarket 4,
+Kalshi 4`).
+
 ## Paper-Trading (`src/paper/`, Dashboard `/scraper/paper/`)
 
 ```bash
 python -m src.paper.run                 # eine Runde: Snapshots holen, Signale -> Wetten, abrechnen, Stand ausgeben
 python -m src.paper.run --loop 30       # dauerhaft alle 30 Minuten
 python -m src.paper.run --no-collect    # wenn der Collector schon separat läuft
-python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent, für „sharp“ nötig)
+python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent)
+python -m src.paper.run --odds-api --strategies sharp   # nur sharp: abfragen und im selben Lauf wetten, ohne Predictor
 python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-2   # eigene Segmente
 ```
 
@@ -577,8 +596,11 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
 
 **Dauerhaft laufen lassen** (lokal, in der Cloud-Session läuft nichts dauerhaft). Der Paper-Lauf holt selbst
 Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlich der Odds-API-Collector laufen
-(siehe oben, Kontingent beachten). Die Historie lädt nur noch der nächtliche Lauf: Fehlt er, kommen neue
-Marktergebnisse weder nach `data/odds/history/` noch als Ergebnisquelle nach `data/matches.csv`.
+(siehe oben, Kontingent beachten). Die nächste Paper-Runde wettet auf seine Preise, wenn sie höchstens 90 Minuten alt
+sind, und zwar zum Preis aus seinem Lauf. Genauer ist `python -m src.paper.run --odds-api --strategies sharp` statt
+des Collectors: Abfrage und Wette liegen dann nur Sekunden auseinander, und das Kontingent bleibt gleich. Die Historie
+lädt nur noch der nächtliche Lauf: Fehlt er, kommen neue Marktergebnisse weder nach `data/odds/history/` noch als
+Ergebnisquelle nach `data/matches.csv`.
 
 Empfohlen ist ein Dauerprozess mit `--loop 30` statt eines neuen Prozesses alle 30 Minuten: pandas, LightGBM
 und Co. werden nur einmal geladen (weniger anfällig, wenn eine Anwendungssteuerungsrichtlinie einzelne DLLs

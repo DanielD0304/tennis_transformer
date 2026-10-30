@@ -425,6 +425,138 @@ def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
     assert len(bets) == 1 and bets['player'].iloc[0] == 'Jannik Sinner'
 
 
+CHEAP_A = dict(price_a=0.495, price_b=0.505, best_bid_a=0.49, best_ask_a=0.50, best_bid_b=0.50, best_ask_b=0.51)
+
+
+def _collector_adapters(calls, ts=NOW):
+    """Collector ohne Netz: Jeder Adapter merkt sich den Aufruf. Pinnacle sieht A fair bei ~ 0,54, der Ask ist 0,50."""
+    def adapter(name, snapshot):
+        def fetch(log=print):
+            calls.append(name)
+            return [snapshot]
+        return fetch
+
+    return {'polymarket': adapter('polymarket', snap('polymarket', ts, **CHEAP_A)),
+            'kalshi': adapter('kalshi', snap('kalshi', ts, **CHEAP_A)),
+            'odds_api': adapter('odds_api', snap('pinnacle', ts, price_a=1.8, price_b=2.1))}
+
+
+def _sharp_round_args(tmp_path, root, **kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**{**dict(collect=False, odds_api=False, softbooks=False, snapshots=root, days=1,
+                                     bets=str(tmp_path / 'bets.parquet'), strategies=['sharp'], model='elo2',
+                                     threshold=0.05, raw=True, sharp_threshold=0.02, history=False, segments='auto'),
+                              **kw})
+
+
+def test_odds_api_run_also_queries_the_prediction_markets(tmp_path):
+    """--venues odds_api fragt Polymarket und Kalshi mit ab, sonst läge nie einer ihrer Preise im Fenster von sharp. Die
+    Odds API bleibt bei einer Abfrage je Lauf, und andere Läufe fragen sie gar nicht ab (Kontingent)."""
+    from src.odds import collect
+    from src.odds.schema import load_snapshots
+    calls, root = [], str(tmp_path)
+    adapters = _collector_adapters(calls)
+    result = collect.collect_once(['odds_api'], root, adapters=adapters, log=lambda *a: None)
+    assert calls == ['polymarket', 'kalshi', 'odds_api']
+    assert result == {'polymarket': 1, 'kalshi': 1, 'odds_api': 1}
+    assert sorted(sharp.align(load_snapshots(root=root))['venue']) == ['kalshi', 'polymarket']
+
+    for venues, expected in ((['polymarket', 'kalshi'], ['polymarket', 'kalshi']),  # Paper-Runde
+                             (['kalshi'], ['kalshi']),
+                             (['polymarket', 'kalshi', 'odds_api'], ['polymarket', 'kalshi', 'odds_api']),  # --odds-api
+                             (['odds_api', 'kalshi'], ['polymarket', 'odds_api', 'kalshi'])):
+        calls.clear()
+        collect.collect_once(venues, root, adapters=adapters, log=lambda *a: None)
+        assert calls == expected
+
+
+def test_failed_prediction_market_does_not_stop_the_odds_api_run(tmp_path):
+    """Fällt Polymarket aus, fehlt nur dessen Preis: Die Credits der Odds API sind damit nicht verloren."""
+    from src.odds import collect
+    from src.odds.schema import load_snapshots
+
+    def broken(log=print):
+        raise RuntimeError("Polymarket down")
+
+    calls, root = [], str(tmp_path)
+    adapters = {**_collector_adapters(calls), 'polymarket': broken}
+    result = collect.collect_once(['odds_api'], root, adapters=adapters, log=lambda *a: None)
+    assert result['polymarket'].startswith('Fehler: RuntimeError')
+    assert calls == ['kalshi', 'odds_api']
+    assert list(sharp.align(load_snapshots(root=root))['venue']) == ['kalshi']
+
+
+def test_sharp_compares_the_price_of_the_same_run_not_of_the_paper_round():
+    """Zeitplan: Odds API um :05, Paper-Runde um :18. Deren Preis liegt 13 Minuten neben dem Sharp-Preis und zählt
+    nicht, auch wenn er besser aussieht. Verglichen wird mit dem Preis, den der Odds-API-Lauf mit abgefragt hat."""
+    fair = snap('pinnacle', NOW, price_a=1.8, price_b=2.1)
+    same_run = snap('polymarket', NOW - timedelta(seconds=3), **CHEAP_A)
+    paper_round = snap('polymarket', NOW + timedelta(minutes=13), price_a=0.395, price_b=0.605, best_bid_a=0.39,
+                       best_ask_a=0.40, best_bid_b=0.60, best_ask_b=0.61)
+    now = pd.Timestamp(NOW + timedelta(minutes=13, seconds=5))
+    assert sharp.align(frame(fair, paper_round)).empty
+    assert signals.sharp_signals(frame(fair, paper_round), now).empty
+    out = signals.sharp_signals(frame(fair, same_run, paper_round), now)
+    assert list(out['venue']) == ['polymarket']
+    assert out['odds'].iloc[0] == pytest.approx(1 / 0.50)
+
+
+def test_sharp_signals_ignore_venue_price_after_the_start():
+    """Polymarket und Kalshi handeln im Match weiter: Liegt nur der Sharp-Preis vor dem Start, zählt der Preis nicht."""
+    fair = snap('pinnacle', START - timedelta(minutes=2), price_a=1.8, price_b=2.1)
+    before = snap('polymarket', START - timedelta(minutes=1), **CHEAP_A)
+    live = snap('polymarket', START + timedelta(minutes=1), **CHEAP_A)
+    assert sharp.signals(frame(fair, live), threshold=0.0).empty
+    assert sharp.coverage(frame(fair, live)) == {}
+    assert len(sharp.signals(frame(fair, before), threshold=0.0)) == 1
+    assert sharp.coverage(frame(fair, before)) == {'polymarket': 1}
+
+
+def test_paper_round_bets_on_the_prices_of_the_odds_api_run(tmp_path, monkeypatch):
+    """Der geplante Ablauf ohne Änderung der Tasks: Der Odds-API-Lauf schreibt alle drei Venues, die nächste Paper-Runde
+    wettet bei der besten davon. Das Log zeigt, womit sharp verglichen hat."""
+    from src.odds import collect, history
+    from src.paper import run
+    root = str(tmp_path / 'snaps')
+    collect.collect_once(['odds_api'], root, adapters=_collector_adapters([]), log=lambda *a: None)
+    monkeypatch.setattr(run, 'now_utc', lambda: NOW + timedelta(minutes=13))
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    logs = []
+    bets, _, _ = run.run_once(_sharp_round_args(tmp_path, root), log=logs.append)
+    assert list(zip(bets['strategy'], bets['venue'], bets['side'])) == [('sharp', 'polymarket', 'a')]
+    assert bets['odds'].iloc[0] == pytest.approx(2.0)
+    assert '  Sharp: 2 Vergleiche vor dem Start, davon Polymarket 1, Kalshi 1' in logs
+
+
+def test_paper_run_with_odds_api_bets_in_the_same_round(tmp_path, monkeypatch):
+    """python -m src.paper.run --odds-api --strategies sharp: abfragen und wetten in einem Lauf, ohne Predictor."""
+    from src.odds import collect, history
+    from src.paper import run
+    calls = []
+    monkeypatch.setattr(collect, 'ADAPTERS', _collector_adapters(calls))
+    monkeypatch.setattr(run, 'now_utc', lambda: NOW + timedelta(seconds=5))
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
+    monkeypatch.setattr(run, 'make_prob', lambda *a: pytest.fail("sharp braucht keinen Predictor"))
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    args = _sharp_round_args(tmp_path, str(tmp_path / 'snaps'), collect=True, odds_api=True)
+    bets, _, _ = run.run_once(args, log=lambda *a: None)
+    assert calls == ['polymarket', 'kalshi', 'odds_api']
+    assert list(bets['venue']) == ['polymarket']
+
+
+def test_sharp_log_tells_when_prediction_markets_are_missing():
+    """Ohne Vergleich bei Polymarket und Kalshi wettet sharp nur bei Buchmachern: Das steht in jeder Runde im Log."""
+    now = pd.Timestamp(NOW + timedelta(minutes=1))
+    logs = []
+    signals.sharp_signals(frame(snap('polymarket', NOW, **BOOK)), now, log=logs.append)
+    assert logs == ['  Sharp: keine Sharp-Preise aus den letzten 90 Minuten']
+    logs.clear()
+    only_books = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1), snap('tipico', NOW, price_a=1.9, price_b=1.9))
+    signals.sharp_signals(only_books, now, log=logs.append)
+    assert logs == ['  Sharp: 1 Vergleiche vor dem Start, davon Polymarket 0, Kalshi 0']
+
+
 def test_open_results_queries_only_due_unknown_markets(monkeypatch):
     """Abrechnung fragt nur fällige offene PM/Kalshi-Wetten gezielt ab, die die Historie noch nicht kennt."""
     from src.odds import kalshi, polymarket
