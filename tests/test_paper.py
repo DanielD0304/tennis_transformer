@@ -374,32 +374,36 @@ def test_open_results_queries_only_due_unknown_markets(monkeypatch):
                         lambda client, e, a: calls.append(('polymarket', e)) or {'pm-1': 'b', 'pm-2': None}[e])
     monkeypatch.setattr(kalshi, 'fetch_resolution', lambda client, e, a: calls.append(('kalshi', e, a)) or 'void')
 
-    def bet(venue, event_id, start, strategy='modell'):
-        return {'bet_id': f'{strategy}|{venue}|{event_id}|a', 'created_utc': pd.Timestamp(NOW), 'strategy': strategy,
-                'venue': venue, 'event_id': event_id, 'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz',
-                'side': 'a', 'start_time_utc': pd.Timestamp(start), 'odds': 2.0, 'net_odds': 2.0, 'stake': 10.0,
-                'stake_flat': 10.0, 'status': 'open'}
+    def bet(venue, event_id, start, strategy='modell', segment=None):
+        return {'bet_id': f'{strategy}|{venue}|{event_id}|a|{segment}', 'created_utc': pd.Timestamp(NOW),
+                'strategy': strategy, 'segment': segment, 'venue': venue, 'event_id': event_id,
+                'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz', 'side': 'a',
+                'start_time_utc': pd.Timestamp(start), 'odds': 2.0, 'net_odds': 2.0, 'stake': 10.0, 'stake_flat': 10.0,
+                'status': 'open'}
 
     bets = normalize(pd.DataFrame([
-        bet('polymarket', 'pm-1', START), bet('polymarket', 'pm-1', START, strategy='sharp'),  # einmal abfragen
+        # je Segment und Strategie eine Wette auf denselben ITF-Markt: einmal abfragen, alle abrechnen
+        bet('polymarket', 'pm-1', START, segment='polymarket itf 18-30h'),
+        bet('polymarket', 'pm-1', START, segment='polymarket itf 0.5-1.5h'),
+        bet('polymarket', 'pm-1', START, strategy='sharp'),
         bet('polymarket', 'pm-2', START),                  # Markt noch nicht aufgelöst
         bet('polymarket', 'pm-3', START),                  # steht schon in der Historie
-        bet('kalshi', 'KX-1', START),
-        bet('kalshi', 'KX-2', START + timedelta(days=1)),  # noch nicht fällig
+        bet('kalshi', 'KXITFMATCH-1', START),
+        bet('kalshi', 'KXITFWMATCH-2', START + timedelta(days=1)),  # noch nicht fällig
         bet('tipico', 't-1', START),                       # Buchmacher: nur über die Matchdaten
     ]))
     history = {'polymarket': pd.DataFrame({'event_id': ['pm-3'], 'winner': ['a']}),
                'kalshi': pd.DataFrame(columns=['event_id', 'winner'])}
     now = pd.Timestamp(START + timedelta(hours=4))
     found = run.open_results(bets, now, history, log=lambda *a: None)
-    assert sorted(calls) == [('kalshi', 'KX-1', 'Jannik Sinner'), ('polymarket', 'pm-1'), ('polymarket', 'pm-2')]
+    assert sorted(calls) == [('kalshi', 'KXITFMATCH-1', 'Jannik Sinner'), ('polymarket', 'pm-1'), ('polymarket', 'pm-2')]
     assert found['polymarket'].to_dict('records') == [{'event_id': 'pm-1', 'winner': 'b'}]
-    assert found['kalshi'].to_dict('records') == [{'event_id': 'KX-1', 'winner': 'void'}]
+    assert found['kalshi'].to_dict('records') == [{'event_id': 'KXITFMATCH-1', 'winner': 'void'}]
 
     merged = {v: pd.concat([history[v], found[v]], ignore_index=True) for v in history}
     done, n = settle.settle(bets, now, merged, [], None)
-    assert n == 4
-    assert list(done['status']) == ['lost', 'lost', 'open', 'won', 'void', 'open', 'open']
+    assert n == 5
+    assert list(done['status']) == ['lost', 'lost', 'lost', 'open', 'won', 'void', 'open', 'open']
 
 
 def test_recent_matches_cached_for_data_matches(tmp_path, monkeypatch):
