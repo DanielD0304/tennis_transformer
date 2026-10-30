@@ -36,13 +36,16 @@ MATCH_FEATURES = ['best_of_5', 'indoor', 'surf_hard', 'surf_clay', 'surf_grass',
 KEY_COLUMNS = ['match_id', 'date', 'year', 'tour', 'player_a', 'player_b', 'label', 'status']
 
 
+# Ein gemeinsames partial statt lambda: der Stand ist picklebar (Cache in predict.py), und das Objekt steht nur einmal drin
+_surface_results = partial(deque, maxlen=SURFACE_WINDOW)
+
+
 class _Player:
     __slots__ = ('recent', 'surface', 'days', 'n', 'last_date', 'last_retired')
 
     def __init__(self):
         self.recent = deque(maxlen=FORM_WINDOW)          # (won, game_share, set_share, tiebreaks, retired)
-        # Untergrund -> [won]; partial statt lambda, damit der Stand picklebar ist (Cache in predict.py)
-        self.surface = defaultdict(partial(deque, maxlen=SURFACE_WINDOW))
+        self.surface = defaultdict(_surface_results)     # Untergrund -> [won]
         self.days = deque()                               # (Datum, Sätze, Minuten) für die Müdigkeit
         self.n = 0
         self.last_date = None

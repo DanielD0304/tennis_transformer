@@ -543,9 +543,11 @@ python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Konti
   zahlen den Spieler aus, der weiterkommt. Deutsche Bücher werden als void angenommen, das bitte in den AGB
   prüfen. Eine 50-50-Auflösung ist void.
 - Laufzeit: Den Zustand des Predictors (Elo, Elo2, Form, H2H) legt der Lauf in `data/cache/predictor_gbdt.pkl`
-  ab, die Matches der letzten Tage für die Abrechnung in `data/cache/recent_matches.pkl`. Neu gerechnet wird
-  nur, wenn sich `data/matches.csv` oder der Code dafür ändert, also einmal nach jedem Daten-Update. Der
-  Ordner darf jederzeit gelöscht werden.
+  ab (rund 155 MB), die Matches der letzten Tage für die Abrechnung in `data/cache/recent_matches.pkl`. Neu
+  gerechnet wird nur, wenn sich `data/matches.csv` oder der Code dafür ändert, also einmal nach jedem
+  Daten-Update. Der Ordner darf jederzeit gelöscht werden. Gemessen auf 669.000 Matches: rund 13 s und 1,1 GB
+  RAM pro Runde aus dem Cache, rund 2 Minuten und 1,8 GB für die erste Runde nach einem Update. Vorher baute
+  jede Runde den Predictor neu auf (930 s, 3 bis 7 GB RAM).
 - CLV = genommene Quote / Schlussquote − 1. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
   dem Start, dazu wird gegen Sharp verglichen, wo vorhanden.
 - **Kriterium für echtes Geld** (im Dashboard angezeigt): ≥ 300 abgerechnete Paper-Wetten, mittlerer CLV
@@ -574,5 +576,6 @@ sporadisch blockiert), der Predictor bleibt im Speicher und wird neu gebaut, sob
   ```
   Mit `--loop 30` wirkt die Aufgabe als Wächter: Solange der Loop läuft, startet die Aufgabenplanung keine
   zweite Instanz (Standard „Keine neue Instanz starten“), bricht er ab, startet ihn der nächste Termin neu.
-  Ohne `--loop` geht es auch, dank Cache dauert dann jede Runde nur Sekunden statt Minuten.
+  Ohne `--loop` geht es auch: Dank Cache dauert jede Runde dann nur noch rund 13 s, dafür lädt jeder Lauf pandas
+  und den Cache neu.
 - Dashboard: `cd betscraper && python manage.py runserver`, dann http://127.0.0.1:8000/scraper/paper/

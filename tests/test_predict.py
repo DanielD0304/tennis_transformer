@@ -258,6 +258,23 @@ def test_live_gbdt_unknown_rank_like_training(tmp_path, monkeypatch):
     assert math.isfinite(row['log_rank_diff'])
 
 
+def test_records_same_values_as_iterrows():
+    """records liefert dieselben Python-Werte wie iterrows, gleiche Texte und Daten sind dabei ein Objekt."""
+    from src.data_loader import records
+    df = pd.DataFrame({'text': ['a', None, 'a'], 'num': [1.5, float('nan'), 3.0], 'n': [1, 2, 3],
+                       'day': pd.to_datetime(['2026-01-01', '2026-01-01', None])})
+    df['text'] = df['text'].astype('str')
+    columns = ['text', 'num', 'n', 'day', 'fehlt']
+    rows = list(records(df, columns))
+    for row, (_, full) in zip(rows, df.iterrows()):
+        assert set(row) == set(df.columns)
+        for c in df.columns:
+            a, b = row[c], full[c]
+            assert type(a) is type(b) and (a == b or (a != a and b != b))
+    assert rows[0]['text'] is rows[2]['text'] and rows[0]['day'] is rows[1]['day']
+    assert list(records(df, ['fehlt'])) == [{}, {}, {}]
+
+
 def _feature_state(builder):
     """FeatureBuilder-Stand ohne leere Einträge (row() legt für Abfragen leere Defaults an)."""
     players = {k: (list(s.recent), {sf: list(d) for sf, d in s.surface.items() if d}, list(s.days), s.n, s.last_date,

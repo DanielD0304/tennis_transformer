@@ -9,10 +9,10 @@ Datenbasis ist data/matches.csv (siehe src/update_data.py): Sackmann mit Aufschl
 danach tennis-data.co.uk und ESPN (jedes beendete Match, auch im laufenden Turnier, ohne Stats).
 Die Daten werden beim Start automatisch aktualisiert, wenn sie älter als 24 Stunden sind.
 
-Der aufgebaute Zustand (Elo, Elo2, H2H, Historien bzw. Feature-Stand) landet in data/cache/predictor_<modell>.pkl
-und wird wiederverwendet, solange data/matches.csv (Pfad, Änderungszeit, Größe), config.data_years_start und der
-Code, der ihn baut (STATE_SOURCES), unverändert sind: neu gerechnet wird also einmal nach jedem Daten-Update.
-Die Modelle selbst (models/gbdt_<tour>.pkl, best_model.pt) werden jedes Mal frisch geladen.
+Bei gbdt und elo2 landet der aufgebaute Zustand (Elo, Elo2, H2H, Matches, Feature-Stand) in
+data/cache/predictor_<modell>.pkl und wird wiederverwendet, solange data/matches.csv (Pfad, Änderungszeit, Größe),
+config.data_years_start und der Code, der ihn baut (STATE_SOURCES), unverändert sind: neu gerechnet wird also einmal
+nach jedem Daten-Update. Die Modelle selbst (models/gbdt_<tour>.pkl) werden jedes Mal frisch geladen.
 
 Der Untergrund wird, wenn nicht angegeben, aus dem Turniernamen bestimmt (build._tourney_lookup),
 sonst aus dem Turnier, das beide Spieler gerade spielen. Ein expliziter Untergrund hat Vorrang.
@@ -144,6 +144,7 @@ class MatchPredictor:
     def _load_state(self, use_cache=True):
         """Zustand zu data/matches.csv aus data/cache/predictor_<modell>.pkl oder neu aufbauen (und speichern)."""
         dl.refresh_matches()
+        use_cache = use_cache and self.model_name != 'transformer'  # die Transformer-Historie wäre über 500 MB groß
         name = f"predictor_{self.model_name}"
         key = {'matches': cache.file_stamp(dl.MATCHES_PATH), 'first_year': self.config.data_years_start,
                'code': cache.code_hash(STATE_SOURCES), 'versions': (sys.version, pd.__version__)}
@@ -470,4 +471,6 @@ def _flip_score(score):
 
 
 def _text(value):
+    if type(value) is str:  # der Normalfall, ohne den Umweg über pd.notna
+        return value
     return str(value) if pd.notna(value) else ''

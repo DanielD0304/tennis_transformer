@@ -9,6 +9,7 @@ Schema für die Features vereinheitlicht.
 import os
 
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 
 from .sources.common import MATCHES_PATH, ODDS_COLUMNS
 
@@ -41,6 +42,18 @@ def enforce_schema(df):
     return df
 
 
+def _column(series):
+    """
+    Werte einer Spalte als Python-Objekte wie bei iterrows (fehlend = NaN). Texte und Daten als Liste, in der gleiche
+    Werte ein Objekt sind: Arrow-Texte einzeln zu iterieren ist langsam, und geteilte Objekte sparen im Predictor
+    Speicher und im Cache Platz (pickle schreibt jedes Objekt nur einmal).
+    """
+    if is_numeric_dtype(series):
+        return series
+    seen = {}
+    return [seen.setdefault(v, v) for v in series.to_numpy(dtype=object).tolist()]
+
+
 def records(df, columns):
     """
     Zeilen von df als Dicts, aber nur mit den vorhandenen Spalten aus columns. Gleiche Werte wie iterrows bzw.
@@ -49,7 +62,7 @@ def records(df, columns):
     cols = [c for c in columns if c in df.columns]
     if not cols:
         return ({} for _ in range(len(df)))
-    return (dict(zip(cols, values)) for values in zip(*(df[c] for c in cols)))
+    return (dict(zip(cols, values)) for values in zip(*(_column(df[c]) for c in cols)))
 
 
 def refresh_matches(max_age_hours=24):
