@@ -78,6 +78,12 @@ def sharp_close(bets, snaps):
     return np.asarray(out, float)
 
 
+def due(bets, now, settle_after=SETTLE_AFTER):
+    """Offene Wetten, deren geplanter Start mindestens settle_after zurückliegt (bool-Series)."""
+    start = pd.to_datetime(bets['start_time_utc'], utc=True)
+    return (bets['status'] == 'open') & start.notna() & (start <= now - settle_after)
+
+
 def settle(bets, now, history=None, matches=None, snaps=None, settle_after=SETTLE_AFTER):
     """
     Offene Wetten abrechnen, deren Start mindestens settle_after zurückliegt. history: {venue: Historie-DataFrame},
@@ -85,11 +91,10 @@ def settle(bets, now, history=None, matches=None, snaps=None, settle_after=SETTL
     Gibt (alle Wetten, Anzahl neu abgerechnet) zurück.
     """
     bets = bets.copy()
-    start = pd.to_datetime(bets['start_time_utc'], utc=True)
-    due = (bets['status'] == 'open') & start.notna() & (start <= now - settle_after)
-    if not due.any():
+    open_due = due(bets, now, settle_after)
+    if not open_due.any():
         return bets, 0
-    todo = bets[due]
+    todo = bets[open_due]
     results = market_results(history)
     linked = link_matches(todo[['player_a', 'player_b', 'start_time_utc']].assign(ts_utc=todo['created_utc']),
                           matches or []) if matches else None
@@ -118,7 +123,7 @@ def settle(bets, now, history=None, matches=None, snaps=None, settle_after=SETTL
         bets.loc[i, 'profit'] = stake * mult
         bets.loc[i, 'profit_flat'] = flat * mult
         n += 1
-    done = due & (bets['status'] != 'open')
+    done = open_due & (bets['status'] != 'open')
     if done.any() and snaps is not None:
         close = closing_odds(bets[done], snaps)
         bets.loc[done, 'close_odds'] = close

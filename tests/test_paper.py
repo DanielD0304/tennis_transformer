@@ -364,6 +364,98 @@ def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
     assert len(bets) == 1 and bets['player'].iloc[0] == 'Jannik Sinner'
 
 
+def test_open_results_queries_only_due_unknown_markets(monkeypatch):
+    """Abrechnung fragt nur fällige offene PM/Kalshi-Wetten gezielt ab, die die Historie noch nicht kennt."""
+    from src.odds import kalshi, polymarket
+    from src.paper import run
+    from src.paper.store import normalize
+    calls = []
+    monkeypatch.setattr(polymarket, 'fetch_resolution',
+                        lambda client, e, a: calls.append(('polymarket', e)) or {'pm-1': 'b', 'pm-2': None}[e])
+    monkeypatch.setattr(kalshi, 'fetch_resolution', lambda client, e, a: calls.append(('kalshi', e, a)) or 'void')
+
+    def bet(venue, event_id, start, strategy='modell', segment=None):
+        return {'bet_id': f'{strategy}|{venue}|{event_id}|a|{segment}', 'created_utc': pd.Timestamp(NOW),
+                'strategy': strategy, 'segment': segment, 'venue': venue, 'event_id': event_id,
+                'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz', 'side': 'a',
+                'start_time_utc': pd.Timestamp(start), 'odds': 2.0, 'net_odds': 2.0, 'stake': 10.0, 'stake_flat': 10.0,
+                'status': 'open'}
+
+    bets = normalize(pd.DataFrame([
+        # je Segment und Strategie eine Wette auf denselben ITF-Markt: einmal abfragen, alle abrechnen
+        bet('polymarket', 'pm-1', START, segment='polymarket itf 18-30h'),
+        bet('polymarket', 'pm-1', START, segment='polymarket itf 0.5-1.5h'),
+        bet('polymarket', 'pm-1', START, strategy='sharp'),
+        bet('polymarket', 'pm-2', START),                  # Markt noch nicht aufgelöst
+        bet('polymarket', 'pm-3', START),                  # steht schon in der Historie
+        bet('kalshi', 'KXITFMATCH-1', START),
+        bet('kalshi', 'KXITFWMATCH-2', START + timedelta(days=1)),  # noch nicht fällig
+        bet('tipico', 't-1', START),                       # Buchmacher: nur über die Matchdaten
+    ]))
+    history = {'polymarket': pd.DataFrame({'event_id': ['pm-3'], 'winner': ['a']}),
+               'kalshi': pd.DataFrame(columns=['event_id', 'winner'])}
+    now = pd.Timestamp(START + timedelta(hours=4))
+    found = run.open_results(bets, now, history, log=lambda *a: None)
+    assert sorted(calls) == [('kalshi', 'KXITFMATCH-1', 'Jannik Sinner'), ('polymarket', 'pm-1'), ('polymarket', 'pm-2')]
+    assert found['polymarket'].to_dict('records') == [{'event_id': 'pm-1', 'winner': 'b'}]
+    assert found['kalshi'].to_dict('records') == [{'event_id': 'KXITFMATCH-1', 'winner': 'void'}]
+
+    merged = {v: pd.concat([history[v], found[v]], ignore_index=True) for v in history}
+    done, n = settle.settle(bets, now, merged, [], None)
+    assert n == 5
+    assert list(done['status']) == ['lost', 'lost', 'lost', 'open', 'won', 'void', 'open', 'open']
+
+
+def test_recent_matches_cached_for_data_matches(tmp_path, monkeypatch):
+    import csv
+
+    from src import cache
+    from src.paper import run
+    from src.sources import common
+    path = tmp_path / 'matches.csv'
+
+    def write(rows):
+        with open(path, 'w', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+
+    rows = [{'winner_name': 'A', 'loser_name': 'B', 'match_date': '20261020', 'tourney_date': '20261019',
+             'status': 'RET', 'source': 'espn', 'tourney_name': 'Paris', 'level': 'main'}]
+    write(rows)
+    monkeypatch.setattr(common, 'MATCHES_PATH', str(path))
+    monkeypatch.setattr(cache, 'CACHE_DIR', str(tmp_path / 'cache'))
+    first = run.recent_matches(NOW)
+    assert [m['winner_name'] for m in first[0]] == ['A']
+    assert (tmp_path / 'cache' / 'recent_matches.pkl').exists()
+
+    with monkeypatch.context() as m:
+        m.setattr(csv, 'DictReader', lambda *a, **k: pytest.fail("data/matches.csv trotz Cache gelesen"))
+        assert run.recent_matches(NOW) == first
+    write(rows + [{**rows[0], 'winner_name': 'C'}])  # neue Daten: neu lesen
+    assert [m['winner_name'] for m in run.recent_matches(NOW)[0]] == ['A', 'C']
+
+
+def test_loop_survives_failed_round(monkeypatch):
+    """Im Dauerbetrieb kostet ein Fehler nur die Runde, ohne --loop bricht er den Lauf ab (Exit-Code)."""
+    from src.paper import run
+    rounds = []
+
+    def fake_run_once(args, log=print, prob=None, model_name=None):
+        rounds.append(1)
+        if len(rounds) == 1:
+            raise RuntimeError("Netz weg")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run, 'run_once', fake_run_once)
+    monkeypatch.setattr(run.time, 'sleep', lambda s: None)
+    run.main(['--loop', '30', '--strategies', 'sharp'])
+    assert len(rounds) == 2
+    rounds.clear()
+    with pytest.raises(RuntimeError):
+        run.main(['--strategies', 'sharp'])
+
+
 def test_run_once_bets_only_in_segments_of_the_timing_backtest(tmp_path, monkeypatch):
     """Standard: die Segmente mit Kandidat/GO aus data/eval/timing.parquet für das genutzte Modell. Das fehlende Level
     der Polymarket-Märkte kommt vorher aus fill_levels (Turniername und Kalenderwoche)."""

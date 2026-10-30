@@ -86,6 +86,25 @@ def winner_of(market_a):
     return {'yes': 'a', 'no': 'b'}.get(market_a.get('result'))
 
 
+def resolution(markets, player_a):
+    """
+    Ergebnis eines Match-Events aus Sicht von player_a (yes_sub_title seines Markts): 'a' / 'b', 'void' (abgerechnet
+    ohne Sieger, z.B. Absage), None solange offen oder wenn kein Markt zu player_a passt.
+    """
+    market = next((m for m in markets if m.get('yes_sub_title') == player_a), None)
+    if market is None:
+        return None
+    if market.get('result') in ('yes', 'no'):
+        return winner_of(market)
+    return 'void' if market.get('status') in ('settled', 'finalized') else None
+
+
+def fetch_resolution(client, event_ticker, player_a):
+    """Auflösung eines einzelnen Match-Events per Ticker (/markets?event_ticker=...), siehe resolution."""
+    return resolution(list(paginate(client, "/markets", 'markets', {'event_ticker': event_ticker, 'limit': 100})),
+                      player_a)
+
+
 def parse_event(event, ts=None, milestone=None):
     """Ein offenes Match-Event (mit verschachtelten Märkten) -> Snapshot oder None."""
     markets = order_markets(event.get('markets') or [], milestone)

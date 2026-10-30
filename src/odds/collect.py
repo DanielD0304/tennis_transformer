@@ -4,8 +4,8 @@ Collector: alle Venues abfragen und die Snapshots an data/odds/snapshots/YYYY-MM
     python -m src.odds.collect                      # einmal
     python -m src.odds.collect --loop 20            # alle 20 Minuten (Strg+C beendet)
     python -m src.odds.collect --venues polymarket,kalshi
-    python -m src.odds.collect --history            # historische Polymarket-/Kalshi-Preise laden
-    python -m src.odds.collect --history --levels main,challenger,itf   # Kalshi inkl. ITF
+    python -m src.odds.collect --history            # historische Polymarket-/Kalshi-Preise laden (Kalshi inkl. ITF)
+    python -m src.odds.collect --history --levels main,challenger       # Kalshi ohne ITF (geteilte IP)
 
 Fehler einer Venue stoppen die anderen nicht. Die Odds API kostet Kontingent und läuft im Loop deshalb
 nur jede n-te Runde (--odds-api-every, Standard 6 = alle 2 Stunden bei --loop 20).
@@ -61,7 +61,7 @@ def main(argv=None):
     p.add_argument('--odds-api-every', type=int, default=6, help="im Loop die Odds API nur jede n-te Runde")
     p.add_argument('--history', action='store_true', help="historische Polymarket-/Kalshi-Preise laden")
     p.add_argument('--since', help="--history: nur Matches ab Datum (YYYY-MM-DD)")
-    p.add_argument('--levels', help="--history, Kalshi: main,challenger,itf (Standard main,challenger)")
+    p.add_argument('--levels', help="--history, Kalshi: main,challenger,itf (Standard alle drei)")
     args = p.parse_args(argv)
 
     if args.history:

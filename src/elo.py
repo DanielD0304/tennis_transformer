@@ -1,14 +1,21 @@
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
 
 from .chronology import chronological, match_dates
+from .data_loader import records
 from .score import parse_score
 
 # Gewicht eines Matches mit Aufgabe (RET/DEF) im Elo: K wird damit skaliert
 RET_WEIGHT = 0.5
+
+
+@lru_cache(maxsize=200_000)
+def _retired_score(score):
+    return parse_score(score).retired
 
 
 def is_retired(row):
@@ -16,7 +23,9 @@ def is_retired(row):
     status = str(row.get('status', '') or '')
     if status in ('RET', 'DEF'):
         return True
-    return status in ('', 'nan', 'completed') and parse_score(row.get('score')).retired
+    score = row.get('score')
+    # parse_score liest den Text (str(score)); als Text gecacht, NaN-Objekte wären sonst jedes Mal neue Schlüssel
+    return status in ('', 'nan', 'completed') and _retired_score(None if score is None else str(score))
 
 
 def is_walkover(row):
@@ -41,7 +50,7 @@ def compute_elo_ratings(df, k_factor=32, start_elo=1500, ret_weight=RET_WEIGHT):
     winner_elos, loser_elos, winner_after, loser_after = [], [], [], []
     tours = df['tour'].fillna('atp') if 'tour' in df.columns else ['atp'] * len(df)
 
-    for row, tour in zip(df.to_dict('records'), tours):
+    for row, tour in zip(records(df, ('winner_name', 'loser_name', 'status', 'score')), tours):
         w_key, l_key = (tour, row['winner_name']), (tour, row['loser_name'])
         w_elo = elo_ratings.get(w_key, start_elo)
         l_elo = elo_ratings.get(l_key, start_elo)
