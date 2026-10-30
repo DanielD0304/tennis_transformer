@@ -180,6 +180,50 @@ def test_polymarket_fetch_current_includes_itf_series():
         validate(s)
 
 
+def test_polymarket_best_prices_from_clob_books():
+    """Das CLOB liefert das beste Ask zuletzt, best_prices verlässt sich nicht auf die Reihenfolge. Leere Seite: None."""
+    class Client:
+        def post_json(self, url, payload):
+            assert url.endswith('/books') and payload == [{'token_id': '1'}, {'token_id': '2'}]
+            return [{'asset_id': '1', 'bids': [{'price': '0.01', 'size': '5'}, {'price': '0.22', 'size': '5'}],
+                     'asks': [{'price': '0.99', 'size': '5'}, {'price': '0.24', 'size': '5'}]},
+                    {'asset_id': '2', 'bids': [], 'asks': []}]
+
+    assert polymarket.best_prices(Client(), ['1', '2', '1']) == {'1': (0.22, 0.24), '2': (None, None)}
+
+
+def test_polymarket_fetch_current_takes_bid_ask_from_clob_book():
+    """Gamma-Bid/Ask sind teils veraltet (gesehen: Gamma 0,16, Orderbuch 0,21), es zählt nur das Orderbuch. Ist es nicht
+    erreichbar, hat der Snapshot kein Bid/Ask und damit keinen Kaufpreis, der Preis kommt weiter aus Gamma."""
+    itf = fixture('polymarket_events_itf_open.json')
+
+    class Client:
+        fail = False
+
+        def get_json(self, url, params=None):
+            return itf if params['series_id'] == '11634' else []
+
+        def post_json(self, url, payload):
+            if not url.endswith('/books'):
+                return {}
+            if self.fail:
+                raise RuntimeError('503')
+            return [{'asset_id': p['token_id'], 'bids': [{'price': '0.20', 'size': '5'}],
+                     'asks': [{'price': '0.23', 'size': '5'}]} for p in payload]
+
+    client, messages = Client(), []
+    men = {s.player_a: s for s in polymarket.fetch_current(client, log=messages.append)}['Digvijay Pratap Singh']
+    assert (men.best_bid_a, men.best_ask_a) == (0.20, 0.23) and not messages
+    assert (men.best_bid_b, men.best_ask_b) == (pytest.approx(0.77), pytest.approx(0.80))  # Spiegelbild von Token A
+    assert men.price_a == pytest.approx(0.78)
+
+    client.fail = True
+    men = {s.player_a: s for s in polymarket.fetch_current(client, log=messages.append)}['Digvijay Pratap Singh']
+    assert men.best_ask_a is None and men.best_ask_b is None and men.best_bid_a is None
+    assert men.price_a == pytest.approx(0.78)
+    assert 'Orderbücher' in messages[0]
+
+
 # -------------------------------------------------------------------- Kalshi
 
 def test_kalshi_parse_open_event():
