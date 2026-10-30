@@ -509,7 +509,8 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
   (je ≥ 30 Wetten) liegt die KI-Untergrenze einzeln über 0, und kein Quartal hat mehr als 60 % der Wetten.
   Die Polymarket-Eröffnung gilt als nicht handelbar und zählt nicht zum Mehrfachtest: Ohne Orderbuch-Tiefe ist ihr
   Gewinn ein Artefakt, bei Kalshi mit echtem Ask verliert dieselbe Strategie.
-- **Ergebnis (25.10.2026): kein GO**, siehe [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md).
+- **Ergebnis (30.10.2026): kein GO**, siehe [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md). Das GO
+  des Laufs vom 27.10. (Polymarket ITF −1 h) war ein Artefakt dünner Märkte im Oktober 2026.
 - Ablage: `data/eval/timing.{parquet,md}` und `timing_bets.parquet`. Dazu `timing_blend.json`
   (Blend-Gewichte für das Paper-Trading).
 
