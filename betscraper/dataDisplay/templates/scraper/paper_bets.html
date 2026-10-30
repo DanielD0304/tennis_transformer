@@ -1,9 +1,9 @@
 {% if bets %}
 <div class="wide card"><table>
-    <tr><th>Angelegt (UTC)</th><th>Strategie</th><th>Venue</th><th>Level</th><th>Match</th><th>Tipp</th><th>Start (UTC)</th><th>Quote</th><th>netto</th><th>p</th><th>Edge</th><th>Einsatz</th><th>Status</th><th>Gewinn</th><th>CLV</th></tr>
+    <tr><th>Angelegt (UTC)</th><th>Strategie</th><th>Segment</th><th>Venue</th><th>Level</th><th>Match</th><th>Tipp</th><th>Start (UTC)</th><th>Quote</th><th>netto</th><th>p</th><th>Edge</th><th>Einsatz</th><th>Status</th><th>Gewinn</th><th>CLV</th></tr>
     {% for b in bets %}
     <tr>
-        <td>{{ b.created_utc|date:"Y-m-d H:i" }}</td><td>{{ b.strategy }}</td><td>{{ b.venue }}</td><td>{{ b.level|default:"–" }}</td>
+        <td>{{ b.created_utc|date:"Y-m-d H:i" }}</td><td>{{ b.strategy }}</td><td>{{ b.segment|default:"–" }}</td><td>{{ b.venue }}</td><td>{{ b.level|default:"–" }}</td>
         <td>{{ b.player_a }} – {{ b.player_b }}</td><td>{{ b.player }}</td><td>{{ b.start_time_utc|date:"Y-m-d H:i" }}</td>
         <td class="num">{{ b.odds|floatformat:2 }}</td><td class="num">{{ b.net_odds|floatformat:2 }}</td>
         <td class="num">{{ b.p|floatformat:3 }}</td><td class="num">{{ b.edge_txt }}</td><td class="num">{{ b.stake|floatformat:2 }}</td>

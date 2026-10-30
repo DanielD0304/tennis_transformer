@@ -1,0 +1,166 @@
+[
+ {
+  "id": "1277859",
+  "slug": "itf-singh1-besson1-2026-10-30",
+  "title": "M15 Fergana: Digvijay Pratap Singh vs Dmitry Bessonov",
+  "startTime": "2026-10-30T06:00:00Z",
+  "seriesSlug": "itf",
+  "series": [
+   {
+    "id": "11634",
+    "slug": "itf",
+    "title": "ITF"
+   }
+  ],
+  "tags": [
+   {
+    "id": "864",
+    "label": "Tennis",
+    "slug": "tennis"
+   },
+   {
+    "id": "1",
+    "label": "Sports",
+    "slug": "sports"
+   },
+   {
+    "id": "100639",
+    "label": "Games",
+    "slug": "games"
+   }
+  ],
+  "eventMetadata": {
+   "league": "M15 Fergana"
+  },
+  "teams": [
+   {
+    "name": "Digvijay Pratap Singh",
+    "abbreviation": "singh1",
+    "ordering": "home"
+   },
+   {
+    "name": "Dmitry Bessonov",
+    "abbreviation": "besson1",
+    "ordering": "away"
+   }
+  ],
+  "markets": [
+   {
+    "id": "6387340",
+    "question": "M15 Fergana: Digvijay Pratap Singh vs Dmitry Bessonov",
+    "slug": "itf-singh1-besson1-2026-10-30",
+    "sportsMarketType": "moneyline",
+    "outcomes": "[\"Digvijay Pratap Singh\", \"Dmitry Bessonov\"]",
+    "outcomePrices": "[\"0.78\", \"0.22\"]",
+    "clobTokenIds": "[\"94252517191398149856097750457728739567763521295135564541189172050400563115731\", \"67259067797432313767385439383513051378863171932308611521647021678118831887687\"]",
+    "bestBid": 0.77,
+    "bestAsk": 0.79,
+    "volumeNum": 5,
+    "liquidityNum": 2394.0842,
+    "gameStartTime": "2026-10-30 06:00:00+00",
+    "startDate": "2026-10-29T13:59:13Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   },
+   {
+    "id": "6388571",
+    "question": "Set Handicap: Digvijay Pratap Singh (-1.5) vs Dmitry Bessonov (+1.5)",
+    "slug": "itf-singh1-besson1-2026-10-30-set-handicap-home-1pt5",
+    "sportsMarketType": "tennis_set_handicap",
+    "outcomes": "[\"Digvijay Pratap Singh\", \"Dmitry Bessonov\"]",
+    "outcomePrices": "[\"0.34\", \"0.66\"]",
+    "clobTokenIds": "[\"41168041540460113547326340620103686921373413551090032521024103234637032469057\", \"43434095560629825803159226277035425743973192771173369872428889115112708354239\"]",
+    "bestBid": 0.06,
+    "bestAsk": 0.62,
+    "volumeNum": null,
+    "liquidityNum": 431.9295,
+    "gameStartTime": "2026-10-30 06:00:00+00",
+    "startDate": "2026-10-29T14:44:12Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   }
+  ]
+ },
+ {
+  "id": "1277984",
+  "slug": "itf-serban2-schunk1-2026-10-30",
+  "title": "W50 Istanbul: Raluca Georgiana Serban vs Nastasja Schunk",
+  "startTime": "2026-10-30T08:00:00Z",
+  "seriesSlug": "itf",
+  "series": [
+   {
+    "id": "11634",
+    "slug": "itf",
+    "title": "ITF"
+   }
+  ],
+  "tags": [
+   {
+    "id": "864",
+    "label": "Tennis",
+    "slug": "tennis"
+   },
+   {
+    "id": "1",
+    "label": "Sports",
+    "slug": "sports"
+   },
+   {
+    "id": "100639",
+    "label": "Games",
+    "slug": "games"
+   }
+  ],
+  "eventMetadata": {
+   "league": "W50 Istanbul"
+  },
+  "teams": [
+   {
+    "name": "Raluca Georgiana Serban",
+    "abbreviation": "serban2",
+    "ordering": "home"
+   },
+   {
+    "name": "Nastasja Schunk",
+    "abbreviation": "schunk1",
+    "ordering": "away"
+   }
+  ],
+  "markets": [
+   {
+    "id": "6387881",
+    "question": "W50 Istanbul: Raluca Georgiana Serban vs Nastasja Schunk",
+    "slug": "itf-serban2-schunk1-2026-10-30",
+    "sportsMarketType": "moneyline",
+    "outcomes": "[\"Raluca Georgiana Serban\", \"Nastasja Schunk\"]",
+    "outcomePrices": "[\"0.335\", \"0.665\"]",
+    "clobTokenIds": "[\"86058688748686213165294638387475519927803190481358863413289220504921657115373\", \"73490414370534757451427736378504637345823118293607470126784467444383019867007\"]",
+    "bestBid": 0.32,
+    "bestAsk": 0.35,
+    "volumeNum": null,
+    "liquidityNum": 1201.6209,
+    "gameStartTime": "2026-10-30 08:00:00+00",
+    "startDate": "2026-10-29T14:14:12Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   },
+   {
+    "id": "6388546",
+    "question": "Set Handicap: Raluca Georgiana Serban (-1.5) vs Nastasja Schunk (+1.5)",
+    "slug": "itf-serban2-schunk1-2026-10-30-set-handicap-home-1pt5",
+    "sportsMarketType": "tennis_set_handicap",
+    "outcomes": "[\"Raluca Georgiana Serban\", \"Nastasja Schunk\"]",
+    "outcomePrices": "[\"0.32\", \"0.675\"]",
+    "clobTokenIds": "[\"70408394215835298967971615631535754645590592431463828593103205316936695392046\", \"74131135204584876782937184260670761643541892440884186213032098981599950405981\"]",
+    "bestBid": 0.15,
+    "bestAsk": 0.49,
+    "volumeNum": null,
+    "liquidityNum": 191.2087,
+    "gameStartTime": "2026-10-30 08:00:00+00",
+    "startDate": "2026-10-29T14:44:08Z",
+    "closed": false,
+    "umaResolutionStatus": null
+   }
+  ]
+ }
+]

@@ -144,3 +144,32 @@ def test_level_from_tourney_name_for_espn_and_polymarket():
     assert level['Eve Epsilon'] == ('challenger', 'C')
     assert level['Gus Eta'][0] == 'main'
     assert level['Ivy Iota'] == ('challenger', 'C')  # 'Lima' wie 'Lima Challenger' bei Sackmann
+
+
+def test_level_keeps_kalshi_and_uses_calendar_week():
+    """Kalshi kennt das Level selbst, Polymarket (ohne Level): das gleichnamige Turnier derselben Kalenderwoche."""
+    sack = [{**_sack('Ann Alpha', 'Bea Beta', '20250908'), 'tourney_name': 'Shanghai CH'},
+            {**_sack('Cid Gamma', 'Dan Delta', '20251001', level='main', tid='T2'), 'tourney_name': 'Shanghai Masters',
+             'tourney_level': 'M'},
+            _sack('Eli Omega', 'Fin Sigma', '20260601', tid='T3')]
+    mk = [{**_market('Eve Epsilon', 'Fay Zeta', '20261005', 'kalshi', level='main'), 'tourney_name': 'ATP Shanghai',
+           'tourney_level': ''},
+          {**_market('Gus Eta', 'Hal Theta', '20261006', 'polymarket', level=None), 'tourney_name': 'Shanghai',
+           'tourney_level': ''},
+          {**_market('Ivy Iota', 'Jon Kappa', '20260910', 'polymarket', level=None), 'tourney_name': 'Shanghai',
+           'tourney_level': ''}]
+    rows, _ = build.build(sack, [], [], market_rows=mk)
+    level = {r['winner_name']: r['level'] for r in rows}
+    assert level['Eve Epsilon'] == 'main'  # früher 'challenger' wegen 'Shanghai CH'
+    assert level['Gus Eta'] == 'main'  # Oktober: Masters (und Kalshi in derselben Woche)
+    assert level['Ivy Iota'] == 'challenger'  # September: Challenger
+
+
+def test_level_from_name_markers():
+    assert build.level_from_name('ATP Challenger Ningbo') == 'challenger'
+    assert build.level_from_name('Guangzhou Huangpu CH') == 'challenger'
+    assert build.level_from_name('WTA 125K Queretaro') == 'challenger'
+    assert build.level_from_name('ITF M25 Ueberlingen Men') == 'itf'
+    assert build.level_from_name('W35 Monastir') == 'itf'
+    assert build.level_from_name('WTA Pan Pacific Open') == 'main'
+    assert build.level_from_name('Guangzhou Open') is None
