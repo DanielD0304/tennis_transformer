@@ -15,10 +15,11 @@ NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 START = NOW + timedelta(hours=5)
 
 
-def snap(venue, ts, a='Jannik Sinner', b='Carlos Alcaraz', price_a=None, price_b=None, event_id=None, **kw):
+def snap(venue, ts, a='Jannik Sinner', b='Carlos Alcaraz', price_a=None, price_b=None, event_id=None, start=START,
+         **kw):
     ptype = 'probability' if venue in ('polymarket', 'kalshi') else 'decimal'
     return Snapshot(ts_utc=ts, venue=venue, event_id=event_id or f'{venue}-1', player_a=a, player_b=b,
-                    price_a=price_a, price_b=price_b, price_type=ptype, tour='atp', start_time_utc=START, **kw)
+                    price_a=price_a, price_b=price_b, price_type=ptype, tour='atp', start_time_utc=start, **kw)
 
 
 def frame(*snaps):
@@ -146,6 +147,81 @@ def test_paper_signal_bet_settle_clv(tmp_path):
     assert load_bets(path)['status'].iloc[0] == 'won'
 
 
+PLAYERS = [('Jannik Sinner', 'Carlos Alcaraz'), ('Daniil Medvedev', 'Alexander Zverev'), ('Casper Ruud', 'Holger Rune'),
+           ('Taylor Fritz', 'Tommy Paul'), ('Lan Mi', 'Elza Tomase'), ('Ben Shelton', 'Jack Draper')]
+
+
+def test_model_signals_only_in_segments():
+    """Gewettet wird nur, wo Venue, Level und Stunden bis zum Start in ein Segment fallen; die Wette trägt es."""
+    segments = [signals.Segment('polymarket', 'challenger', 18, 30), signals.Segment('polymarket', 'itf', 0.5, 1.5)]
+    cases = [('pm-ch-24', 'polymarket', 'challenger', 24), ('pm-ch-5', 'polymarket', 'challenger', 5),
+             ('pm-main-24', 'polymarket', 'main', 24), ('kx-ch-24', 'kalshi', 'challenger', 24),
+             ('pm-itf-1', 'polymarket', 'itf', 1), ('pm-itf-30.5', 'polymarket', 'itf', 30.5)]
+    snaps = frame(*[snap(venue, NOW, a, b, price_a=0.5, price_b=0.5, event_id=e, level=level,
+                         start=NOW + timedelta(hours=hours))
+                    for (e, venue, level, hours), (a, b) in zip(cases, PLAYERS)])
+    out = signals.model_signals(snaps, lambda r: 0.8, pd.Timestamp(NOW), threshold=0.05, segments=segments,
+                                log=lambda *a: None)
+    assert dict(zip(out['event_id'], out['segment'])) == {'pm-ch-24': 'polymarket challenger 18-30h',
+                                                          'pm-itf-1': 'polymarket itf 0.5-1.5h'}
+    assert all(b.endswith(f'|{s}') for b, s in zip(out['bet_id'], out['segment']))
+    # ohne Segmente wie bisher: alles, was innerhalb von HORIZON beginnt
+    assert len(signals.model_signals(snaps, lambda r: 0.8, pd.Timestamp(NOW), threshold=0.05,
+                                     log=lambda *a: None)) == len(cases)
+
+
+def test_load_segments_from_timing_table_and_fallback(tmp_path):
+    path = str(tmp_path / 'timing.parquet')
+    pd.DataFrame([('polymarket', 'challenger', '24h', 'blend_gbdt', 'Kandidat'),
+                  ('polymarket', 'challenger', '24h', 'gbdt', 'Kandidat'),  # dasselbe Segment mit anderem Modell
+                  ('polymarket', 'itf', '1h', 'blend_gbdt', 'GO'),
+                  ('polymarket', 'itf', '6h', 'gbdt', 'Kandidat'),  # nur das rohe gbdt
+                  ('polymarket', 'main', '6h', 'blend_gbdt', 'NO-GO'),
+                  ('polymarket', 'all', 'close', 'blend_gbdt', 'Kandidat'),  # Zusammenfassung über die Level
+                  ('kalshi', 'challenger', 'open', 'blend_gbdt', 'Kandidat')],  # Eröffnung: kein festes Fenster
+                 columns=['venue', 'level', 'point', 'model', 'decision']).to_parquet(path)
+
+    def names(segments):
+        return [s.name for s in segments]
+
+    quiet = {'log': lambda *a: None}
+    assert names(signals.load_segments(path, model='blend_gbdt', **quiet)) == [
+        'polymarket challenger 18-30h', 'polymarket itf 0.5-1.5h']
+    assert names(signals.load_segments(path, **quiet)) == [
+        'polymarket challenger 18-30h', 'polymarket itf 4.5-7.5h', 'polymarket itf 0.5-1.5h']
+    # ohne Datei: die Kandidaten aus docs/ERGEBNISSE_PHASE45.md, ITF nur für blend_gbdt
+    missing = str(tmp_path / 'fehlt.parquet')
+    assert names(signals.load_segments(missing, model='blend_gbdt', **quiet)) == [
+        'polymarket challenger 18-30h', 'polymarket itf 4.5-7.5h', 'polymarket itf 0.5-1.5h', 'polymarket itf 0-0.5h']
+    assert names(signals.load_segments(missing, model='gbdt', **quiet)) == ['polymarket challenger 18-30h']
+    # --segments: Zeitpunkt des Backtests oder Fenster in Stunden, 'alle' ohne Einschränkung
+    assert names(signals.parse_segments('kalshi:itf:6h, polymarket:main:2-3.5')) == [
+        'kalshi itf 4.5-7.5h', 'polymarket main 2-3.5h']
+    assert signals.segments_from_arg('alle') is None
+    for bad in ('polymarket:itf', 'polymarket:itf:2h', 'polymarket:itf:3-1'):
+        with pytest.raises(ValueError):
+            signals.parse_segments(bad)
+
+
+def test_add_bets_once_per_match_and_segment(tmp_path):
+    """Jedes Segment ist eine eigene Hypothese: dasselbe Match darf in zwei Segmenten gewettet werden, im selben nur
+    einmal (auch nicht bei einer anderen Venue oder auf der anderen Seite)."""
+    from src.paper.store import bet_id
+
+    def bet(segment, venue='polymarket', event_id='pm-1', side='a'):
+        return {'bet_id': bet_id('modell', venue, event_id, side, segment), 'created_utc': pd.Timestamp(NOW),
+                'strategy': 'modell', 'segment': segment, 'venue': venue, 'event_id': event_id,
+                'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz', 'side': side,
+                'start_time_utc': pd.Timestamp(START), 'status': 'open'}
+
+    bets, n = add_bets(load_bets(str(tmp_path / 'bets.parquet')), pd.DataFrame([bet('polymarket itf 4.5-7.5h')]))
+    assert n == 1
+    bets, n = add_bets(bets, pd.DataFrame([bet('polymarket itf 0.5-1.5h'),
+                                           bet('polymarket itf 4.5-7.5h', 'kalshi', 'KX-1', 'b')]))
+    assert n == 1 and list(bets['segment']) == ['polymarket itf 4.5-7.5h', 'polymarket itf 0.5-1.5h']
+    assert bets['bet_id'].is_unique
+
+
 def test_paper_settle_from_matches_ret_rules():
     bets = pd.DataFrame([
         {'bet_id': 'x1', 'created_utc': pd.Timestamp(NOW), 'strategy': 'sharp', 'venue': 'tipico', 'event_id': 't1',
@@ -178,6 +254,24 @@ def test_paper_report_go_criteria():
     assert curve[0][1] == report.START_BANKROLL and curve[-1][1] == pytest.approx(report.START_BANKROLL + n)
     table = report.summary(bets, n_boot=200)
     assert set(table['gruppe']) == {'gesamt', 'strategy', 'venue', 'level'}
+
+
+def test_paper_report_go_no_go_per_segment():
+    n = 320
+    good = pd.DataFrame({'strategy': 'modell', 'segment': 'polymarket challenger 18-30h', 'venue': 'polymarket',
+                         'level': 'challenger', 'status': ['won'] * n, 'stake': 10.0, 'stake_flat': 10.0,
+                         'profit': 1.0, 'profit_flat': 1.0, 'clv': 0.03, 'clv_sharp': np.nan,
+                         'settled_utc': pd.date_range('2026-01-01', periods=n, tz='UTC')})
+    few = good.head(40).assign(segment='polymarket itf 0.5-1.5h', level='itf')
+    without = good.head(10).assign(segment=None, strategy='sharp')  # sharp und Modell-Wetten vor den Segmenten
+    bets = pd.concat([good, few, without], ignore_index=True)
+    by = report.go_no_go_by_segment(bets, n_boot=200)
+    assert list(by) == ['polymarket challenger 18-30h', 'polymarket itf 0.5-1.5h']
+    assert by['polymarket challenger 18-30h']['go']
+    assert not by['polymarket itf 0.5-1.5h']['go'] and not by['polymarket itf 0.5-1.5h']['checks'][0][1]
+    table = report.summary(bets, n_boot=200)
+    assert set(table.loc[table['gruppe'] == 'segment', 'wert']) == {'polymarket challenger 18-30h',
+                                                                    'polymarket itf 0.5-1.5h', '?'}
 
 
 def test_sharp_paper_signals_side_in_venue_orientation():
@@ -265,7 +359,7 @@ def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
     monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
     args = SimpleNamespace(collect=True, odds_api=False, softbooks=False, snapshots=str(tmp_path / 'snaps'), days=1,
                            bets=str(tmp_path / 'bets.parquet'), strategies=['modell'], model='elo2', threshold=0.05,
-                           raw=True, sharp_threshold=0.02, history=False)
+                           raw=True, sharp_threshold=0.02, history=False, segments='alle')
     bets, _, _ = run.run_once(args, log=lambda *a: None, prob=lambda row: 0.8, model_name='elo2')
     assert len(bets) == 1 and bets['player'].iloc[0] == 'Jannik Sinner'
 
@@ -356,3 +450,37 @@ def test_loop_survives_failed_round(monkeypatch):
     rounds.clear()
     with pytest.raises(RuntimeError):
         run.main(['--strategies', 'sharp'])
+
+
+def test_run_once_bets_only_in_segments_of_the_timing_backtest(tmp_path, monkeypatch):
+    """Standard: die Segmente mit Kandidat/GO aus data/eval/timing.parquet für das genutzte Modell. Das fehlende Level
+    der Polymarket-Märkte kommt vorher aus fill_levels (Turniername und Kalenderwoche)."""
+    from types import SimpleNamespace
+    from src.evaluation import timing
+    from src.odds import history
+    from src.odds.schema import append_snapshots
+    from src.paper import run
+    table = str(tmp_path / 'timing.parquet')
+    pd.DataFrame([('polymarket', 'challenger', '24h', 'elo2', 'Kandidat'), ('polymarket', 'itf', '1h', 'elo2', 'GO'),
+                  ('polymarket', 'itf', '6h', 'gbdt', 'Kandidat'), ('polymarket', 'main', '24h', 'elo2', 'NO-GO')],
+                 columns=['venue', 'level', 'point', 'model', 'decision']).to_parquet(table)
+    monkeypatch.setattr(timing, 'TABLE_PATH', table)
+    reference = [{'tour': 'atp', 'tourney_name': 'Charlottesville Challenger', 'tourney_date': f'{NOW:%Y%m%d}',
+                  'level': 'challenger'}]
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], reference))
+    monkeypatch.setattr(run, 'now_utc', lambda: NOW)
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    cases = [('ch-24', 'Charlottesville', None, 24), ('ch-5', 'Charlottesville', None, 5),
+             ('main-24', 'ATP Paris', None, 24), ('itf-1', 'M15 Monastir', 'itf', 1), ('itf-6', 'M15 Monastir', 'itf', 6)]
+    root = str(tmp_path / 'snaps')
+    append_snapshots([Snapshot(ts_utc=NOW - timedelta(minutes=5), venue='polymarket', event_id=e, player_a=a,
+                               player_b=b, price_a=0.5, price_b=0.5, price_type='probability', tour='atp', level=level,
+                               tourney=tourney, start_time_utc=NOW + timedelta(hours=hours))
+                      for (e, tourney, level, hours), (a, b) in zip(cases, PLAYERS)], root)
+    args = SimpleNamespace(collect=False, odds_api=False, softbooks=False, snapshots=root, days=1,
+                           bets=str(tmp_path / 'bets.parquet'), strategies=['modell'], model='elo2', threshold=0.05,
+                           raw=True, sharp_threshold=0.02, history=False, segments='auto')
+    bets, _, _ = run.run_once(args, log=lambda *a: None, prob=lambda row: 0.8, model_name='elo2')
+    # itf-6 fällt weg: 6 h ist nur für gbdt ein Kandidat, gewettet wird mit elo2
+    assert sorted(zip(bets['event_id'], bets['level'], bets['segment'])) == [
+        ('ch-24', 'challenger', 'polymarket challenger 18-30h'), ('itf-1', 'itf', 'polymarket itf 0.5-1.5h')]

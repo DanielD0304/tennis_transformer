@@ -6,10 +6,13 @@ abrechnen, Kennzahlen ausgeben.
     python -m src.paper.run --loop 30              # alle 30 Minuten
     python -m src.paper.run --no-collect           # nur vorhandene Snapshots nutzen (Collector läuft separat)
     python -m src.paper.run --model gbdt --threshold 0.08
+    python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-2   # eigene Segmente
 
 Pro Runde:
 1. (Standard) Snapshots von Polymarket und Kalshi holen, die Odds API nur mit --odds-api (Kontingent!).
-2. Strategie „modell“: elo2/gbdt (MatchPredictor) gegen den aktuellen Preis bei Polymarket/Kalshi.
+2. Strategie „modell“: elo2/gbdt (MatchPredictor) gegen den aktuellen Preis bei Polymarket/Kalshi, nur in den
+   Segmenten (Venue x Level x Stunden bis zum Start), die der Timing-Backtest als Kandidat oder GO ausweist
+   (--segments). Jede Wette trägt ihr Segment, Go/No-Go gibt es zusätzlich je Segment.
    Strategie „sharp“: Pinnacle/Betfair ohne Marge gegen den besten Netto-Preis aller anderen Venues.
 3. Abrechnung über die PM/Kalshi-Auflösung bzw. die Matchdaten, CLV gegen den letzten Snapshot vor dem Start.
    Fällige offene Wetten werden gezielt per Markt-ID (Polymarket) bzw. Event-Ticker (Kalshi) abgefragt, die volle
@@ -116,7 +119,8 @@ def snapshot_levels(snaps):
 def fill_levels(bets, level_rows):
     """
     Fehlendes Level (Polymarket trennt Challenger und Haupttour nicht, die Odds API kennzeichnet nichts) über
-    Turniername, Termin und Tour (build._level_lookup).
+    Turniername, Termin und Tour (build._level_lookup). Für Wetten und Snapshots: Termin ist die Startzeit, sonst
+    die Anlage- bzw. Abfragezeit.
     """
     from ..sources.build import _level_lookup
     missing = bets['level'].isna() if len(bets) else []
@@ -124,7 +128,8 @@ def fill_levels(bets, level_rows):
         return bets
     lookup = _level_lookup(level_rows)
     todo = bets[missing]
-    when = pd.to_datetime(todo['start_time_utc'], utc=True).fillna(pd.to_datetime(todo['created_utc'], utc=True))
+    created = todo['created_utc'] if 'created_utc' in todo else todo['ts_utc']
+    when = pd.to_datetime(todo['start_time_utc'], utc=True).fillna(pd.to_datetime(created, utc=True))
     bets.loc[missing, 'level'] = [lookup(t or '', f"{d:%Y%m%d}", tour)
                                   for t, d, tour in zip(todo['tourney'], when, todo['tour'])]
     return bets
@@ -162,10 +167,20 @@ def open_results(bets, now, history, log=print):
     return out
 
 
+def _status(decision):
+    st = decision['stats']
+    if not st['settled']:
+        return f"noch keine abgerechneten Wetten ({st['open']} offen)"
+    return (f"{st['settled']} abgerechnet, {st['open']} offen, Yield {st['yield']:+.1%} "
+            f"[{st['yield_ci_low']:+.1%}, {st['yield_ci_high']:+.1%}], CLV {st['clv']:+.1%} -> "
+            f"{'GO' if decision['go'] else 'NO-GO'} für echtes Geld")
+
+
 def run_once(args, log=print, prob=None, model_name=None):
-    # Predictor vor dem Abfragen aufbauen (dauert Minuten), damit die Preise beim Signal frisch sind
+    # Predictor und Matchdaten vor dem Abfragen laden (dauert Minuten), damit die Preise beim Signal frisch sind
     if 'modell' in args.strategies and prob is None:
         prob, model_name = make_prob(args.model, log)
+    matches, level_rows = recent_matches(now_utc())
     if args.collect:
         from ..odds.collect import collect_once
         venues = ['polymarket', 'kalshi'] + (['odds_api'] if args.odds_api else []) + (['softbooks'] if args.softbooks else [])
@@ -176,15 +191,19 @@ def run_once(args, log=print, prob=None, model_name=None):
     bets = load_bets(args.bets)
     log(f"[{now:%Y-%m-%d %H:%M}] {len(snaps)} Snapshots, {len(bets)} Wetten bisher")
 
+    level_rows = level_rows + snapshot_levels(snaps)
     new = []
     if 'modell' in args.strategies and not snaps.empty:
+        blend = None if args.raw else signals.load_blend()
+        # die Segmente des Backtests gelten für das Modell, mit dem er sie gefunden hat (Blend oder roh)
+        segments = signals.segments_from_arg(args.segments, f"blend_{model_name}" if blend else model_name, log)
+        log("  Modell: " + ("alle Märkte (--segments alle)" if segments is None else
+                            "Segmente " + (", ".join(s.name for s in segments) or "keine")))
         new.append(signals.model_signals(snaps, prob, pd.Timestamp(now), report.bankroll(bets, 'modell'),
-                                         args.threshold, strategy='modell', log=log,
-                                         blend=None if args.raw else signals.load_blend(), model=model_name))
+                                         args.threshold, strategy='modell', log=log, blend=blend, model=model_name,
+                                         segments=segments, levels=lambda df: fill_levels(df, level_rows)))
     if 'sharp' in args.strategies and not snaps.empty:
         new.append(signals.sharp_signals(snaps, pd.Timestamp(now), report.bankroll(bets, 'sharp'), args.sharp_threshold))
-    matches, level_rows = recent_matches(now)
-    level_rows += snapshot_levels(snaps)
     for part in new:
         fill_levels(part, level_rows)
         bets, n = add_bets(bets, part)
@@ -200,12 +219,9 @@ def run_once(args, log=print, prob=None, model_name=None):
     log(f"  {n} Wetten abgerechnet")
     save_bets(bets, args.bets)
 
-    decision = report.go_no_go(bets)
-    st = decision['stats']
-    log(f"  Stand: {st['settled']} abgerechnet, {st['open']} offen, Yield {st['yield']:+.1%} "
-        f"[{st['yield_ci_low']:+.1%}, {st['yield_ci_high']:+.1%}], CLV {st['clv']:+.1%} -> "
-        f"{'GO' if decision['go'] else 'NO-GO'} für echtes Geld" if st['settled'] else
-        f"  Stand: noch keine abgerechneten Wetten ({st['open']} offen)")
+    log(f"  Stand: {_status(report.go_no_go(bets))}")
+    for name, decision in report.go_no_go_by_segment(bets).items():
+        log(f"    Segment {name}: {_status(decision)}")
     return bets, prob, model_name
 
 
@@ -220,6 +236,9 @@ def main(argv=None):
     ap.add_argument('--strategies', default='modell,sharp')
     ap.add_argument('--model', default='gbdt', help="elo2 | gbdt (ohne models/gbdt_<tour>.pkl: elo2)")
     ap.add_argument('--threshold', type=float, default=signals.MODEL_THRESHOLD, help="Mindest-Edge Modell")
+    ap.add_argument('--segments', default='auto',
+                    help="Modell nur in diesen Segmenten: auto (Kandidat/GO aus data/eval/timing.parquet), alle "
+                         "oder venue:level:fenster,... (Fenster 24h, 6h, 1h, close oder von-bis in Stunden vor Start)")
     ap.add_argument('--raw', action='store_true', help="Modell ohne Blend mit dem Preis (data/eval/timing_blend.json)")
     ap.add_argument('--sharp-threshold', type=float, default=0.02, help="Mindest-Edge Sharp vs. Rest")
     ap.add_argument('--days', type=int, default=14, help="Snapshots der letzten N Tage laden")
@@ -232,6 +251,11 @@ def main(argv=None):
             sys.stdout.reconfigure(line_buffering=True)
         except AttributeError:
             pass
+    if args.segments not in ('auto', 'alle'):
+        try:
+            signals.parse_segments(args.segments)
+        except ValueError as e:
+            ap.error(str(e))
 
     prob, model_name, built, stamp = None, None, 0.0, None
     try:

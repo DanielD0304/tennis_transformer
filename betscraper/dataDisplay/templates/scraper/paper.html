@@ -34,6 +34,16 @@
             <tr><td>{{ name }}</td><td class="num">{{ value }}</td><td class="{% if ok %}ok{% else %}no{% endif %}">{% if ok %}ja{% else %}nein{% endif %}</td></tr>
             {% endfor %}
         </table>
+        {% if segments %}
+        <h3>Je Segment der Modell-Strategie</h3>
+        <table>
+            <tr><th>Segment</th><th>Entscheidung</th>{% for name, ok, value in decision.checks %}<th>{{ name }}</th>{% endfor %}</tr>
+            {% for s in segments %}
+            <tr><td>{{ s.name }}</td><td class="{% if s.go %}ok{% else %}no{% endif %}">{% if s.go %}GO{% else %}NO-GO{% endif %}</td>
+                {% for name, ok, value in s.checks %}<td class="num {% if ok %}ok{% else %}no{% endif %}">{{ value }}</td>{% endfor %}</tr>
+            {% endfor %}
+        </table>
+        {% endif %}
         <p class="muted">Vorher rechtlich prüfen, ob Polymarket und Kalshi aus Deutschland nutzbar sind (Kalshi ist im Wesentlichen nur für die USA). Keine Rechtsberatung.</p>
     </div>
 
@@ -50,7 +60,7 @@
         {% endif %}
     </div>
 
-    <h2>Kennzahlen pro Strategie, Venue und Level</h2>
+    <h2>Kennzahlen pro Strategie, Venue, Level und Segment</h2>
     {% if rows %}
     <div class="wide card"><table>
         <tr><th>Gruppe</th><th>Wert</th><th>Wetten</th><th>offen</th><th>void</th><th>abgerechnet</th><th>Treffer</th><th>Yield</th><th>95-%-KI</th><th>Yield flat</th><th>CLV</th><th>CLV Sharp</th></tr>

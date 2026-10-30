@@ -1,7 +1,9 @@
 """
-Auswertung der Paper-Wetten: Kennzahlen pro Strategie/Venue/Level, Bankroll-Kurve und das Go/No-Go-Kriterium
+Auswertung der Paper-Wetten: Kennzahlen pro Strategie/Venue/Level/Segment, Bankroll-Kurve und das Go/No-Go-Kriterium
 für echtes Geld aus docs/ROI_PLAN.md (Phase 5):
   >= 300 abgerechnete Paper-Wetten, mittlerer CLV > +2 %, untere Grenze des Yield-KI > 0 nach Gebühren.
+Das Kriterium gilt insgesamt und zusätzlich für jedes Segment der Modell-Strategie (go_no_go_by_segment): jedes
+Segment ist eine eigene Hypothese aus dem Timing-Backtest.
 """
 import numpy as np
 import pandas as pd
@@ -32,10 +34,10 @@ def stats(bets, n_boot=2000, seed=0):
             'clv_sharp': float(s['clv_sharp'].dropna().mean()) if s['clv_sharp'].notna().any() else np.nan}
 
 
-def summary(bets, by=('strategy', 'venue', 'level'), n_boot=2000):
-    """Eine Zeile pro Gruppe (einzeln je Spalte von by) plus 'gesamt'."""
+def summary(bets, by=('strategy', 'venue', 'level', 'segment'), n_boot=2000):
+    """Eine Zeile pro Gruppe (einzeln je Spalte von by, fehlende Spalten fallen weg) plus 'gesamt'."""
     rows = [{'gruppe': 'gesamt', 'wert': 'alle', **stats(bets, n_boot)}]
-    for col in by:
+    for col in (c for c in by if c in bets):
         for key, g in bets.groupby(bets[col].fillna('?')):
             rows.append({'gruppe': col, 'wert': key, **stats(g, n_boot)})
     return pd.DataFrame(rows)
@@ -65,3 +67,12 @@ def go_no_go(bets, min_bets=GO_MIN_BETS, min_clv=GO_MIN_CLV, n_boot=2000):
          f"{st['yield_ci_low']:+.1%}" if np.isfinite(st['yield_ci_low']) else '–'),
     ]
     return {'go': all(ok for _, ok, _ in checks), 'checks': checks, 'stats': st}
+
+
+def go_no_go_by_segment(bets, min_bets=GO_MIN_BETS, min_clv=GO_MIN_CLV, n_boot=2000):
+    """Das Kriterium je Segment der Modell-Strategie: {segment: go_no_go(...)}. Wetten ohne Segment (sharp, ältere
+    Modell-Wetten) zählen hier nicht."""
+    if 'segment' not in bets:
+        return {}
+    with_segment = bets[bets['segment'].notna()]
+    return {name: go_no_go(g, min_bets, min_clv, n_boot) for name, g in with_segment.groupby('segment')}

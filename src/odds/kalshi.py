@@ -5,8 +5,8 @@ Ein Match ist ein Event (z.B. KXATPMATCH-26OCT25MEDBAS) mit je einem Ja/Nein-Mar
 (…-MED, …-BAS). Die Startzeit steht nicht am Markt (occurrence_datetime ist das erwartete Ende),
 sondern an den Milestones (type 'tennis_tournament_singles', start_date).
 Matches laufen in den Serien KXATPMATCH, KXWTAMATCH, KXATPCHALLENGERMATCH, KXWTACHALLENGERMATCH,
-bis Mitte 2025 zum Teil in Turnier-Serien (KXATPMIA, KXWTAMAD, ...); die Historie geht deshalb
-über die Milestones.
+KXITFMATCH (ITF Herren) und KXITFWMATCH (ITF Damen), bis Mitte 2025 zum Teil in Turnier-Serien
+(KXATPMIA, KXWTAMAD, ...); die Historie geht deshalb über die Milestones.
 """
 from datetime import timedelta
 
@@ -20,6 +20,8 @@ MATCH_SERIES = {
     'KXWTAMATCH': ('wta', 'main'),
     'KXATPCHALLENGERMATCH': ('atp', 'challenger'),
     'KXWTACHALLENGERMATCH': ('wta', 'challenger'),
+    'KXITFMATCH': ('atp', 'itf'),
+    'KXITFWMATCH': ('wta', 'itf'),
 }
 MILESTONE_TOURS = {
     'ATP': ('atp', 'main'),
@@ -120,10 +122,13 @@ def parse_event(event, ts=None, milestone=None):
     if not pa and not pb:
         return None
     volume = [v for v in (_fp(a, 'volume'), _fp(b, 'volume')) if v is not None]
+    # Turnier vom Milestone: bei ITF steht am Event nur 'ITF', am Milestone 'M15 Mazatlan'
+    tourney = ((milestone or {}).get('details') or {}).get('tournament_name') \
+        or (event.get('product_metadata') or {}).get('competition')
     return Snapshot(
         ts_utc=ts or now_utc(), venue=VENUE, event_id=event['event_ticker'], player_a=a['yes_sub_title'],
         player_b=b['yes_sub_title'], price_a=pa or None, price_b=pb or None, price_type='probability',
-        tour=tour, level=level, tourney=(event.get('product_metadata') or {}).get('competition'),
+        tour=tour, level=level, tourney=tourney,
         start_time_utc=utc((milestone or {}).get('start_date')), best_bid_a=bid_a, best_ask_a=ask_a,
         best_bid_b=bid_b, best_ask_b=ask_b, volume=sum(volume) if volume else None,
         source_url=f"{API}/events/{event['event_ticker']}",

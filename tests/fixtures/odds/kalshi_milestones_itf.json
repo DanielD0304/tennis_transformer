@@ -1,0 +1,43 @@
+{
+ "milestones": [
+  {
+   "id": "17bcfcb1-9fe7-4526-9fae-2a528d112987",
+   "type": "tennis_tournament_singles",
+   "start_date": "2026-10-30T17:30:00Z",
+   "title": "Covato vs Delgado",
+   "details": {
+    "first_competitor_id": "7bc5e225-4fd1-4d50-8af8-8f7b82602c10",
+    "gender": "men",
+    "main_game_event_ticker": "KXITFMATCH-26OCT28COVDEL",
+    "round": "Round of 16",
+    "second_competitor_id": "b5bdc8f9-bf5e-4a75-84da-1f285ef85068",
+    "status": "SCH",
+    "tour": "ITF",
+    "tournament_name": "M15 Mazatlan"
+   },
+   "primary_event_tickers": [
+    "KXITFMATCH-26OCT28COVDEL"
+   ]
+  },
+  {
+   "id": "3c377f28-6db1-441a-9a63-8ccd576bf7a3",
+   "type": "tennis_tournament_singles",
+   "start_date": "2026-10-29T23:08:32Z",
+   "title": "Chaudhari vs Kozaki",
+   "details": {
+    "first_competitor_id": "04564518-4315-4226-8e17-535ed86e27e1",
+    "gender": "women",
+    "main_game_event_ticker": "KXITFWMATCH-26OCT29CHAKOZ",
+    "round": "Quarterfinal",
+    "second_competitor_id": "61a8a150-a395-4208-821d-332e2d416c64",
+    "status": "SCH",
+    "tour": "ITF",
+    "tournament_name": "W35 Sydney"
+   },
+   "primary_event_tickers": [
+    "KXITFWMATCH-26OCT29CHAKOZ"
+   ]
+  }
+ ],
+ "cursor": ""
+}
