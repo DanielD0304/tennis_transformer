@@ -3,14 +3,15 @@ Neue Paper-Signale aus den aktuellen Snapshots.
 
 - model_signals (Strategie aus dem Timing-Backtest): eigenes Modell (elo2/gbdt) gegen den aktuellen Kaufpreis bei
   Polymarket/Kalshi, Gebühren laut venues.py. Polymarket wettet nur zu einem echten Ask und nicht bei einem Preis von
-  genau 0,5 (sharp.buy_odds), Kalshi kauft ohne Ask zum Preis + halben Spread. Liegen Blend-Gewichte aus dem
+  genau 0,5 (sharp.buy_odds), und zwar zum Durchschnittspreis, den der Einsatz im Orderbuch kostet (book_fill). Kalshi
+  kauft zum besten Ask, ohne Ask zum Preis + halben Spread. Liegen Blend-Gewichte aus dem
   Timing-Backtest vor (data/eval/timing_blend.json), ist p der Blend aus aktuellem Preis und Modell (Gewichte des
   Zeitpunkts, der der Zeit bis zum Start am nächsten liegt). Das rohe Modell weicht sonst bei sehr vielen Märkten
   weit vom Preis ab, meist weil es schlechter ist als der Markt.
   Gewettet wird nur in Segmenten (Venue x Level x Stunden bis zum Start), standardmäßig in denen, die der
   Timing-Backtest als Kandidat oder GO ausweist (load_segments). So prüft das Paper-Trading genau diese Hypothesen.
 - sharp_signals (Strategie A): faire Pinnacle/Betfair-Wahrscheinlichkeit gegen den besten Netto-Preis aller
-  anderen Venues (evaluation/sharp.py).
+  anderen Venues (evaluation/sharp.py), bei Polymarket zum besten Ask.
 
 Einsatz: Viertel-Kelly (Deckel 2 % der Bankroll der Strategie) mit p Richtung Markt geschrumpft, dazu flat.
 """
@@ -24,6 +25,7 @@ import pandas as pd
 from ..evaluation import sharp
 from ..evaluation.betting import Kelly
 from ..evaluation.predictors import logit, sigmoid
+from ..odds.schema import average_price, load_levels
 from .store import bet_id, normalize
 
 MODEL_THRESHOLD = 0.05
@@ -159,6 +161,42 @@ def _stakes(p, odds, net, bankroll, shrink=sharp.SHRINK):
     return KELLY.amount(bankroll, p_k, net)
 
 
+def kelly_fill(asks, p, prof, bankroll):
+    """
+    Kelly-Einsatz und sein Durchschnittspreis im Orderbuch. Der Einsatz hängt vom Preis ab und der Preis vom Einsatz:
+    Kelly sinkt mit dem Preis, der Preis steigt mit dem Einsatz, also passt genau ein Einsatz zu seinem eigenen Preis
+    (Bisektion). -> (Einsatz, Preis), None, wenn Kelly mehr will, als im Buch liegt.
+    """
+    def wanted(price):
+        return _stakes(p, 1 / price, float(prof.net_odds_from_gross(1 / price)), bankroll)
+
+    if not asks:
+        return None
+    low, high = 0.0, wanted(asks[0][0])  # zum besten Preis will Kelly am meisten
+    for _ in range(50):
+        stake = (low + high) / 2
+        price = average_price(asks, stake)
+        if price is not None and wanted(price) >= stake:
+            low = stake
+        else:
+            high = stake
+    price = average_price(asks, low)
+    return None if wanted(price) > low + 0.01 else (low, price)
+
+
+def book_fill(asks, p, prof, bankroll):
+    """
+    Was die Einsätze im Orderbuch asks ([[Preis, Anteile], ...], bester Preis zuerst) kosten: (Kelly-Einsatz,
+    Bruttoquote Kelly, Bruttoquote flat). None, wenn das Buch einen der beiden Einsätze nicht füllt: Dann gibt es keine
+    Wette und auch keinen Teil davon. Ein Rest von wenigen Dollar zählte in Wettenzahl und mittlerem CLV des Go/No-Go wie
+    eine volle Wette, und gerade dünne Bücher zeigen Preise, die für den geplanten Einsatz nie zu haben waren.
+    """
+    kelly, flat = kelly_fill(asks, p, prof, bankroll), average_price(asks, FLAT_STAKE)
+    if kelly is None or flat is None:
+        return None
+    return kelly[0], 1 / kelly[1], 1 / flat
+
+
 def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, strategy='modell',
                   pm_spread=sharp.PM_SPREAD, log=print, blend=None, model='elo2', segments=None, levels=None):
     """
@@ -180,7 +218,7 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
     no_price = int((~np.isfinite(gross_a) & ~np.isfinite(gross_b)).sum())
     if no_price:
         log(f"  Modell: {no_price} von {len(cur)} Märkten ohne Kaufpreis (kein brauchbares Ask oder Preis genau 0,5)")
-    rows, unknown, n_blend = [], 0, 0
+    rows, unknown, n_blend, thin, costly = [], 0, 0, 0, 0
     for i, r in enumerate(cur.to_dict('records')):
         p = prob(r)
         if p is None or not np.isfinite(p):
@@ -199,9 +237,23 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
             edge = p_side * net - 1
             if best is None or edge > best[3]:
                 best = (side, odds, net, edge, p_side)
-        if best is None or best[3] <= threshold:
+        if best is None or best[3] <= threshold:  # im Orderbuch kann der Vorteil nur kleiner werden
             continue
         side, odds, net, edge, p_side = best
+        net_flat = None
+        if r['venue'] == 'polymarket':
+            fill = book_fill(load_levels(r[f'asks_{side}']), p_side, prof, bankroll)
+            if fill is None:
+                thin += 1
+                continue
+            stake, odds, odds_flat = fill
+            net, net_flat = float(prof.net_odds_from_gross(odds)), float(prof.net_odds_from_gross(odds_flat))
+            edge = p_side * net - 1
+            if p_side * min(net, net_flat) - 1 <= threshold:  # auch der teurere Einsatz muss die Schwelle schaffen
+                costly += 1
+                continue
+        else:
+            stake = _stakes(p_side, odds, net, bankroll)
         implied = r['price_a'] if side == 'a' else r['price_b']
         segment = r.get('segment')
         rows.append({
@@ -209,12 +261,15 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
             'strategy': strategy, 'segment': segment, 'venue': r['venue'], 'event_id': r['event_id'],
             'tour': r.get('tour'), 'level': r.get('level'), 'tourney': r.get('tourney'), 'player_a': r['player_a'],
             'player_b': r['player_b'], 'side': side, 'player': r[f'player_{side}'],
-            'start_time_utc': r['start_time_utc'], 'odds': odds, 'net_odds': net, 'p': p_side,
-            'p_market': implied if implied == implied else 1 / odds, 'edge': edge,
-            'stake': _stakes(p_side, odds, net, bankroll), 'stake_flat': FLAT_STAKE, 'status': 'open',
+            'start_time_utc': r['start_time_utc'], 'odds': odds, 'net_odds': net, 'net_odds_flat': net_flat,
+            'p': p_side, 'p_market': implied if implied == implied else 1 / odds, 'edge': edge,
+            'stake': stake, 'stake_flat': FLAT_STAKE, 'status': 'open',
         })
     if unknown:
         log(f"  Modell: {unknown} von {len(cur)} Märkten ohne Vorhersage (Spieler nicht in den Matchdaten)")
+    if thin or costly:
+        log(f"  Modell: {thin + costly} Märkte mit Vorteil zum besten Ask ohne Wette: {thin} Orderbuch füllt den "
+            f"Einsatz nicht, {costly} Vorteil beim Durchschnittspreis zu klein")
     log(f"  Modell: {n_blend} von {len(cur) - unknown} Märkten im Blend mit dem Preis"
         + ("" if blend else " (keine Gewichte: erst python -m src.evaluation.timing)"))
     return normalize(pd.DataFrame(rows))

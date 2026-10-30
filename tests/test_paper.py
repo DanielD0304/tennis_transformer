@@ -7,12 +7,17 @@ import pytest
 
 from src.evaluation import sharp
 from src.evaluation.betting import Kelly
-from src.odds.schema import Snapshot, to_frame
+from src.odds.schema import Snapshot, average_price, dump_levels, to_frame
 from src.paper import report, settle, signals
-from src.paper.store import add_bets, load_bets, save_bets
+from src.paper.store import add_bets, load_bets, normalize, save_bets
 
 NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 START = NOW + timedelta(hours=5)
+
+
+def deep(price):
+    """Orderbuch einer Kaufseite, das jeden Einsatz zum besten Ask füllt."""
+    return dump_levels([(price, 100000.0)])
 
 
 def snap(venue, ts, a='Jannik Sinner', b='Carlos Alcaraz', price_a=None, price_b=None, event_id=None, start=START,
@@ -181,7 +186,8 @@ def test_paper_signal_bet_settle_clv(tmp_path):
 
 PLAYERS = [('Jannik Sinner', 'Carlos Alcaraz'), ('Daniil Medvedev', 'Alexander Zverev'), ('Casper Ruud', 'Holger Rune'),
            ('Taylor Fritz', 'Tommy Paul'), ('Lan Mi', 'Elza Tomase'), ('Ben Shelton', 'Jack Draper')]
-BOOK = dict(price_a=0.55, price_b=0.45, best_bid_a=0.54, best_ask_a=0.56, best_bid_b=0.44, best_ask_b=0.46)
+BOOK = dict(price_a=0.55, price_b=0.45, best_bid_a=0.54, best_ask_a=0.56, best_bid_b=0.44, best_ask_b=0.46,
+            asks_a=deep(0.56), asks_b=deep(0.46))
 
 
 def test_model_signals_polymarket_only_at_real_ask():
@@ -194,15 +200,15 @@ def test_model_signals_polymarket_only_at_real_ask():
         market('leer-anderer-preis', price_a=0.24, price_b=0.76, **EMPTY_BOOK),
         market('ohne-bid-ask', price_a=0.40, price_b=0.60),
         market('platzhalter-mit-ask', price_a=0.5, price_b=0.5, best_bid_a=0.63, best_ask_a=0.68, best_bid_b=0.32,
-               best_ask_b=0.37),
+               best_ask_b=0.37, asks_a=deep(0.68), asks_b=deep(0.37)),
         # A nur zu einem Ask unter der Mitte, B hat ein Ask, aber keinen Vorteil: auch hier keine Wette
         market('ask-unter-mitte', price_a=0.60, price_b=0.40, best_bid_a=0.45, best_ask_a=0.50, best_bid_b=0.50,
-               best_ask_b=0.55),
+               best_ask_b=0.55, asks_a=deep(0.50), asks_b=deep(0.55)),
         market('echtes-ask', price_a=0.40, price_b=0.60, best_bid_a=0.39, best_ask_a=0.41, best_bid_b=0.59,
-               best_ask_b=0.61),
+               best_ask_b=0.61, asks_a=deep(0.41), asks_b=deep(0.61)),
         market('ask-genau-0.5', price_a=0.495, price_b=0.505, best_bid_a=0.49, best_ask_a=0.50, best_bid_b=0.50,
-               best_ask_b=0.51),
-        market('nur-ask-auf-a', price_a=0.40, price_b=0.60, best_ask_a=0.41, best_bid_b=0.59),
+               best_ask_b=0.51, asks_a=deep(0.50), asks_b=deep(0.51)),
+        market('nur-ask-auf-a', price_a=0.40, price_b=0.60, best_ask_a=0.41, best_bid_b=0.59, asks_a=deep(0.41)),
         market('kalshi-ohne-ask', venue='kalshi', price_a=0.40, price_b=0.60))
     logs = []
     out = signals.model_signals(snaps, lambda r: 0.8, pd.Timestamp(NOW), threshold=0.05, log=logs.append)
@@ -211,6 +217,141 @@ def test_model_signals_polymarket_only_at_real_ask():
     assert (out['side'] == 'a').all()
     assert out.set_index('event_id')['p_market'].to_dict()['echtes-ask'] == 0.40  # Mitte der gewetteten Seite
     assert any(m.startswith('  Modell: 4 von 9 Märkten ohne Kaufpreis') for m in logs)
+
+
+def polymarket_market(asks_a, price_a=0.39):
+    """Polymarket-Markt mit diesem Orderbuch auf der Kaufseite A, auf B teuer genug, dass dort kein Vorteil liegt."""
+    return frame(snap('polymarket', NOW, price_a=price_a, price_b=1 - price_a, best_bid_a=price_a - 0.01,
+                      best_ask_a=asks_a[0][0], best_bid_b=1 - asks_a[0][0], best_ask_b=1 - price_a + 0.01,
+                      asks_a=dump_levels(asks_a), asks_b=deep(1 - price_a + 0.01)))
+
+
+def model_bets(snaps, p, logs=None, bankroll=1000.0, threshold=0.05):
+    return signals.model_signals(snaps, lambda r: p, pd.Timestamp(NOW), bankroll=bankroll, threshold=threshold,
+                                 log=(logs.append if logs is not None else lambda *a: None))
+
+
+def test_model_signals_polymarket_pays_average_price_of_each_stake():
+    """Am besten Ask liegen nur 2 USD: Kelly (20 USD, Deckel 2 %) und flat (10 USD) zahlen je ihren Durchschnittspreis."""
+    out = model_bets(polymarket_market([(0.40, 5.0), (0.42, 100.0), (0.70, 1000.0)]), 0.8)
+    assert len(out) == 1
+    b = out.iloc[0]
+    kelly_shares, flat_shares = 5 + 18 / 0.42, 5 + 8 / 0.42
+    assert b['stake'] == pytest.approx(20.0) and b['stake_flat'] == signals.FLAT_STAKE
+    assert b['odds'] == pytest.approx(kelly_shares / 20)  # 1 / 0,4184, nicht 1 / 0,40
+    assert b['net_odds'] == pytest.approx(kelly_shares / 20)
+    assert b['net_odds_flat'] == pytest.approx(flat_shares / 10)
+    assert b['edge'] == pytest.approx(0.8 * kelly_shares / 20 - 1)
+    assert b['p_market'] == pytest.approx(0.39)  # weiter die Mitte
+
+
+def test_model_signals_deep_book_pays_best_ask():
+    """Reicht die Tiefe am besten Ask, ändert sich nichts gegenüber dem Kauf zum besten Ask."""
+    b = model_bets(polymarket_market([(0.40, 100.0), (0.45, 1000.0)]), 0.8).iloc[0]
+    assert (b['odds'], b['net_odds_flat']) == (pytest.approx(1 / 0.40), pytest.approx(1 / 0.40))
+    assert b['stake'] == pytest.approx(20.0)
+
+
+def test_kelly_stake_fits_its_own_average_price():
+    """Der Einsatz bestimmt den Preis und der Preis den Einsatz: Am Ende passen beide zusammen, unter dem Deckel."""
+    asks = [(0.50, 6.0), (0.52, 1000.0)]
+    p = 0.56
+    at_best_ask = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, 0.50), 1 / 0.50)
+    assert at_best_ask == pytest.approx(15.0)  # zum besten Ask wollte Kelly 15 USD, der Deckel liegt bei 20 USD
+    b = model_bets(polymarket_market(asks, price_a=0.49), p).iloc[0]
+    price = average_price(asks, b['stake'])
+    assert 1 / b['odds'] == pytest.approx(price)
+    wanted = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, price), 1 / price)
+    assert b['stake'] == pytest.approx(wanted, abs=1e-6)
+    assert 3.0 < b['stake'] < at_best_ask  # über dem ersten Level, teurer als der beste Ask, deshalb weniger Einsatz
+    assert price > 0.50
+    assert b['net_odds_flat'] == pytest.approx(1 / average_price(asks, 10.0))
+
+
+@pytest.mark.parametrize('case, asks', [
+    ('flat passt nicht', [(0.40, 10.0)]),  # 4 USD im ganzen Buch
+    ('nur Kelly passt nicht', [(0.40, 30.0)]),  # 12 USD im ganzen Buch, der Deckel erlaubt Kelly 20 USD
+])
+def test_model_signals_no_bet_when_book_does_not_fill_the_stake(case, asks):
+    """Kein Teil-Kauf: Die Wette gibt es nur, wenn das Buch beide Einsätze füllt, auch wenn am besten Ask Vorteil liegt."""
+    logs = []
+    assert model_bets(polymarket_market(asks), 0.8, logs).empty
+    assert any('1 Orderbuch füllt den Einsatz nicht' in m for m in logs)
+
+
+def test_model_signals_book_that_just_fills_the_stake_counts():
+    b = model_bets(polymarket_market([(0.40, 50.0)]), 0.8).iloc[0]  # genau 20 USD im Buch
+    assert b['stake'] == pytest.approx(20.0) and b['odds'] == pytest.approx(1 / 0.40)
+
+
+def test_model_signals_polymarket_without_depth_is_no_bet():
+    """Snapshot von vor der Tiefe oder ohne erreichbares Buch: kein Rückfall auf den besten Ask."""
+    snaps = frame(snap('polymarket', NOW, price_a=0.39, price_b=0.61, best_bid_a=0.38, best_ask_a=0.40, best_bid_b=0.60,
+                       best_ask_b=0.62))
+    assert model_bets(snaps, 0.8).empty
+
+
+def test_model_signals_average_price_can_eat_the_edge():
+    """20 % Vorteil am besten Ask, aber dort liegt nur 1 USD und dahinter 0,70: Der teure Rest frisst den Vorteil."""
+    logs = []
+    assert model_bets(polymarket_market([(0.50, 2.0), (0.70, 1000.0)], price_a=0.49), 0.6, logs).empty
+    assert any('1 Vorteil beim Durchschnittspreis zu klein' in m for m in logs)
+
+
+def test_model_signals_threshold_counts_for_the_more_expensive_stake():
+    """Kelly (7,50 USD) passt ans beste Level und hätte 6 % Vorteil, flat (10 USD) läuft in 0,60 und schafft 5 % nicht."""
+    asks = [(0.50, 16.0), (0.60, 1000.0)]
+    assert 0.53 / average_price(asks, 7.5) - 1 > 0.05 > 0.53 / average_price(asks, 10.0) - 1
+    logs = []
+    assert model_bets(polymarket_market(asks, price_a=0.49), 0.53, logs).empty
+    assert any('1 Vorteil beim Durchschnittspreis zu klein' in m for m in logs)
+    assert len(model_bets(polymarket_market(asks, price_a=0.49), 0.53, threshold=0.02)) == 1
+
+
+def test_model_signals_kalshi_keeps_best_ask():
+    """Kalshi hat keine Tiefe im Snapshot und bleibt beim besten Ask, ein Preis für beide Einsätze."""
+    snaps = frame(snap('kalshi', NOW, price_a=0.40, price_b=0.60, best_bid_a=0.39, best_ask_a=0.41, best_bid_b=0.59,
+                       best_ask_b=0.61))
+    b = model_bets(snaps, 0.8).iloc[0]
+    assert b['odds'] == pytest.approx(1 / 0.41) and np.isnan(b['net_odds_flat'])
+
+
+def test_snapshot_book_to_bet_on_side_b(tmp_path):
+    """Vom CLOB-Buch bis zur Wette: Seite B kauft die gespiegelten Bids von Token A, auch über die Parquet-Datei."""
+    from src.odds import polymarket
+    from src.odds.schema import append_snapshots, load_snapshots
+    title = 'M15 Bari: Jannik Sinner vs Carlos Alcaraz'
+    event = {'slug': 'itf-sinner-alcaraz', 'title': title, 'startTime': START.isoformat(),
+             'markets': [{'id': '7', 'question': title, 'sportsMarketType': 'moneyline',
+                          'outcomes': '["Jannik Sinner", "Carlos Alcaraz"]', 'clobTokenIds': '["111", "222"]',
+                          'gameStartTime': START.isoformat()}]}
+    bids_a, asks_a = [(0.59, 5.0), (0.50, 1000.0)], [(0.61, 5.0), (0.70, 1000.0)]
+    snaps = polymarket.parse_events([event], NOW, {'111': '0.6', '222': '0.4'}, {'111': (bids_a, asks_a)})
+    root = str(tmp_path / 'snaps')
+    append_snapshots(snaps, root)
+    b = model_bets(load_snapshots(root=root), 0.05).iloc[0]
+    assert (b['side'], b['player']) == ('b', 'Carlos Alcaraz')
+    # 5 Anteile zu 0,41 (2,05 USD), der Rest zu 0,50
+    assert b['net_odds_flat'] == pytest.approx((5 + (10 - 2.05) / 0.50) / 10)
+    assert b['odds'] == pytest.approx((5 + (20 - 2.05) / 0.50) / 20)
+
+
+def test_settle_kelly_and_flat_each_at_their_own_price():
+    """Gewinn je Einsatz zu dessen Preis. Ältere Wetten und andere Venues haben einen Preis für beide."""
+    def bet(event_id, side='a', **prices):
+        return {'bet_id': event_id, 'created_utc': pd.Timestamp(NOW), 'strategy': 'modell', 'venue': 'polymarket',
+                'event_id': event_id, 'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz', 'side': side,
+                'start_time_utc': pd.Timestamp(START), 'stake': 20.0, 'stake_flat': 10.0, 'status': 'open', **prices}
+
+    bets = normalize(pd.DataFrame([bet('tiefe', odds=2.4, net_odds=2.4, net_odds_flat=2.45),
+                                   bet('tiefe-verloren', side='b', odds=2.4, net_odds=2.4, net_odds_flat=2.45),
+                                   bet('alt', odds=2.0, net_odds=2.0)]))
+    history = {'polymarket': pd.DataFrame({'event_id': ['tiefe', 'tiefe-verloren', 'alt'], 'winner': ['a', 'a', 'a']})}
+    done, n = settle.settle(bets, pd.Timestamp(START + timedelta(hours=4)), history, [], None)
+    assert n == 3
+    assert list(done['profit']) == pytest.approx([20 * 1.4, -20.0, 20 * 1.0])
+    assert list(done['profit_flat']) == pytest.approx([10 * 1.45, -10.0, 10 * 1.0])
+    assert done.loc[2, 'net_odds_flat'] != done.loc[2, 'net_odds_flat']  # die alte Wette bleibt, wie sie war
 
 
 def test_model_signals_only_in_segments():
@@ -292,7 +433,6 @@ def test_paper_settle_from_matches_ret_rules():
          'player_a': 'Jannik Sinner', 'player_b': 'Carlos Alcaraz', 'side': 'b', 'start_time_utc': pd.Timestamp(START),
          'odds': 2.0, 'net_odds': 2.0, 'stake': 10.0, 'stake_flat': 10.0, 'status': 'open'},
     ])
-    from src.paper.store import normalize
     bets = normalize(bets)
     matches = [{'winner_name': 'Jannik Sinner', 'loser_name': 'Carlos Alcaraz', 'match_date': START.strftime('%Y%m%d'),
                 'tourney_date': START.strftime('%Y%m%d'), 'status': 'RET', 'source': 'espn'}]
@@ -300,6 +440,19 @@ def test_paper_settle_from_matches_ret_rules():
     assert n == 2
     assert done.loc[0, 'status'] == 'void' and done.loc[0, 'profit'] == 0  # Tipico: RET void
     assert done.loc[1, 'status'] == 'lost' and done.loc[1, 'profit'] == -10  # PM: Sieger nach Aufgabe zählt
+
+
+def test_old_bets_file_stays_readable_and_unchanged(tmp_path):
+    """bets.parquet von vor net_odds_flat: lesbar, die Spalte ist leer, alle anderen Werte bleiben wie sie sind."""
+    path = str(tmp_path / 'bets.parquet')
+    old = normalize(pd.DataFrame([{'bet_id': 'alt', 'created_utc': pd.Timestamp(NOW), 'strategy': 'modell',
+                                   'venue': 'polymarket', 'event_id': 'p1', 'side': 'a', 'odds': 2.0, 'net_odds': 2.0,
+                                   'stake': 5.0, 'stake_flat': 10.0, 'status': 'open'}]))
+    old.drop(columns='net_odds_flat').to_parquet(path, index=False)
+    bets = load_bets(path)
+    assert np.isnan(bets['net_odds_flat'].iloc[0])
+    columns = [c for c in old.columns if c != 'net_odds_flat']
+    pd.testing.assert_frame_equal(bets[columns], old[columns], check_dtype=False)  # nur die Zeit-Auflösung ändert sich
 
 
 def test_paper_report_go_criteria():
@@ -429,7 +582,6 @@ def test_open_results_queries_only_due_unknown_markets(monkeypatch):
     """Abrechnung fragt nur fällige offene PM/Kalshi-Wetten gezielt ab, die die Historie noch nicht kennt."""
     from src.odds import kalshi, polymarket
     from src.paper import run
-    from src.paper.store import normalize
     calls = []
     monkeypatch.setattr(polymarket, 'fetch_resolution',
                         lambda client, e, a: calls.append(('polymarket', e)) or {'pm-1': 'b', 'pm-2': None}[e])

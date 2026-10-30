@@ -439,7 +439,7 @@ Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb da
 
 | Venue | Quelle | Voraussetzung |
 |---|---|---|
-| `polymarket` | Gamma-API (Serien `atp`, `wta`, `itf`) + CLOB (Midpoints, Orderbuch für Bid/Ask, `prices-history`) | keine |
+| `polymarket` | Gamma-API (Serien `atp`, `wta`, `itf`) + CLOB (Midpoints, Orderbuch für Bid/Ask und Tiefe, `prices-history`) | keine |
 | `kalshi` | öffentliche Market-Data-API (Serien `KX{ATP,WTA}MATCH`, `KX{ATP,WTA}CHALLENGERMATCH`, `KXITF{,W}MATCH`) | keine |
 | `pinnacle`, `betfair`, `bet365`, … | The Odds API (Regionen `eu,uk`, Markt `h2h`) | `ODDS_API_KEY` (ohne Key übersprungen) |
 | `tipico`, `bwin` | bestehende Playwright-Scraper (`betscraper/scraper/sites.py`) | `playwright install chromium` |
@@ -544,18 +544,50 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   [`docs/ERGEBNISSE_PHASE45.md`](docs/ERGEBNISSE_PHASE45.md). `--segments alle` wettet wie früher auf alles, was
   in den nächsten 48 h beginnt. Das Level fehlt bei Polymarket außer ITF und kommt vorher aus der
   Level-Zuordnung (Marker im Turniernamen, sonst dasselbe Turnier in derselben Kalenderwoche).
-- Kaufpreis: Polymarket wettet in beiden Strategien nur zum echten Ask, also zum besten Ask aus dem CLOB-Orderbuch
-  (bestAsk von Gamma ist teils veraltet). Der Timing-Backtest unterstellt mangels historischer Orderbücher die Mitte
-  + 1 Cent, hier soll sich zeigen, ob der Gewinn zum echten Preis bleibt. Deshalb gibt es keinen Rückfall auf den
-  Preis + halben Spread: Ohne brauchbares Ask (leeres Orderbuch, Ask unter der Mitte, Orderbuch nicht erreichbar)
-  gibt es keine Wette. Dasselbe gilt für einen Preis von genau 0,5, wie im Backtest der Platzhalter eines leeren
-  Orderbuchs. Ein Ask von genau 0,5 bei einer anderen Mitte ist ein echtes Buch und zählt. Kalshi kauft zum Ask, ohne
-  Ask zum Preis + 1 Cent. Die Orderbuch-Tiefe fließt nicht ein: Die Wette gilt zum besten Ask, auch wenn dort weniger
-  liegt als der Einsatz. Bei ITF ist das optimistisch.
+- Kaufpreis: Polymarket wettet in beiden Strategien nur mit einem echten Ask aus dem CLOB-Orderbuch (bestAsk von Gamma
+  ist teils veraltet). Der Timing-Backtest unterstellt mangels historischer Orderbücher die Mitte + 1 Cent, hier soll
+  sich zeigen, ob der Gewinn zum echten Preis bleibt. Deshalb gibt es keinen Rückfall auf den Preis + halben Spread:
+  Ohne brauchbares Ask (leeres Orderbuch, Ask unter der Mitte, Orderbuch nicht erreichbar) gibt es keine Wette.
+  Dasselbe gilt für einen Preis von genau 0,5, wie im Backtest der Platzhalter eines leeren Orderbuchs. Ein Ask von
+  genau 0,5 bei einer anderen Mitte ist ein echtes Buch und zählt. `sharp` kauft bei Polymarket zum besten Ask, Kalshi
+  in beiden Strategien zum Ask, ohne Ask zum Preis + 1 Cent.
+- Durchschnittspreis: `modell` zahlt bei Polymarket, was der Einsatz im Orderbuch kostet, also Einsatz / gekaufte
+  Anteile vom besten Preis an aufwärts. Dafür speichert jeder Snapshot das Orderbuch beider Kaufseiten (`asks_a`,
+  `asks_b`, JSON `[[Preis, Anteile], ...]`, rund 180 Byte je Seite; Seite B sind die gespiegelten Bids von Token A).
+  Ältere Tagesdateien haben diese Spalten nicht und bleiben lesbar. Ohne Tiefe gibt es keine Wette.
+- Kelly und flat: Flat kostet den Durchschnittspreis für 10 USD (`net_odds_flat`). Bei Kelly hängt der Einsatz vom
+  Preis ab und der Preis vom Einsatz. Gesetzt wird der eine Einsatz, der zu seinem eigenen Durchschnittspreis passt
+  (`odds`, `net_odds`, damit rechnen auch Edge und CLV). Gewettet wird nur, wenn auch der teurere der beiden Preise die
+  Schwelle schafft. Wetten von vorher (`net_odds_flat` leer) galten zum besten Ask und bleiben unverändert.
+- Zu dünnes Buch: Füllt das Orderbuch einen der beiden Einsätze nicht, gibt es keine Wette, auch nicht den
+  ausführbaren Teil. Das Go/No-Go zählt Wetten und mittelt den CLV ungewichtet: Ein Rest von 2 USD zählte wie eine
+  volle Wette, dazu noch zum besten Preis des dünnsten Buchs. Flat wäre auch nicht mehr flat. Der Nachteil: Diese
+  Märkte fehlen in der Auswertung. Das Log zählt sie je Runde, getrennt von den Märkten, bei denen der
+  Durchschnittspreis den Vorteil frisst. Auch dort gibt es keinen Teil-Kauf: Der Teil, der die Schwelle noch schafft,
+  läge im Median bei 2 bis 5 USD.
+- Messung vom 30./31.10.2026: 7 Runden über eine Stunde am späten Abend, 83 Märkte vor dem Start, Ask 0,10 bis 0,90.
+  Aufschlag auf den besten Ask in Cent. Im Median ist er fast null (0 bis 0,2 Cent), teuer sind die Ausreißer:
+
+  | Level | Seiten | unter 10 USD am besten Ask | 10 USD: Mittel / 90 % | 20 USD: Mittel / 90 % | bei 6 % Vorteil keine Wette |
+  |---|---|---|---|---|---|
+  | Haupttour | 350 | 19 % | 2,2 / 3,7 | 3,0 / 5,9 | 18 % |
+  | Challenger | 167 | 8 % | 1,0 / 0,0 | 1,3 / 0,1 | 7 % |
+  | ITF | 458 | 40 % | 1,4 / 3,2 | 2,4 / 8,2 | 29 % |
+
+  Letzte Spalte: Das Modell sähe genau 6 % Vorteil zum besten Ask (Schwelle 5 %), bei 20 % Vorteil wären es 9 %, 2 %
+  und 6 %. Das ganze Buch füllte 20 USD bei allen Seiten: Teuer macht der Weg in weit entfernte Level, nicht die
+  fehlende Tiefe. Bis 7,5 h vor dem Start ist der Aufschlag klein (ITF 0,3 / 0,5 Cent im Mittel, Haupttour und
+  Challenger höchstens 0,1), davor zahlen vor allem dünne, oft frisch gelistete Märkte drauf (Qualifikationen der
+  Haupttour 2,8 / 4,0 Cent). Eine Stunde ist wenig: Vier Stunden früher (18:51 UTC) lagen bei 54 % der ITF-Seiten unter
+  10 USD am besten Ask.
+- Die Taker-Gebühr von Polymarket ist im Preis nicht enthalten: `venues.py` rechnet mit 0 %, Gamma führt die
+  Tennis-Märkte aber mit `feesEnabled` und `sports_fees_v3` (0,05 × p × (1 − p) je Anteil, bei p = 0,5 sind das 2,5 %
+  des Einsatzes).
 - Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
   Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
-  verfügbare Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes Segment ist
-  eine eigene Hypothese, wie im Backtest zählt ein Match deshalb in jedem Segment, durch dessen Fenster es läuft.
+  verfügbare Preis (Durchschnittspreis, Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes
+  Segment ist eine eigene Hypothese, wie im Backtest zählt ein Match deshalb in jedem Segment, durch dessen Fenster es
+  läuft.
 - Abrechnung frühestens 3 h nach der geplanten Startzeit, über die PM/Kalshi-Auflösung oder die Matchdaten
   (ESPN, Märkte). Fällige offene Wetten fragt der Lauf gezielt per Markt-ID (Polymarket) bzw. Event-Ticker
   (Kalshi) ab, die volle Historie in `data/odds/history/` lädt der Nightly-Lauf (`python -m src.odds.collect
