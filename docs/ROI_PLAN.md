@@ -187,5 +187,6 @@ Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PH
 - Nächster Schritt: Paper-Loop lokal dauerhaft laufen lassen (`python -m src.paper.run --loop 30`, mit
   `--odds-api` für Sharp vs. Rest) und am Kriterium messen: ≥ 300 Wetten, CLV > +2 %, untere Yield-KI-Grenze > 0.
   Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
-  Closing mit `blend_gbdt`. Dort zählt nur das echte Ask mit Gegenseite: Das prüft, ob der Backtest-Gewinn überhaupt
-  handelbar ist.
+  Closing mit `blend_gbdt`. Diese Segmente sagen erst etwas aus, wenn nur Wetten mit echtem Ask zählen: Ohne
+  brauchbares Ask kauft `sharp.buy_odds` zum Preis + halben Spread, auch bei genau 0,5. Das ist die Annahme hinter dem
+  Artefakt.

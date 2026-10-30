@@ -122,7 +122,7 @@ gbdt (298 Märkte ab August, Log Loss 0,693 gegen 0,731), der gbdt-Favorit gewin
 solche echten Kurse streichen und dünne Märkte mit Preisen abseits von 0,5 behalten (GO-Wetten mit 0,04 bis 0,10
 Abstand: +32 %). Das Problem ist der fehlende Handel, nicht der Preis. Die PM-Historie hat aber keine Orderbuch-Tiefe, nur das
 Gesamtvolumen (inklusive Live-Handel, also ein Blick in die Zukunft). Deshalb fängt die Robustheitsregel solche
-Effekte ab, und im Paper-Trading zählt das echte Ask.
+Effekte ab. Das Paper-Trading kann die Frage nur mit echtem Ask klären (siehe Go/No-Go).
 
 **Neue Regel** (`timing.add_decision`): Zusätzlich zu Holm-p < 0,05, KI-Untergrenze > 0 und CLV > 0 verlangt GO:
 - in mindestens zwei Quartalen mit je ≥ 30 Wetten einzeln eine KI-Untergrenze des Yields > 0 (`n_periods_pos`),
@@ -246,8 +246,10 @@ Was das heißt: Frühe Preise sind ungenauer (Log Loss des PM-Preises −24 h 0,
 0,585, 0,561, 0,560). Handelbar ist der Unterschied mit elo2/gbdt aber nicht. Der einzig plausible Ansatz bleibt
 Challenger um −24 h. Er ist dünn belegt, bestätigt sich höchstens in einem Quartal einzeln und hängt am angenommenen
 Spread.
-Er gehört ins Paper-Trading, wo echte Bid/Ask und Orderbuch-Tiefe mitgeschrieben werden. Für PM ITF gilt: nur zum
-echten Ask mit Gegenseite. Ein Preis um 0,5 ohne Handel ist kein Kurs.
+Er gehört ins Paper-Trading, wo echte Bid/Ask und Orderbuch-Tiefe mitgeschrieben werden. Für PM ITF sagt auch das
+Paper-Trading erst etwas aus, wenn nur Wetten mit echtem Ask zählen: Ohne brauchbares Ask kauft `sharp.buy_odds` zum
+Preis + halben Spread, auch bei genau 0,5. Das ist die Annahme hinter dem Artefakt. Ein Preis um 0,5 ohne Handel ist
+kein Kurs.
 
 ## Sharp vs. Rest
 
