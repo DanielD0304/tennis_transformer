@@ -164,18 +164,29 @@ In `betscraper/dataProcessing/value.py` + `src/evaluation/betting.py`:
 - Collector 48 h laufen lassen: Snapshots aller Venues vorhanden, Match-Abgleich-Quote > 90 %
 - Paper-Loop eine Woche laufen lassen: Wetten werden korrekt abgerechnet, CLV erscheint im Dashboard
 
-## Ergebnisse Phase 4/5 (Stand 25.10.2026)
+## Ergebnisse Phase 4/5 (Stand 30.10.2026)
 
 Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PHASE45.md).
 
 - **Kein Edge, kein GO.** Im Timing-Backtest (Polymarket, Kalshi × Haupttour/Challenger/ITF × Eröffnung/−24 h/−6 h/
-  −1 h/Closing × elo2/gbdt/Blend) besteht nach Gebühren, Spread, Holm-Korrektur und der Zwei-Quartale-Regel kein
-  Segment.
+  −1 h/Closing × elo2/gbdt/Blend, Daten bis 29.10.) besteht nach Gebühren, Spread, Holm-Korrektur und der
+  Robustheitsregel kein Segment. Kalshi ist jetzt vollständig geladen (63.431 Märkte inklusive ITF) und überall NO-GO.
+- **Das GO vom 27.10. war ein Artefakt:** Polymarket ITF −1 h, `blend_gbdt` (+23,8 %, CLV nur +2,0 %) lag zu 97 % im
+  Oktober 2026. Der Gewinn kam aus dünnen PM-ITF-Märkten ohne Kalshi-Gegenstück, deren Preis −1 h kaum Information
+  trägt (Log Loss ≈ ln 2). Mit liquidem Kalshi-Gegenstück: −1,8 %. Preise nahe 0,5 sind dabei nicht das Problem, in
+  liquiden Märkten sind sie echt.
+- **Verschärfte Robustheitsregel** (`timing.add_decision`): GO verlangt zusätzlich, dass der Gewinn in mindestens
+  zwei Quartalen einzeln bestätigt ist (KI-Untergrenze > 0) und kein Quartal mehr als 60 % der Wetten trägt.
 - **Eröffnungsgewinne sind ein Artefakt:** Polymarket startet mit leerem Orderbuch (0,5), und auch der erste echte
   Kurs ist ohne Orderbuch-Tiefe nicht handelbar. Bei Kalshi mit echtem Ask verliert dieselbe Strategie.
-- **Kandidat fürs Paper-Trading:** Polymarket Challenger −24 h (gbdt +6,9 % [+0,1 %, +14,1 %], 1.452 Wetten). Er
-  verschwindet bei 4 % Spread.
-- **Lücken:** Kalshi nur 2.000 von 23.112 Märkten (429 auf geteilter Cloud-IP), Kalshi-ITF fehlt. Sharp vs. Rest ohne
+- **Kandidaten fürs Paper-Trading:** Polymarket Challenger −24 h (`blend_gbdt` +13,8 % [−0,9 %, +28,4 %], 298
+  Wetten; elo2 +6,1 %, 1.406 Wetten). Beide bestätigen sich in höchstens einem Quartal, elo2 verschwindet bei 4 %
+  Spread. gbdt allein liegt jetzt bei +2,8 % [−4,1 %, +10,1 %].
+- **Lücken:** PM-ITF-Märkte von Mai bis Juli haben keine Tour und fehlen im Backtest. Sharp vs. Rest ohne
   Odds-API-Snapshots nicht auswertbar (keine aktiven Tennis-Events, 0 Credits verbraucht).
 - Nächster Schritt: Paper-Loop lokal dauerhaft laufen lassen (`python -m src.paper.run --loop 30`, mit
   `--odds-api` für Sharp vs. Rest) und am Kriterium messen: ≥ 300 Wetten, CLV > +2 %, untere Yield-KI-Grenze > 0.
+  Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
+  Closing mit `blend_gbdt`. Diese Segmente sagen erst etwas aus, wenn nur Wetten mit echtem Ask zählen: Ohne
+  brauchbares Ask kauft `sharp.buy_odds` zum Preis + halben Spread, auch bei genau 0,5. Das ist die Annahme hinter dem
+  Artefakt.
