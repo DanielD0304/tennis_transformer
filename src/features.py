@@ -12,6 +12,7 @@ gebaut, danach fließt das Ergebnis in den Stand ein. tests/test_features.py erz
 """
 import math
 from collections import defaultdict, deque
+from functools import partial
 
 import numpy as np
 import pandas as pd
@@ -35,12 +36,16 @@ MATCH_FEATURES = ['best_of_5', 'indoor', 'surf_hard', 'surf_clay', 'surf_grass',
 KEY_COLUMNS = ['match_id', 'date', 'year', 'tour', 'player_a', 'player_b', 'label', 'status']
 
 
+# Ein gemeinsames partial statt lambda: der Stand ist picklebar (Cache in predict.py), und das Objekt steht nur einmal drin
+_surface_results = partial(deque, maxlen=SURFACE_WINDOW)
+
+
 class _Player:
     __slots__ = ('recent', 'surface', 'days', 'n', 'last_date', 'last_retired')
 
     def __init__(self):
         self.recent = deque(maxlen=FORM_WINDOW)          # (won, game_share, set_share, tiebreaks, retired)
-        self.surface = defaultdict(lambda: deque(maxlen=SURFACE_WINDOW))  # Untergrund -> [won]
+        self.surface = defaultdict(_surface_results)     # Untergrund -> [won]
         self.days = deque()                               # (Datum, Sätze, Minuten) für die Müdigkeit
         self.n = 0
         self.last_date = None

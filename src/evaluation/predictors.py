@@ -77,10 +77,7 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
     df['year'] = df['date'].dt.year
     df['tour'] = df['tour'].fillna('atp') if 'tour' in df.columns else 'atp'
     df['level'] = df['level'].fillna('main').replace('', 'main') if 'level' in df.columns else 'main'
-    status = df['status'] if 'status' in df.columns else pd.Series('completed', index=df.index)
-    df['status'] = status.fillna('completed').astype(str)
-    if 'score' in df.columns:
-        df.loc[df['score'].astype(str).str.contains('W/O', na=False), 'status'] = 'W/O'
+    df['status'] = match_status(df)
 
     df['match_id'] = [match_id(r) for r in df.to_dict('records')]
     a_win = np.array([a_is_winner(m, seed) for m in df['match_id']])
@@ -110,6 +107,15 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
     # Faire Pinnacle-Wahrscheinlichkeit (nur PS, ohne Fallback): Preis-Proxy für Exchange/PM-Venues
     df['fair_ps'] = remove_margin(df['ps_a'], df['ps_b'])
     return chronological(df).reset_index(drop=True)
+
+
+def match_status(df):
+    """Status je Match ('completed', 'RET', 'DEF', 'W/O', ...): fehlend = 'completed', W/O auch aus dem Spielstand."""
+    status = df['status'] if 'status' in df.columns else pd.Series('completed', index=df.index)
+    status = status.fillna('completed').astype(str)
+    if 'score' in df.columns:
+        status = status.mask(df['score'].astype(str).str.contains('W/O', na=False), 'W/O')
+    return status
 
 
 def market_probability(df, sources=MARKET_SOURCES):

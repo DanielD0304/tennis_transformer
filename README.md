@@ -545,10 +545,18 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
   verfügbare Preis (Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes Segment ist
   eine eigene Hypothese, wie im Backtest zählt ein Match deshalb in jedem Segment, durch dessen Fenster es läuft.
-- Abrechnung frühestens 3 h nach der geplanten Startzeit, über die PM/Kalshi-Auflösung (die Historie der
-  letzten 10 Tage wird nachgeladen) oder die Matchdaten (ESPN, Märkte). W/O ist void. RET richtet sich
-  nach der Venue: Polymarket und Kalshi zahlen den Spieler aus, der weiterkommt. Deutsche Bücher werden
-  als void angenommen, das bitte in den AGB prüfen. Eine 50-50-Auflösung ist void.
+- Abrechnung frühestens 3 h nach der geplanten Startzeit, über die PM/Kalshi-Auflösung oder die Matchdaten
+  (ESPN, Märkte). Fällige offene Wetten fragt der Lauf gezielt per Markt-ID (Polymarket) bzw. Event-Ticker
+  (Kalshi) ab, die volle Historie in `data/odds/history/` lädt der Nightly-Lauf (`python -m src.odds.collect
+  --history`, Kalshi inklusive ITF). W/O ist void. RET richtet sich nach der Venue: Polymarket und Kalshi
+  zahlen den Spieler aus, der weiterkommt. Deutsche Bücher werden als void angenommen, das bitte in den AGB
+  prüfen. Eine 50-50-Auflösung ist void.
+- Laufzeit: Den Zustand des Predictors (Elo, Elo2, Form, H2H) legt der Lauf in `data/cache/predictor_gbdt.pkl`
+  ab (rund 155 MB), die Matches der letzten Tage für die Abrechnung in `data/cache/recent_matches.pkl`. Neu
+  gerechnet wird nur, wenn sich `data/matches.csv` oder der Code dafür ändert, also einmal nach jedem
+  Daten-Update. Der Ordner darf jederzeit gelöscht werden. Gemessen auf 669.000 Matches: rund 13 s und 1,1 GB
+  RAM pro Runde aus dem Cache, rund 2 Minuten und 1,8 GB für die erste Runde nach einem Update. Vorher baute
+  jede Runde den Predictor neu auf (930 s, 3 bis 7 GB RAM).
 - CLV = genommene Quote / Schlussquote − 1. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
   dem Start, dazu wird gegen Sharp verglichen, wo vorhanden.
 - **Kriterium für echtes Geld** (im Dashboard angezeigt, insgesamt und je Segment): ≥ 300 abgerechnete
@@ -558,7 +566,13 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
 
 **Dauerhaft laufen lassen** (lokal, in der Cloud-Session läuft nichts dauerhaft). Der Paper-Lauf holt selbst
 Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlich der Odds-API-Collector laufen
-(siehe oben, Kontingent beachten).
+(siehe oben, Kontingent beachten). Die Historie lädt nur noch der nächtliche Lauf: Fehlt er, kommen neue
+Marktergebnisse weder nach `data/odds/history/` noch als Ergebnisquelle nach `data/matches.csv`.
+
+Empfohlen ist ein Dauerprozess mit `--loop 30` statt eines neuen Prozesses alle 30 Minuten: pandas, LightGBM
+und Co. werden nur einmal geladen (weniger anfällig, wenn eine Anwendungssteuerungsrichtlinie einzelne DLLs
+sporadisch blockiert), der Predictor bleibt im Speicher und wird neu gebaut, sobald sich `data/matches.csv`
+ändert. Eine fehlgeschlagene Runde beendet den Loop nicht, sie steht mit Traceback im Log.
 - Linux/macOS (cron, vorher `mkdir -p data/paper data/odds`):
   ```
   */30 * * * * cd /pfad/zu/tennis_transformer && python -m src.paper.run >> data/paper/run.log 2>&1
@@ -567,6 +581,10 @@ Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlic
   ```
 - Windows (Aufgabenplanung, im Repo-Ordner, vorher `mkdir data\paper`):
   ```
-  schtasks /Create /SC MINUTE /MO 30 /TN "TennisPaper" /TR "cmd /c cd /d %CD% && python -m src.paper.run >> data\paper\run.log 2>&1"
+  schtasks /Create /SC MINUTE /MO 30 /TN "TennisPaper" /TR "cmd /c cd /d %CD% && python -m src.paper.run --loop 30 >> data\paper\run.log 2>&1"
   ```
+  Mit `--loop 30` wirkt die Aufgabe als Wächter: Solange der Loop läuft, startet die Aufgabenplanung keine
+  zweite Instanz (Standard „Keine neue Instanz starten“), bricht er ab, startet ihn der nächste Termin neu.
+  Ohne `--loop` geht es auch: Dank Cache dauert jede Runde dann nur noch rund 13 s, dafür lädt jeder Lauf pandas
+  und den Cache neu.
 - Dashboard: `cd betscraper && python manage.py runserver`, dann http://127.0.0.1:8000/scraper/paper/

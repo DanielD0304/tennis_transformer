@@ -123,6 +123,21 @@ def winner_of(market):
     return None
 
 
+def resolution(market):
+    """Ergebnis aus Sicht von Token A: 'a' / 'b', 'void' bei 50-50 (Absage, W/O), None solange nicht aufgelöst."""
+    winner = winner_of(market)
+    if winner:
+        return winner
+    prices = [_float(p) for p in _list(market.get('outcomePrices'))]
+    return 'void' if market.get('closed') and prices == [0.5, 0.5] else None
+
+
+def fetch_resolution(client, market_id, player_a=None):
+    """Auflösung eines einzelnen Match-Markts per ID (Gamma /markets/{id}), siehe resolution."""
+    market = client.get_json(f"{GAMMA}/markets/{market_id}")
+    return resolution(market[0] if isinstance(market, list) else market)
+
+
 def match_info(event):
     """Gemeinsame Felder eines Match-Markts (für Snapshots und Historie) oder None."""
     m = match_market(event)
