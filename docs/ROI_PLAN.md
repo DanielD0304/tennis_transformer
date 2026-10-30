@@ -182,9 +182,10 @@ Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PH
 - **Kandidaten fürs Paper-Trading:** Polymarket Challenger −24 h (`blend_gbdt` +13,8 % [−0,9 %, +28,4 %], 298
   Wetten; elo2 +6,1 %, 1.406 Wetten). Beide bestätigen sich in höchstens einem Quartal, elo2 verschwindet bei 4 %
   Spread. gbdt allein liegt jetzt bei +2,8 % [−4,1 %, +10,1 %].
-- **Lücken:** PM-ITF-Märkte von Mai bis Juli haben keine Tour und fehlen im Backtest. ITF wird live noch nicht
-  gesammelt. Sharp vs. Rest ohne Odds-API-Snapshots nicht auswertbar (keine aktiven Tennis-Events, 0 Credits
-  verbraucht).
+- **Lücken:** PM-ITF-Märkte von Mai bis Juli haben keine Tour und fehlen im Backtest. Sharp vs. Rest ohne
+  Odds-API-Snapshots nicht auswertbar (keine aktiven Tennis-Events, 0 Credits verbraucht).
 - Nächster Schritt: Paper-Loop lokal dauerhaft laufen lassen (`python -m src.paper.run --loop 30`, mit
   `--odds-api` für Sharp vs. Rest) und am Kriterium messen: ≥ 300 Wetten, CLV > +2 %, untere Yield-KI-Grenze > 0.
-  ITF nur zum echten Ask mit Gegenseite werten.
+  Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
+  Closing mit `blend_gbdt`. Dort zählt nur das echte Ask mit Gegenseite: Das prüft, ob der Backtest-Gewinn überhaupt
+  handelbar ist.
