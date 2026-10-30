@@ -189,3 +189,29 @@ def test_recent_matches_and_level_fill(tmp_path):
     bets = pd.DataFrame({'level': [None, 'itf'], 'tourney': ['Lima', 'M15 X']})
     run.fill_levels(bets, level_rows)
     assert list(bets['level']) == ['challenger', 'itf']
+
+
+def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
+    """Die eben geholten Snapshots müssen in derselben Runde zu Signalen werden (nicht erst 30 Minuten später)."""
+    from types import SimpleNamespace
+    from src.odds import collect, history
+    from src.odds.schema import append_snapshots
+    from src.paper import run
+    clock = [NOW]  # die Abfrage dauert ein paar Sekunden
+
+    def fake_collect(venues, root, log=print):
+        ts = clock[0] + timedelta(seconds=2)
+        clock[0] = ts + timedelta(seconds=2)
+        append_snapshots([Snapshot(ts_utc=ts, venue='polymarket', event_id='pm-1', player_a='Jannik Sinner',
+                                   player_b='Carlos Alcaraz', price_a=0.5, price_b=0.5, price_type='probability',
+                                   tour='atp', start_time_utc=ts + timedelta(hours=5))], root)
+
+    monkeypatch.setattr(collect, 'collect_once', fake_collect)
+    monkeypatch.setattr(run, 'now_utc', lambda: clock[0])
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
+    args = SimpleNamespace(collect=True, odds_api=False, softbooks=False, snapshots=str(tmp_path / 'snaps'), days=1,
+                           bets=str(tmp_path / 'bets.parquet'), strategies=['modell'], model='elo2', threshold=0.05,
+                           raw=True, sharp_threshold=0.02, history=False)
+    bets, _, _ = run.run_once(args, log=lambda *a: None, prob=lambda row: 0.8, model_name='elo2')
+    assert len(bets) == 1 and bets['player'].iloc[0] == 'Jannik Sinner'
