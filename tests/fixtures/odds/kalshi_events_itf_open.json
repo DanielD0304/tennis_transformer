@@ -1,0 +1,93 @@
+{
+ "events": [
+  {
+   "event_ticker": "KXITFMATCH-26OCT28COVDEL",
+   "series_ticker": "KXITFMATCH",
+   "title": "Covato vs Delgado",
+   "sub_title": "Covato vs Delgado (Oct 28)",
+   "product_metadata": {
+    "competition": "ITF",
+    "competition_scope": "Game"
+   },
+   "markets": [
+    {
+     "ticker": "KXITFMATCH-26OCT28COVDEL-COV",
+     "event_ticker": "KXITFMATCH-26OCT28COVDEL",
+     "yes_sub_title": "Matteo Covato",
+     "custom_strike": {
+      "tennis_competitor": "7bc5e225-4fd1-4d50-8af8-8f7b82602c10"
+     },
+     "yes_bid_dollars": "0.7900",
+     "yes_ask_dollars": "0.8600",
+     "last_price_dollars": "0.8600",
+     "volume_fp": "773.36",
+     "open_time": "2026-10-28T04:02:00Z",
+     "close_time": "2026-11-11T19:30:00Z",
+     "result": "",
+     "status": "active"
+    },
+    {
+     "ticker": "KXITFMATCH-26OCT28COVDEL-DEL",
+     "event_ticker": "KXITFMATCH-26OCT28COVDEL",
+     "yes_sub_title": "Gerardo Delgado",
+     "custom_strike": {
+      "tennis_competitor": "b5bdc8f9-bf5e-4a75-84da-1f285ef85068"
+     },
+     "yes_bid_dollars": "0.1100",
+     "yes_ask_dollars": "0.1600",
+     "last_price_dollars": "0.2500",
+     "volume_fp": "3822.84",
+     "open_time": "2026-10-28T04:02:00Z",
+     "close_time": "2026-11-11T19:30:00Z",
+     "result": "",
+     "status": "active"
+    }
+   ]
+  },
+  {
+   "event_ticker": "KXITFWMATCH-26OCT29CHAKOZ",
+   "series_ticker": "KXITFWMATCH",
+   "title": "Chaudhari vs Kozaki",
+   "sub_title": "Chaudhari vs Kozaki (Oct 29)",
+   "product_metadata": {
+    "competition": "ITF",
+    "competition_scope": "Game"
+   },
+   "markets": [
+    {
+     "ticker": "KXITFWMATCH-26OCT29CHAKOZ-CHA",
+     "event_ticker": "KXITFWMATCH-26OCT29CHAKOZ",
+     "yes_sub_title": "Vaidehee Chaudhari",
+     "custom_strike": {
+      "tennis_competitor": "04564518-4315-4226-8e17-535ed86e27e1"
+     },
+     "yes_bid_dollars": "0.7900",
+     "yes_ask_dollars": "0.8100",
+     "last_price_dollars": "0.0000",
+     "volume_fp": "0.00",
+     "open_time": "2026-10-29T09:13:00Z",
+     "close_time": "2026-11-12T23:00:00Z",
+     "result": "",
+     "status": "active"
+    },
+    {
+     "ticker": "KXITFWMATCH-26OCT29CHAKOZ-KOZ",
+     "event_ticker": "KXITFWMATCH-26OCT29CHAKOZ",
+     "yes_sub_title": "Funa Kozaki",
+     "custom_strike": {
+      "tennis_competitor": "61a8a150-a395-4208-821d-332e2d416c64"
+     },
+     "yes_bid_dollars": "0.1800",
+     "yes_ask_dollars": "0.2000",
+     "last_price_dollars": "0.2000",
+     "volume_fp": "191.88",
+     "open_time": "2026-10-29T09:13:00Z",
+     "close_time": "2026-11-12T23:00:00Z",
+     "result": "",
+     "status": "active"
+    }
+   ]
+  }
+ ],
+ "cursor": ""
+}

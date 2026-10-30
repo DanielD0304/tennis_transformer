@@ -45,6 +45,7 @@ from .venues import get_venue
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_DIR = os.path.join(REPO_ROOT, "data", "eval")
+TABLE_PATH = os.path.join(OUT_DIR, "timing.parquet")
 BLEND_PATH = os.path.join(OUT_DIR, "timing_blend.json")
 
 # Zeitpunkt -> Spalten der Historie (ts, Preis, Bid, Ask, Volumen bis t)
@@ -494,7 +495,7 @@ def main(argv=None):
                                min_volume={'kalshi': args.min_volume_kalshi, 'polymarket': args.min_volume_pm},
                                n_boot=args.bootstrap, with_blend=not args.no_blend)
     os.makedirs(OUT_DIR, exist_ok=True)
-    table.to_parquet(os.path.join(OUT_DIR, "timing.parquet"), index=False)
+    table.to_parquet(TABLE_PATH, index=False)  # die Segmente mit Kandidat/GO nimmt src/paper (Modell-Strategie)
     bets.to_parquet(os.path.join(OUT_DIR, "timing_bets.parquet"), index=False)
     with open(BLEND_PATH, "w", encoding="utf-8") as f:
         json.dump(weights, f, indent=1)  # für src/paper (Modell-Strategie im Blend mit dem Preis)

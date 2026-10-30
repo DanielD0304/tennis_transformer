@@ -2,9 +2,10 @@
 Polymarket: Tennis-Einzelmatch-Märkte (Sieger) über die Gamma-API, Preise aus dem CLOB.
 
 Seit Okt. 2025 liegen die Matches in den Serien 'atp' (10365) und 'wta' (10366), ältere nur unter
-dem Tag 'tennis' (864). Ein Match-Markt hat sportsMarketType 'moneyline' und zwei Spieler als
-Outcomes. Alte Märkte haben nur Nachnamen als Outcomes, die vollen Namen stehen im Titel
-('Turnier: Vorname Nachname vs Vorname Nachname').
+dem Tag 'tennis' (864). ITF-Matches (seit Okt. 2026 die meisten Tennis-Märkte) stehen in der Serie 'itf'
+(11634, Herren und Damen gemeinsam, das Geschlecht nur in der Liga: 'M15 Fergana', 'W50 Istanbul').
+Ein Match-Markt hat sportsMarketType 'moneyline' und zwei Spieler als Outcomes. Alte Märkte haben nur
+Nachnamen als Outcomes, die vollen Namen stehen im Titel ('Turnier: Vorname Nachname vs Vorname Nachname').
 Turnier-Futures ('US Open Winner'), Doppel ('A / B vs C / D') und Zusatzmärkte (Sätze, Games)
 werden ausgelassen.
 """
@@ -18,7 +19,8 @@ from .schema import Snapshot, mid, now_utc, utc
 VENUE = 'polymarket'
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
-SERIES = {'atp': '10365', 'wta': '10366'}
+SERIES = {'atp': '10365', 'wta': '10366', 'itf': '11634'}
+TOURS = ('atp', 'wta')  # Serien, deren Slug die Tour ist
 TENNIS_TAG = '864'
 TAG_TOURS = {'101232': 'atp', '102123': 'wta'}
 EVENT_URL = "https://polymarket.com/event/{}"
@@ -88,10 +90,10 @@ def match_market(event):
 
 def tour_of(event):
     slug = event.get('seriesSlug') or next((s.get('slug') for s in event.get('series') or []), None)
-    if slug in SERIES:
+    if slug in TOURS:
         return slug
     prefix = str(event.get('slug') or '').split('-')[0]
-    if prefix in SERIES:  # 'atp-mayot-cassone-2026-09-26'
+    if prefix in TOURS:  # 'atp-mayot-cassone-2026-09-26'
         return prefix
     league = str((event.get('eventMetadata') or {}).get('league') or event.get('title') or '')
     if prefix == 'itf' and re.match(r"W\d", league):  # ITF 'W15 Monastir' (Frauen), 'M15 Baku' (Männer)
@@ -170,7 +172,8 @@ def parse_events(events, ts=None, midpoints=None):
         out.append(Snapshot(
             ts_utc=ts, venue=VENUE, event_id=info['event_id'], player_a=info['player_a'],
             player_b=info['player_b'], price_a=pa, price_b=pb, price_type='probability', tour=info['tour'],
-            tourney=info['tourney'], start_time_utc=info['start_time_utc'], best_bid_a=bid, best_ask_a=ask,
+            level=info['level'], tourney=info['tourney'], start_time_utc=info['start_time_utc'],
+            best_bid_a=bid, best_ask_a=ask,
             # Binärmarkt: Bid auf B = 1 - Ask auf A und umgekehrt
             best_bid_b=1 - ask if ask is not None else None, best_ask_b=1 - bid if bid is not None else None,
             volume=info['volume'], liquidity=info['liquidity'], source_url=info['source_url'],

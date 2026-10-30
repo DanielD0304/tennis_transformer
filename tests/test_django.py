@@ -206,3 +206,21 @@ def test_paper_page_renders_bets(client, monkeypatch, tmp_path):
     assert len(r.context['open_bets']) == 1 and len(r.context['settled_bets']) == 3
     r = client.get("/scraper/paper/?strategy=sharp")
     assert r.context['strategy'] == 'sharp' and len(r.context['settled_bets']) == 1
+
+
+def test_paper_page_go_no_go_per_segment(client, monkeypatch, tmp_path):
+    import pandas as pd
+    from src.paper import store
+    monkeypatch.setattr(store, "BETS_PATH", str(tmp_path / "bets.parquet"))
+    now = pd.Timestamp("2026-10-25 12:00", tz="UTC")
+    rows = [{'bet_id': f'b{i}', 'created_utc': now, 'strategy': 'modell', 'segment': segment, 'venue': 'polymarket',
+             'event_id': f'e{i}', 'level': 'itf', 'player_a': 'A A', 'player_b': 'B B', 'side': 'a', 'player': 'A A',
+             'start_time_utc': now, 'odds': 2.1, 'net_odds': 2.05, 'p': 0.55, 'edge': 0.12, 'stake': 10.0,
+             'stake_flat': 10.0, 'status': 'won', 'settled_utc': now, 'profit': 10.5, 'profit_flat': 10.5, 'clv': 0.03}
+            for i, segment in enumerate(['polymarket itf 0.5-1.5h', 'polymarket itf 0.5-1.5h', None])]
+    store.save_bets(pd.DataFrame(rows))
+    r = client.get("/scraper/paper/")
+    html = r.content.decode()
+    assert [s['name'] for s in r.context['segments']] == ['polymarket itf 0.5-1.5h']
+    assert r.context['segments'][0]['stats']['settled'] == 2
+    assert "Je Segment der Modell-Strategie" in html and html.count("polymarket itf 0.5-1.5h") >= 3
