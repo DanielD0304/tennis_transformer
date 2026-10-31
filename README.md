@@ -317,7 +317,7 @@ out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward nic
 | `betfair` | `BFEW/BFEL` (Betfair Exchange, ab August 2025) | 5 % Kommission auf den Nettogewinn | gewertet |
 | `betfair_proxy` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | 5 % Kommission auf den Nettogewinn | gewertet |
 | `kalshi` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | Fee pro Kontrakt = ceil_to_cent(0,07 · p · (1−p)) | gewertet |
-| `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Fee (Standard 0) | gewertet |
+| `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Gebühr 5 % auf den möglichen Gewinn (0,05 · p · (1−p) je Anteil) | gewertet |
 
 W/O ist immer void. Alle Werte sind per `Venue.with_(...)` änderbar (z. B. `ret_rule='void'`,
 `max_stake=50`). Die RET-Regeln unterscheiden sich je Anbieter und müssen vor echtem Einsatz in den
@@ -495,7 +495,7 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
   Startzeit, nie ein späterer (`odds/history.price_at`).
 - Erreichbarer Preis: Kalshi kauft zum Ask aus den Stunden-Candles (B über 1 − Bid von A), dazu kommt die
   Kalshi-Gebühr. Polymarket kauft zum Preis + halben Spread (`--pm-spread`, Standard 2 %), dazu die
-  Taker-Fee (`--pm-fee`). Die „Eröffnung“ ist bei Polymarket der erste echte Kurs: Der erste Punkt ist
+  Taker-Gebühr (`--pm-fee`, Standard 0,05, auch für Märkte aus der Zeit vor der Gebühr). Die „Eröffnung“ ist bei Polymarket der erste echte Kurs: Der erste Punkt ist
   meist der Mittelpreis 0,5 eines leeren Orderbuchs. Preise von genau 0,5 gelten dort als Platzhalter.
 - Liquidität: Kalshi verlangt mindestens `--min-volume-kalshi` Kontrakte, die bis t gehandelt wurden.
   Polymarket kennt historisch nur das Gesamtvolumen. Dieser Filter ist deshalb ein Blick in die Zukunft
@@ -656,9 +656,12 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   Challenger höchstens 0,1), davor zahlen vor allem dünne, oft frisch gelistete Märkte drauf (Qualifikationen der
   Haupttour 2,8 / 4,0 Cent). Eine Stunde ist wenig: Vier Stunden früher (18:51 UTC) lagen bei 54 % der ITF-Seiten unter
   10 USD am besten Ask.
-- Die Taker-Gebühr von Polymarket ist im Preis nicht enthalten: `venues.py` rechnet mit 0 %, Gamma führt die
-  Tennis-Märkte aber mit `feesEnabled` und `sports_fees_v3` (0,05 × p × (1 − p) je Anteil, bei p = 0,5 sind das 2,5 %
-  des Einsatzes).
+- Taker-Gebühr: Gamma führt die Tennis-Märkte mit `feesEnabled` und `sports_fees_v3`, also 0,05 × p × (1 − p) je Anteil.
+  Die Doku sagt nicht, ob sie beim Kauf in Anteilen oder USDC eingezogen wird. `venues.py` rechnet mit Anteilen, das ist
+  die vorsichtigere Lesart: 5 % auf den möglichen Gewinn, Netto-Quote = 1 + (Quote − 1) × 0,95, bei p = 0,5 also 2,5 % des
+  Einsatzes. Edge, Schwelle, Kelly und der Gewinn rechnen damit, in `modell` und `sharp`. Nennt Gamma eine andere Rate,
+  steht das im Log der Runde. Wetten von vorher behalten ihre Netto-Quote ohne Gebühr, das Go/No-Go mischt sie mit den
+  neuen. Die Mindestorder von 5 prüft der Lauf nicht.
 - Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
   Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
   verfügbare Preis (Durchschnittspreis, Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes
@@ -676,7 +679,7 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   Daten-Update. Der Ordner darf jederzeit gelöscht werden. Gemessen auf 669.000 Matches: rund 13 s und 1,1 GB
   RAM pro Runde aus dem Cache, rund 2 Minuten und 1,8 GB für die erste Runde nach einem Update. Vorher baute
   jede Runde den Predictor neu auf (930 s, 3 bis 7 GB RAM).
-- CLV = genommene Quote / Schlussquote − 1. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
+- CLV = genommene Quote / Schlussquote − 1, beide ohne Gebühr. Als Schlussquote zählt der letzte Snapshot derselben Venue vor
   dem Start, dazu wird gegen Sharp verglichen, wo vorhanden.
 - **Kriterium für echtes Geld** (im Dashboard angezeigt, insgesamt und je Segment): ≥ 300 abgerechnete
   Paper-Wetten, mittlerer CLV > +2 % und untere Grenze des Yield-KI > 0 nach Gebühren. Vorher rechtlich

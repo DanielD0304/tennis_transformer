@@ -134,6 +134,14 @@ stammen. Erst die Konzentration (97 % der Wetten im Q4) stoppt es.
 
 ## Timing-Tabelle (gbdt und Blend aus gbdt + Preis)
 
+Polymarket verlangt auf Tennis-Märkten eine Taker-Gebühr von 5 % auf den möglichen Gewinn, bei p = 0,5 sind das 2,5 %
+des Einsatzes. Diese Tabelle rechnet Polymarket ohne sie, seit dem 31.10.2026 ist sie Standard (`--pm-fee`). Ein
+Vergleich auf den Vorhersagen vom 27.10. (ohne die Orderbuch-Tiefe) zeigt für die Paper-Segmente mit `blend_gbdt`, ohne /
+mit Gebühr: Challenger −24 h 272 / 79 Wetten, Yield +16,6 % / +50,2 %; ITF −6 h 1.446 / 1.637, +21,3 % / +16,0 %; ITF −1 h
+1.670 / 875, +23,7 % / +25,7 %; ITF Closing 1.175 / 573, +13,5 % / +14,4 %. Die Schwellen ändern sich dabei walk-forward,
+deshalb ändert sich auch die Wettenzahl. Alle vier bleiben Kandidat. Bei Polymarket fällt von den Kandidaten nur Challenger
+−24 h mit `elo2` zu NO-GO (Yield +6,5 % / +3,2 %).
+
 Lauf vom 30.10.2026 (Daten bis 29.10.). Flat-Einsatz, Polymarket-Spread 2 %, Kalshi zum Ask mit Gebühr (ab 100
 bis t gehandelten Kontrakten). Schwellen walk-forward pro Quartal. Yield mit 95-%-Bootstrap-KI, CLV gegen das
 Closing der Venue, `ll_diff` = Log Loss Modell − Log Loss Preis zum Zeitpunkt t (negativ = Modell besser).

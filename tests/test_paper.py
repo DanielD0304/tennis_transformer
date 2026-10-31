@@ -16,6 +16,11 @@ NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 START = NOW + timedelta(hours=5)
 
 
+def after_fee(gross):
+    """Netto-Quote bei Polymarket: 5 % Taker-Gebühr auf den möglichen Gewinn."""
+    return 1 + (gross - 1) * 0.95
+
+
 def deep(price):
     """Orderbuch einer Kaufseite, das jeden Einsatz zum besten Ask füllt."""
     return dump_levels([(price, 100000.0)])
@@ -58,8 +63,8 @@ def test_line_shopping_net_of_tax_and_fees():
     sig = sharp.signals(df, threshold=0.0)
     a = sig[sig['side'] == 'a'].iloc[0]
     assert a['venue'] == 'polymarket'
-    assert a['net_odds'] == pytest.approx(1 / 0.51)
-    assert a['edge'] == pytest.approx(p_fair / 0.51 - 1)
+    assert a['net_odds'] == pytest.approx(after_fee(1 / 0.51))  # auch nach Gebühr über den 1,894 von Tipico
+    assert a['edge'] == pytest.approx(p_fair * after_fee(1 / 0.51) - 1)
     # Tipico allein: Steuer frisst den Vorteil
     only_tipico = sharp.signals(frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1),
                                       snap('tipico', NOW, price_a=2.00, price_b=1.80)), threshold=0.0)
@@ -347,33 +352,43 @@ def test_model_signals_polymarket_pays_average_price_of_each_stake():
     kelly_shares, flat_shares = 5 + 18 / 0.42, 5 + 8 / 0.42
     assert b['stake'] == pytest.approx(20.0) and b['stake_flat'] == signals.FLAT_STAKE
     assert b['odds'] == pytest.approx(kelly_shares / 20)  # 1 / 0,4184, nicht 1 / 0,40
-    assert b['net_odds'] == pytest.approx(kelly_shares / 20)
-    assert b['net_odds_flat'] == pytest.approx(flat_shares / 10)
-    assert b['edge'] == pytest.approx(0.8 * kelly_shares / 20 - 1)
+    assert b['net_odds'] == pytest.approx(after_fee(kelly_shares / 20))
+    assert b['net_odds_flat'] == pytest.approx(after_fee(flat_shares / 10))
+    assert b['edge'] == pytest.approx(0.8 * after_fee(kelly_shares / 20) - 1)
     assert b['p_market'] == pytest.approx(0.39)  # weiter die Mitte
 
 
 def test_model_signals_deep_book_pays_best_ask():
     """Reicht die Tiefe am besten Ask, ändert sich nichts gegenüber dem Kauf zum besten Ask."""
     b = model_bets(polymarket_market([(0.40, 100.0), (0.45, 1000.0)]), 0.8).iloc[0]
-    assert (b['odds'], b['net_odds_flat']) == (pytest.approx(1 / 0.40), pytest.approx(1 / 0.40))
+    assert (b['odds'], b['net_odds_flat']) == (pytest.approx(1 / 0.40), pytest.approx(after_fee(1 / 0.40)))
     assert b['stake'] == pytest.approx(20.0)
+
+
+def test_model_signals_edge_is_after_taker_fee():
+    """6 % Vorteil zum Preis, nach 5 % Gebühr auf den Gewinn bleiben 3,35 %: unter der Schwelle keine Wette."""
+    assert model_bets(polymarket_market([(0.50, 1000.0)], price_a=0.49), 0.53).empty
+    b = model_bets(polymarket_market([(0.50, 1000.0)], price_a=0.49), 0.56).iloc[0]
+    assert (b['odds'], b['net_odds']) == (pytest.approx(2.0), pytest.approx(1.95))
+    assert b['edge'] == pytest.approx(0.56 * 1.95 - 1)
+    # Kelly rechnet mit der Netto-Quote, der Preis, zu dem p geschrumpft wird, bleibt der Marktpreis
+    assert b['stake'] == pytest.approx(signals.KELLY.amount(1000.0, sharp.shrink_to_market(0.56, 0.50), 1.95))
 
 
 def test_kelly_stake_fits_its_own_average_price():
     """Der Einsatz bestimmt den Preis und der Preis den Einsatz: Am Ende passen beide zusammen, unter dem Deckel."""
     asks = [(0.50, 6.0), (0.52, 1000.0)]
     p = 0.56
-    at_best_ask = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, 0.50), 1 / 0.50)
-    assert at_best_ask == pytest.approx(15.0)  # zum besten Ask wollte Kelly 15 USD, der Deckel liegt bei 20 USD
+    at_best_ask = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, 0.50), after_fee(1 / 0.50))
+    assert at_best_ask == pytest.approx(8.82, abs=0.01)  # zum besten Ask will Kelly 8,82 USD, Deckel 20 USD
     b = model_bets(polymarket_market(asks, price_a=0.49), p).iloc[0]
     price = average_price(asks, b['stake'])
     assert 1 / b['odds'] == pytest.approx(price)
-    wanted = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, price), 1 / price)
+    wanted = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, price), after_fee(1 / price))
     assert b['stake'] == pytest.approx(wanted, abs=1e-6)
     assert 3.0 < b['stake'] < at_best_ask  # über dem ersten Level, teurer als der beste Ask, deshalb weniger Einsatz
     assert price > 0.50
-    assert b['net_odds_flat'] == pytest.approx(1 / average_price(asks, 10.0))
+    assert b['net_odds_flat'] == pytest.approx(after_fee(1 / average_price(asks, 10.0)))
 
 
 @pytest.mark.parametrize('case, asks', [
@@ -407,13 +422,14 @@ def test_model_signals_average_price_can_eat_the_edge():
 
 
 def test_model_signals_threshold_counts_for_the_more_expensive_stake():
-    """Kelly (7,50 USD) passt ans beste Level und hätte 6 % Vorteil, flat (10 USD) läuft in 0,60 und schafft 5 % nicht."""
+    """Kelly (6,25 USD) passt ans beste Level und hätte 7 % Vorteil, flat (10 USD) läuft in 0,60 und schafft 5 % nicht."""
     asks = [(0.50, 16.0), (0.60, 1000.0)]
-    assert 0.53 / average_price(asks, 7.5) - 1 > 0.05 > 0.53 / average_price(asks, 10.0) - 1
+    kelly_edge, flat_edge = (0.55 * after_fee(1 / average_price(asks, stake)) - 1 for stake in (6.25, 10.0))
+    assert kelly_edge > 0.05 > flat_edge
     logs = []
-    assert model_bets(polymarket_market(asks, price_a=0.49), 0.53, logs).empty
+    assert model_bets(polymarket_market(asks, price_a=0.49), 0.55, logs).empty
     assert any('1 Vorteil beim Durchschnittspreis zu klein' in m for m in logs)
-    assert len(model_bets(polymarket_market(asks, price_a=0.49), 0.53, threshold=0.02)) == 1
+    assert len(model_bets(polymarket_market(asks, price_a=0.49), 0.55, threshold=0.02)) == 1
 
 
 def test_model_signals_kalshi_keeps_best_ask():
@@ -440,7 +456,7 @@ def test_snapshot_book_to_bet_on_side_b(tmp_path):
     b = model_bets(load_snapshots(root=root), 0.05).iloc[0]
     assert (b['side'], b['player']) == ('b', 'Carlos Alcaraz')
     # 5 Anteile zu 0,41 (2,05 USD), der Rest zu 0,50
-    assert b['net_odds_flat'] == pytest.approx((5 + (10 - 2.05) / 0.50) / 10)
+    assert b['net_odds_flat'] == pytest.approx(after_fee((5 + (10 - 2.05) / 0.50) / 10))
     assert b['odds'] == pytest.approx((5 + (20 - 2.05) / 0.50) / 20)
 
 

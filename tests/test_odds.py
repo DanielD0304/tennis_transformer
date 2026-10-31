@@ -287,6 +287,33 @@ def test_polymarket_fetch_current_takes_bid_ask_from_clob_book():
     assert 'Orderbücher' in messages[0]
 
 
+def test_polymarket_warns_when_gamma_reports_another_fee():
+    """venues.py rechnet mit einer festen Rate. Nennt Gamma eine andere, steht das im Log der Runde."""
+    event = fixture('polymarket_events_itf_open.json')[0]
+    market = next(m for m in event['markets'] if m.get('sportsMarketType') == 'moneyline')
+
+    class Client:
+        fees = {}
+
+        def get_json(self, url, params=None):
+            return [{**event, 'markets': [{**market, **self.fees}]}] if params['series_id'] == '11634' else []
+
+        def post_json(self, url, payload):
+            return [] if url.endswith('/books') else {}
+
+    client, messages = Client(), []
+    for fees in ({}, {'feesEnabled': True, 'feeSchedule': {'rate': 0.05, 'exponent': 1}}):
+        client.fees = fees
+        polymarket.fetch_current(client, log=messages.append)
+    assert not messages
+    client.fees = {'feesEnabled': True, 'feeSchedule': {'rate': 0.03}}
+    polymarket.fetch_current(client, log=messages.append)
+    assert 'anderer Taker-Gebühr' in messages[0] and '[0.03]' in messages[0]
+    client.fees = {'feesEnabled': False}
+    polymarket.fetch_current(client, log=messages.append)
+    assert '[0.0]' in messages[1]
+
+
 def test_polymarket_empty_book_side_has_no_depth():
     """Nur eine Seite voll: Ohne Bids gibt es auf B kein Ask und keine Tiefe, A kauft weiter."""
     event = fixture('polymarket_events_itf_open.json')[0]

@@ -308,7 +308,19 @@ def test_polymarket_spread_and_fee():
     venue = VENUES['polymarket'].with_(spread=0.02, taker_fee=0.01)
     ga, gb = venue.gross_odds(_one())
     assert ga[0] == pytest.approx(1 / 0.51) and gb[0] == pytest.approx(1 / 0.51)
-    assert venue.net_odds_from_gross(2.0) == pytest.approx(2.0 * 0.99)
+    assert venue.net_odds_from_gross(2.0) == pytest.approx(1 + 1.0 * 0.99)
+
+
+def test_polymarket_taker_fee_as_in_the_docs():
+    """Doku: Gebühr = Anteile x 0,05 x p x (1 - p), 100 Anteile zu 0,50 kosten 1,25 USD. Eingezogen in Anteilen."""
+    venue = VENUES['polymarket']
+    assert venue.net_odds_from_gross(2.0) == pytest.approx((100 - 1.25 / 0.50) / 50)
+    assert venue.net_odds_from_gross(5.0) == pytest.approx((1 - 0.05 * 0.2 * 0.8 / 0.2) / 0.2)  # 4,8 statt 5
+    # Mehrere Level: Gebühr je Level gerechnet ist dasselbe wie die Formel am Durchschnittspreis
+    levels = [(0.40, 10.0), (0.60, 30.0), (0.80, 5.0)]
+    spent = sum(p * s for p, s in levels)
+    shares = sum(s * (1 - 0.05 * (1 - p)) for p, s in levels)
+    assert venue.net_odds_from_gross(sum(s for _, s in levels) / spent) == pytest.approx(shares / spent)
 
 
 def test_ret_void_vs_settled_and_wo_always_void():
