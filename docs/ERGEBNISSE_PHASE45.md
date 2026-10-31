@@ -246,9 +246,10 @@ Was das heißt: Frühe Preise sind ungenauer (Log Loss des PM-Preises −24 h 0,
 0,585, 0,561, 0,560). Handelbar ist der Unterschied mit elo2/gbdt aber nicht. Der einzig plausible Ansatz bleibt
 Challenger um −24 h. Er ist dünn belegt, bestätigt sich höchstens in einem Quartal einzeln und hängt am angenommenen
 Spread.
-Er gehört ins Paper-Trading, wo echte Bid/Ask mitgeschrieben werden, die Orderbuch-Tiefe noch nicht. Für PM ITF sagt
-auch das Paper-Trading erst mit Wetten ab dem Fix etwas aus: Seitdem gibt es bei Polymarket ohne brauchbares Ask und
-bei einem Preis von genau 0,5 keine Wette mehr. Ein Preis um 0,5 ohne Handel ist kein Kurs.
+Er gehört ins Paper-Trading, wo echte Bid/Ask und die Orderbuch-Tiefe mitgeschrieben werden. Für PM ITF sagt auch das
+Paper-Trading erst mit Wetten ab den beiden Fixes etwas aus: Seitdem gibt es bei Polymarket ohne brauchbares Ask und
+bei einem Preis von genau 0,5 keine Wette mehr, und die Modell-Strategie zahlt den Durchschnittspreis ihres Einsatzes
+im Orderbuch statt des besten Asks. Ein Preis um 0,5 ohne Handel ist kein Kurs.
 
 ## Sharp vs. Rest
 

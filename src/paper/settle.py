@@ -25,6 +25,10 @@ def _side_won(side, a_won):
     return bool(a_won) if side == 'a' else not bool(a_won)
 
 
+def _profit_per_stake(status, net_odds):
+    return (net_odds - 1) if status == 'won' else (-1.0 if status == 'lost' else 0.0)
+
+
 def market_results(history):
     """{(venue, event_id): 'a' | 'b' | None} aus den Historie-DataFrames ({venue: df})."""
     out = {}
@@ -117,11 +121,11 @@ def settle(bets, now, history=None, matches=None, snaps=None, settle_after=SETTL
         if status is None:
             continue
         stake, flat = float(r['stake'] or 0.0), float(r['stake_flat'] or 0.0)
-        mult = (r['net_odds'] - 1) if status == 'won' else (-1.0 if status == 'lost' else 0.0)
+        net_flat = r['net_odds'] if pd.isna(r['net_odds_flat']) else r['net_odds_flat']
         bets.loc[i, ['status', 'result_source']] = [status, source]
         bets.loc[i, 'settled_utc'] = now
-        bets.loc[i, 'profit'] = stake * mult
-        bets.loc[i, 'profit_flat'] = flat * mult
+        bets.loc[i, 'profit'] = stake * _profit_per_stake(status, r['net_odds'])
+        bets.loc[i, 'profit_flat'] = flat * _profit_per_stake(status, net_flat)
         n += 1
     done = open_due & (bets['status'] != 'open')
     if done.any() and snaps is not None:

@@ -3,6 +3,8 @@ Ablage der Paper-Wetten: data/paper/bets.parquet, eine Zeile pro Wette.
 
 status: 'open' | 'won' | 'lost' | 'void'. Preise sind Dezimalquoten (brutto, wie bei der Venue verfügbar),
 net_odds nach Gebühr bzw. Steuer. stake ist der Kelly-Einsatz, stake_flat der Vergleichseinsatz.
+net_odds_flat: Netto-Quote von stake_flat, wenn er einen eigenen Preis hat (Modell bei Polymarket: odds und net_odds
+sind der Durchschnittspreis von stake, net_odds_flat der von stake_flat), sonst leer und net_odds gilt für beide.
 segment: Segment der Modell-Strategie (signals.Segment.name, z.B. 'polymarket itf 0.5-1.5h'), sonst leer.
 """
 import os
@@ -13,12 +15,12 @@ PAPER_DIR = os.path.join(DATA_DIR, "paper")
 BETS_PATH = os.path.join(PAPER_DIR, "bets.parquet")
 
 COLUMNS = ['bet_id', 'created_utc', 'strategy', 'segment', 'venue', 'event_id', 'tour', 'level', 'tourney',
-           'player_a', 'player_b', 'side', 'player', 'start_time_utc', 'odds', 'net_odds', 'p', 'p_market', 'edge',
-           'stake', 'stake_flat', 'status', 'settled_utc', 'profit', 'profit_flat', 'close_odds', 'clv', 'clv_sharp',
-           'result_source']
+           'player_a', 'player_b', 'side', 'player', 'start_time_utc', 'odds', 'net_odds', 'net_odds_flat', 'p',
+           'p_market', 'edge', 'stake', 'stake_flat', 'status', 'settled_utc', 'profit', 'profit_flat', 'close_odds',
+           'clv', 'clv_sharp', 'result_source']
 DATETIME = ['created_utc', 'start_time_utc', 'settled_utc']
-FLOAT = ['odds', 'net_odds', 'p', 'p_market', 'edge', 'stake', 'stake_flat', 'profit', 'profit_flat', 'close_odds',
-         'clv', 'clv_sharp']
+FLOAT = ['odds', 'net_odds', 'net_odds_flat', 'p', 'p_market', 'edge', 'stake', 'stake_flat', 'profit', 'profit_flat',
+         'close_odds', 'clv', 'clv_sharp']
 STATUSES = ('open', 'won', 'lost', 'void')
 
 
