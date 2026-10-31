@@ -13,7 +13,8 @@ anderen desselben Zeitpunkts zählt dabei nicht (_drop_outliers).
 
 Verknüpfung: Dasselbe Match bei verschiedenen Venues wird über build.MatchIndex (Namen + Datum) erkannt
 (link_events), die Snapshots über die Zeit mit merge_asof: ein Preis zählt nur, wenn er höchstens WINDOW
-(5 Minuten) vom Sharp-Snapshot entfernt ist (align).
+(5 Minuten) vom Sharp-Snapshot entfernt ist (align). Polymarket und Kalshi fragt deshalb jeder Lauf der Odds API mit ab
+(odds/collect.py).
 Staking: Viertel-Kelly mit Deckel (2 % der Bankroll), p vorher Richtung des Venue-Preises geschrumpft
 (shrink_to_market); Flat läuft zum Vergleich mit.
 """
@@ -31,6 +32,8 @@ SHARP = ('pinnacle', 'betfair')  # Reihenfolge = Priorität
 # Plausibles Buch (Summe der Kehrwerte) einer Sharp-Quote, wie bei den historischen Exchange-Quoten: Pinnacle liegt
 # bei ~1,03, Betfair nahe 1,00. Außerhalb ist der Markt dünn oder veraltet (z.B. 1,06/1,10) und kein fairer Preis.
 SHARP_BOOK = ODDS_RANGE['BFEW']
+# Nicht vergrößern, um Preise anderer Läufe mitzunehmen: Beim typischen Signal (Edge 3,7 %, Quote 4,3) kostet ein Cent
+# 4,2 % Edge, und in 20 bis 40 Minuten bewegt sich jede fünfte Seite um mindestens einen Cent (Stand 30.10.2026).
 WINDOW = pd.Timedelta(minutes=5)
 DEFAULT_THRESHOLD = 0.02
 SHRINK = 0.5  # Anteil, um den p für Kelly Richtung Venue-Preis geschrumpft wird
@@ -177,6 +180,19 @@ def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
     return df.drop(columns=['venue_start'])
 
 
+def _before_start(df):
+    """Zeilen von align, deren beide Preise vor der Startzeit liegen (wo bekannt). Polymarket und Kalshi handeln im
+    Match weiter, ein Sharp-Preis vor dem Start reicht deshalb nicht."""
+    start = df['start_time_utc']
+    return df[start.isna() | ((df['ts_utc'] < start) & (df['venue_ts'] < start))]
+
+
+def coverage(snaps, window=WINDOW):
+    """Für das Log: Womit werden die Sharp-Preise in snaps vor dem Start verglichen? {venue: Zeilen von align}."""
+    df = align(snaps, window)
+    return {} if df.empty else _before_start(df)['venue'].value_counts().to_dict()
+
+
 # --------------------------------------------------------------------- Signale
 
 def _drop_outliers(cand):
@@ -203,7 +219,7 @@ def signals(snaps, threshold=DEFAULT_THRESHOLD, window=WINDOW, pm_spread=PM_SPRE
         return pd.DataFrame(columns=['ts_utc', 'match_key', 'side', 'player', 'venue', 'event_id', 'odds', 'net_odds',
                                      'p_fair', 'edge'])
     if before_start:
-        df = df[df['start_time_utc'].isna() | (df['ts_utc'] < df['start_time_utc'])]
+        df = _before_start(df)
     rows = []
     for side in ('a', 'b'):
         gross = df[f'gross_{side}'].to_numpy(float)
