@@ -448,6 +448,7 @@ Diese Daten lassen sich später nicht nachholen. Der Collector sollte deshalb da
 python -m src.odds.collect                    # alle Venues einmal abfragen
 python -m src.odds.collect --loop 20          # alle 20 Minuten (Odds API nur jede 6. Runde)
 python -m src.odds.collect --venues polymarket,kalshi
+python -m src.odds.collect --venues odds_api  # Odds API, Polymarket und Kalshi immer mit dabei (kein Kontingent)
 python -m src.odds.collect --history          # historische Polymarket-/Kalshi-Preise (dauert ~1-2 h)
 python -m src.odds.report                     # Log Loss / Kalibrierung der PM-Closing-Preise
 ```
@@ -466,7 +467,8 @@ Ablage (unter `data/`, nicht im Repo):
   5 */2 * * *  cd /pfad/zu/tennis_transformer && ODDS_API_KEY=... python -m src.odds.collect --venues odds_api >> data/odds/collect.log 2>&1
   15 4 * * *   cd /pfad/zu/tennis_transformer && python -m src.odds.collect --history >> data/odds/history.log 2>&1
   ```
-  Mit cron läuft jede Runde einzeln, die Odds API deshalb in einer eigenen, selteneren Zeile (Kontingent).
+  Mit cron läuft jede Runde einzeln, die Odds API deshalb in einer eigenen, selteneren Zeile (Kontingent). Diese
+  Zeile fragt Polymarket und Kalshi mit ab, siehe [Sharp vs. Rest](#sharp-vs-rest-srcevaluationsharppy).
 - Windows (Aufgabenplanung), in der Eingabeaufforderung im Repo-Ordner:
   ```
   schtasks /Create /SC MINUTE /MO 20 /TN "TennisOdds" /TR "cmd /c cd /d %CD% && python -m src.odds.collect --venues polymarket,kalshi,softbooks >> data\odds\collect.log 2>&1"
@@ -517,13 +519,86 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
 ## Sharp vs. Rest (`src/evaluation/sharp.py`)
 
 Strategie A aus dem ROI-Plan auf den Quoten-Snapshots: Die faire Wahrscheinlichkeit kommt von Pinnacle bzw.
-Betfair Exchange ohne Marge. Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
+Betfair Exchange ohne Marge.
+
+Die Marge entfernt die Power-Methode (`power_fair`): k so, dass (1/o_a)^k + (1/o_b)^k = 1, dann p = (1/o)^k. Die Backtests
+bleiben bei der proportionalen Methode (`predictors.remove_margin`). Sie setzt Außenseiter zu hoch an, und beim Line
+Shopping wird genau dieser Fehler zur Edge: Alle 5 Signale bis zum 30.10.2026 lagen bei Quoten von 4,25 bis 10,5. Die
+Tabelle zeigt, wie weit das mittlere p über der Siegquote der Außenseiter liegt, in Prozent, auf 49.703 Pinnacle-Matches
+(2015 bis Januar 2026, ohne W/O). In Klammern stehen nur beendete Matches, das gilt für Bücher, die bei Aufgabe stornieren.
+
+| Quote des Außenseiters | n | proportional | Shin | Power | Standardfehler |
+|---|---|---|---|---|---|
+| bis 2,75 | 22.153 | −1,8 (−1,5) | −2,3 (−1,9) | −2,5 (−2,1) | 0,8 |
+| 2,75 bis 4,25 | 15.824 | +1,6 (+3,3) | −0,3 (+1,4) | −1,2 (+0,5) | 1,2 |
+| 4,25 bis 7 | 7.393 | +5,0 (+9,5) | +0,6 (+4,8) | −1,9 (+2,3) | 2,5 |
+| 7 bis 10,5 | 2.432 | +15,8 (+21,9) | +6,3 (+12,0) | +0,8 (+6,1) | 6,0 |
+| ab 10,5 | 1.901 | +54,9 (+72,9) | +30,7 (+45,9) | +14,3 (+27,6) | 11,0 |
+
+- Betfair zeigt nur Back-Preise. Der Back auf den Außenseiter ist sein Ask, der Back auf den Favoriten spiegelt sein Bid,
+  der faire Preis liegt dazwischen. Jede der drei Methoden bleibt auf Betfairs eigenen Quoten in dieser Spanne. Verglichen
+  wird Pinnacle deshalb mit deren Mitte, auf denselben 1.222 Matches (August 2025 bis Januar 2026), proportional, Shin,
+  Power: Quote 4,25 bis 7 +7,8 %, +2,1 %, −1,0 %, Quote 7 bis 10,5 +18,2 %, +5,5 %, −2,3 %. Die 88 Live-Paare desselben
+  Zeitpunkts bis zum 31.10.2026 liegen näher an Shin (4,25 bis 7, n = 13: +5,0 %, −1,5 %, −5,1 %).
+- Shin ist bei zwei Ausgängen dasselbe wie additiv, also (1 + 1/o_a − 1/o_b) / 2, auf Betfair genau die Mitte. Über alle
+  Matches liegen Shin und Power beim Log Loss gleichauf (Differenz −0,04 × 10⁻⁴, 95-%-KI −0,82 bis +0,90). Ab Quote 4,25
+  ist Power auf den beendeten Matches besser (−4,9, KI −8,5 bis −1,3), mit Aufgaben nicht signifikant (−2,0, KI −5,3 bis
+  +1,4). Gewählt ist Power, weil der Fehler beim Außenseiter teurer ist: Ein Punkt Wahrscheinlichkeit sind bei Quote 10
+  rund 10 % Edge, bei Quote 1,1 rund 1 %. Gewählt nach Kalibrierung, nicht nach dem Paper-Gewinn, gefittet ist nichts.
+- Was keine der Methoden löst: Ab Quote 10,5 setzt auch Power den Außenseiter zu hoch an, die Schwelle von 2 % schützt
+  dort nicht. Nahe 50:50 liegen alle rund einen Punkt zu niedrig, der Favorit also rund einen Punkt zu hoch.
+- Wirkung auf den Snapshots bis zum 31.10.2026: Von 5 Signalen bleibt mit Power 1, die Ausreißer-Quote von Putintseva bei
+  William Hill, und die fällt durch die Regel weiter unten. Im 5-Minuten-Fenster ist damit keines mehr übrig. Polymarket und
+  Kalshi lagen dort bisher nie. In einem 30-Minuten-Fenster mit ihnen bleiben 4 von 13, die Preise sind dort aber verschoben,
+  das zeigt nur die Größenordnung. Wetten, die vorher abgerechnet wurden, behalten p, Edge und `clv_sharp` der alten Methode.
+
+Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
 die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei den Prediction Markets die
 Gebühren. Ein Signal entsteht, wenn p_fair × netto − 1 > Schwelle. Snapshots verschiedener Venues werden
 nur verknüpft, wenn sie höchstens 5 Minuten auseinanderliegen. Einsatz: Viertel-Kelly mit Deckel 2 % der
 Bankroll, p vorher zur Hälfte Richtung Venue-Preis geschrumpft. Flat läuft zum Vergleich mit. Ohne
-Sharp-Snapshots (Odds API) gibt es keine Signale. Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe
-Paper-Trading: Die höchste Quote gewinnt, ein erfundener Preis würde also gerade wegen seiner Quote gewählt.
+Sharp-Snapshots (Odds API) gibt es keine Signale.
+
+Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe Paper-Trading: Die höchste Quote gewinnt, ein erfundener
+Preis würde also gerade wegen seiner Quote gewählt. Aus demselben Grund scheiden Ausreißer vor dem Line Shopping aus. Eine
+Quote fällt weg, wenn sie mehr als 6 Punkte Wahrscheinlichkeit oder mehr als das 1,5-Fache über dem Median aller Quoten
+desselben Sharp-Zeitpunkts und derselben Seite liegt. Das gilt ab 6 Quoten, darunter trägt der Median nicht, weil sich
+Bücher Feeds teilen. Die nächste Quote kann weiter ein Signal sein. Anlass: Am 27.10.2026 stand Putintseva bei William
+Hill und 888 auf 10,0, der Median auf 5,75, acht Stunden später standen beide auf 6,5. Das waren mit der alten Marge 36 %
+Edge und eine Wette, mit Power wären es immer noch 23 %.
+- Die Grenzen kommen aus der Verteilung, nicht aus dem Gewinn (5.934 Quoten, 182 Märkte, 55 Matches, 27. bis 30.10.2026).
+  In Punkten ist der Abstand über alle Quotenbereiche gleich (p99 3,1 bis 3,6), halbiert sich je halben Punkt und endet
+  bei 5,2. Über 6 Punkten wäre rechnerisch weniger als eine Zeile normal. Die größten normalen Abstände haben Quellen ohne
+  Marge: Exchanges im Median 2,0 Punkte, im Replay Polymarket und Kalshi 2,3. Als Quotient wächst der Abstand mit der
+  Quote (p99 1,04 bis 1,34, Maximum 1,36), deshalb gilt er nur als Riegel für lange Außenseiter, bei denen Punkte nicht
+  greifen.
+- Die Stichprobe enthält nur diesen einen echten Ausreißer (7,4 Punkte, das 1,74-Fache). Von 5,5 bis 7 Punkten und vom
+  1,4- bis zum 1,6-Fachen fällt jeweils genau er heraus.
+- Eine Obergrenze der Edge träfe hier dasselbe, misst aber schlechter: Ein Punkt Abstand ist bei Quote 1,3 rund 1,3 % Edge,
+  bei Quote 10 rund 10 %. Ein veralteter Favorit (Median 1,50, Quote 1,75, also 9,5 Punkte) hat nur 7 % Edge, Putintseva mit
+  7,4 Punkten 23 %. Ein Deckel, der auch den Favoriten trifft, ließe über der Schwelle von 2 % kaum Platz.
+- Die Regel prüft die Quote, nicht den fairen Preis. Den sichert `SHARP_BOOK`: Die Wette mit 86 % Edge vom 27.10. (Pohánková
+  bei coolbet, Quote 4,0 normal) kam von Betfair 1,10/1,06 und entstünde heute nicht mehr. Mit `SHARP_BOOK` weicht der
+  faire Preis an allen 91 Zeitpunkten höchstens 2,2 Punkte vom Median der Bücher ab, beide mit Power ohne Marge.
+- Ob ein Buch aus Deutschland nutzbar ist, prüft sie auch nicht. 11 der 35 Bücher tragen ein anderes Land im Namen, eine
+  Liste der nutzbaren Bücher gibt es noch nicht.
+
+Damit Polymarket und Kalshi im Fenster liegen, fragt jeder Lauf der Odds API sie mit ab (`--venues odds_api`, kein
+Kontingent, wenige Sekunden). Vorher hat sharp dort nie verglichen: Die 6 Odds-API-Läufe bis zum 30.10.2026 lagen 5,4
+bis 156 Minuten vom nächsten Polymarket-Snapshot entfernt, das ergab 0 von 3.247 Zeilen. Ein größeres Fenster löst das
+nicht:
+- 30 Minuten decken nur 4 der 6 Läufe ab (136 Zeilen), denn der Abstand hängt davon ab, ob gerade eine Paper-Runde lief.
+  Das Mitabfragen deckt alle 6 ab (174 Zeilen vor dem Start im Replay).
+- Der alte Preis kostet die Edge, um die es geht. Das typische Signal hatte mit der alten Marge 3,7 % Edge bei Quote 4,3,
+  ein Cent kostet dort 4,2 %, und von 12 Signalen im 30-Minuten-Fenster blieb mit einem Cent mehr nur eines. Mit Power sind
+  die Edges kleiner, der Cent wiegt also schwerer. In 20 bis 40 Minuten bewegen sich zwar 80 % der Kaufpreise um weniger
+  als einen Cent, aber jede fünfte Seite um mindestens einen.
+- Im Vergleich Kalshi-Mitte gegen Polymarket-Ask (eine Runde alt gegen frisch) sind 27 % (alter Kaufpreis, 37 Signale)
+  bzw. 31 % (alter fairer Preis, 45 Signale) der Signale zu frischen Preisen keine mehr. Mit echten Sharp-Preisen und der
+  alten Marge ist die Stichprobe klein: 12 von 13 Signalen tragen auch mit dem Kaufpreis rund 30 Minuten später.
+
+Jede Paper-Runde schreibt ins Log, womit sharp verglichen hat (`Sharp: 137 Vergleiche vor dem Start, davon Polymarket 4,
+Kalshi 4`).
 
 ## Paper-Trading (`src/paper/`, Dashboard `/scraper/paper/`)
 
@@ -531,7 +606,8 @@ Paper-Trading: Die höchste Quote gewinnt, ein erfundener Preis würde also gera
 python -m src.paper.run                 # eine Runde: Snapshots holen, Signale -> Wetten, abrechnen, Stand ausgeben
 python -m src.paper.run --loop 30       # dauerhaft alle 30 Minuten
 python -m src.paper.run --no-collect    # wenn der Collector schon separat läuft
-python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent, für „sharp“ nötig)
+python -m src.paper.run --odds-api      # zusätzlich die Odds API (kostet Kontingent)
+python -m src.paper.run --odds-api --strategies sharp   # nur sharp: abfragen und im selben Lauf wetten, ohne Predictor
 python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-2   # eigene Segmente
 ```
 
@@ -609,8 +685,11 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
 
 **Dauerhaft laufen lassen** (lokal, in der Cloud-Session läuft nichts dauerhaft). Der Paper-Lauf holt selbst
 Polymarket- und Kalshi-Snapshots. Für die Strategie „sharp“ muss zusätzlich der Odds-API-Collector laufen
-(siehe oben, Kontingent beachten). Die Historie lädt nur noch der nächtliche Lauf: Fehlt er, kommen neue
-Marktergebnisse weder nach `data/odds/history/` noch als Ergebnisquelle nach `data/matches.csv`.
+(siehe oben, Kontingent beachten). Die nächste Paper-Runde wettet auf seine Preise, wenn sie höchstens 90 Minuten alt
+sind, und zwar zum Preis aus seinem Lauf. Genauer ist `python -m src.paper.run --odds-api --strategies sharp` statt
+des Collectors: Abfrage und Wette liegen dann nur Sekunden auseinander, und das Kontingent bleibt gleich. Die Historie
+lädt nur noch der nächtliche Lauf: Fehlt er, kommen neue Marktergebnisse weder nach `data/odds/history/` noch als
+Ergebnisquelle nach `data/matches.csv`.
 
 Empfohlen ist ein Dauerprozess mit `--loop 30` statt eines neuen Prozesses alle 30 Minuten: pandas, LightGBM
 und Co. werden nur einmal geladen (weniger anfällig, wenn eine Anwendungssteuerungsrichtlinie einzelne DLLs

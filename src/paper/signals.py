@@ -275,9 +275,15 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
     return normalize(pd.DataFrame(rows))
 
 
-def sharp_signals(snaps, now, bankroll=1000.0, threshold=sharp.DEFAULT_THRESHOLD, strategy='sharp'):
+def sharp_signals(snaps, now, bankroll=1000.0, threshold=sharp.DEFAULT_THRESHOLD, strategy='sharp', log=print):
     """Strategie A auf den Snapshots der letzten MAX_AGE: erstes Signal je Match und Seite, nur vor dem Start."""
     recent = snaps[(snaps['ts_utc'] <= now) & (snaps['ts_utc'] >= now - MAX_AGE)]
+    if recent['venue'].isin(sharp.SHARP).any():
+        seen = sharp.coverage(recent)
+        log(f"  Sharp: {sum(seen.values())} Vergleiche vor dem Start, davon Polymarket {seen.get('polymarket', 0)}, "
+            f"Kalshi {seen.get('kalshi', 0)}")
+    else:
+        log(f"  Sharp: keine Sharp-Preise aus den letzten {MAX_AGE.total_seconds() / 60:.0f} Minuten")
     sig = sharp.signals(recent, threshold)
     if sig.empty:
         return normalize(pd.DataFrame())
