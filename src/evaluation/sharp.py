@@ -15,6 +15,7 @@ Verknüpfung: Dasselbe Match bei verschiedenen Venues wird über build.MatchInde
 (5 Minuten) vom Sharp-Snapshot entfernt ist (align).
 Staking: Viertel-Kelly mit Deckel (2 % der Bankroll), p vorher Richtung des Venue-Preises geschrumpft
 (shrink_to_market); Flat läuft zum Vergleich mit.
+Marge: Power-Methode (power_fair), nicht proportional wie die Backtests (predictors.remove_margin).
 """
 import numpy as np
 import pandas as pd
@@ -22,7 +23,6 @@ import pandas as pd
 from ..sources.build import ODDS_RANGE, MatchIndex
 from ..sources.common import yyyymmdd
 from .betting import Kelly
-from .predictors import remove_margin
 from .timing import PLACEHOLDER
 from .venues import DE_BET_TAX, VENUES, Venue
 
@@ -121,13 +121,30 @@ def buy_odds(df, pm_spread=PM_SPREAD):
     return out
 
 
+def power_fair(odds_a, odds_b, iters=10):
+    """
+    Faire Wahrscheinlichkeit für A nach der Power-Methode: (1/o_a)^k + (1/o_b)^k = 1, p = (1/o_a)^k, Newton ab k = 1.
+    1/o normiert (predictors.remove_margin) setzt den Außenseiter zu hoch an, weil er dann kaum Marge trägt, Messwerte
+    im README unter „Sharp vs. Rest“. Auf Betfair-Quoten (nur Back-Preise) bleibt p zwischen Bid und Ask.
+    """
+    log_a, log_b = np.log(1 / np.asarray(odds_a, float)), np.log(1 / np.asarray(odds_b, float))
+    k = np.ones_like(log_a)
+    for _ in range(iters):
+        p_a, p_b = np.exp(k * log_a), np.exp(k * log_b)
+        k = k - (p_a + p_b - 1) / (log_a * p_a + log_b * p_b)
+    return np.exp(k * log_a)
+
+
 def sharp_fair(df):
     """Faire Wahrscheinlichkeit für A aus den Sharp-Snapshots (ohne Marge), NaN bei unplausiblem Buch (SHARP_BOOK)."""
     odds_a, odds_b = df['odds_a'].to_numpy(float), df['odds_b'].to_numpy(float)
     with np.errstate(divide='ignore', invalid='ignore'):
         book = 1 / odds_a + 1 / odds_b
     low, high = SHARP_BOOK
-    return np.where((book >= low) & (book <= high), remove_margin(odds_a, odds_b), np.nan)
+    plausible = (book >= low) & (book <= high)
+    fair = np.full(len(df), np.nan)
+    fair[plausible] = power_fair(odds_a[plausible], odds_b[plausible])
+    return fair
 
 
 def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
