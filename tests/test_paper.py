@@ -7,6 +7,7 @@ import pytest
 
 from src.evaluation import sharp
 from src.evaluation.betting import Kelly
+from src.evaluation.predictors import remove_margin
 from src.odds.schema import Snapshot, to_frame
 from src.paper import report, settle, signals
 from src.paper.store import add_bets, load_bets, save_bets
@@ -45,7 +46,7 @@ def test_align_within_five_minutes_only():
 
 
 def test_line_shopping_net_of_tax_and_fees():
-    p_fair = (1 / 1.8) / (1 / 1.8 + 1 / 2.1)
+    p_fair = sharp.power_fair(1.8, 2.1)
     df = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1),
                snap('tipico', NOW, price_a=2.00, price_b=1.80),  # 2,00 brutto, nach 5,3 % Steuer 1,894
                snap('polymarket', NOW, price_a=0.505, price_b=0.495, best_ask_a=0.51, best_ask_b=0.50))  # 1,96
@@ -104,13 +105,120 @@ def test_sharp_signals_ignore_polymarket_without_real_ask():
     assert list(sig['venue']) == ['tipico']
 
 
+@pytest.mark.parametrize('odds_a, odds_b', [(1.09, 8.57), (1.9, 1.95), (1.01, 26.0), (1.27, 4.4), (1.03, 15.0),
+                                            (2.04, 2.08), (1.52, 2.9), (1.002, 400.0), (1.05, 8.0)])
+def test_power_fair_sums_to_one_and_solves_k(odds_a, odds_b):
+    """Beide Seiten ergeben 1 (signals rechnet Seite B als 1 - p), auch bei Buch unter 1 und langen Außenseitern."""
+    p_a, p_b = sharp.power_fair(odds_a, odds_b), sharp.power_fair(odds_b, odds_a)
+    assert p_a + p_b == pytest.approx(1.0, abs=1e-12)
+    k = np.log(p_a) / np.log(1 / odds_a)  # p = (1/o)^k mit demselben k auf beiden Seiten
+    assert p_b == pytest.approx((1 / odds_b) ** k, abs=1e-12)
+
+
+def test_power_fair_takes_margin_from_longshot():
+    """Landaluce am 27.10.: Pinnacle 1,09/8,57. Proportional ergibt 0,113, über dem Betfair-Back von 10,5 (0,095)."""
+    p_dog = sharp.power_fair(8.57, 1.09)
+    assert p_dog == pytest.approx(0.09148, abs=1e-5)  # mit scipy.optimize.brentq nachgerechnet, k = 1,1133
+    assert remove_margin(8.57, 1.09) == pytest.approx(0.1129, abs=5e-4)
+    bid, ask = 1 - 1 / 1.09, 1 / 10.5  # Betfair 1,09/10,5: Back auf den Favoriten spiegelt das Bid des Außenseiters
+    assert bid < p_dog < ask < remove_margin(8.57, 1.09)
+    assert sharp.power_fair(2.0, 2.0) == pytest.approx(0.5)  # gleiche Quoten: nichts zu verteilen
+    assert sharp.power_fair(1 / 0.6, 1 / 0.4) == pytest.approx(0.6)  # ohne Marge bleibt der Preis
+
+
+@pytest.mark.parametrize('odds_a, odds_b', [(1.09, 10.5), (1.27, 4.4), (2.0, 1.98), (1.02, 34.0), (10.5, 1.09)])
+def test_power_fair_stays_between_betfair_bid_and_ask(odds_a, odds_b):
+    """Nur Back-Preise: Der faire Preis liegt zwischen dem Back auf A (Ask) und dem gespiegelten Back auf B (Bid)."""
+    assert 1 - 1 / odds_b < sharp.power_fair(odds_a, odds_b) < 1 / odds_a
+
+
+def test_longshot_signal_comes_from_margin_method():
+    """Die Exchange-Quote 10,5 gegen Pinnacle 8,57: proportional 12 % Edge nach Steuer, mit Power keine Wette."""
+    df = frame(snap('pinnacle', NOW, price_a=1.09, price_b=8.57), snap('matchbook', NOW, price_a=1.06, price_b=10.5))
+    assert remove_margin(8.57, 1.09) * 10.5 * (1 - sharp.DE_BET_TAX) - 1 > 0.12
+    assert sharp.signals(df, threshold=0.02).empty
+    aligned = sharp.align(df)
+    assert aligned['p_fair'].iloc[0] == pytest.approx(sharp.power_fair(1.09, 8.57))
+
+
 def test_implausible_sharp_book_is_no_fair_price():
     """Betfair 1,06/1,10 (Buch 185 %) ist kein fairer Preis: kein Signal, Closing aus dem letzten plausiblen Kurs."""
     df = frame(snap('betfair', NOW, price_a=1.06, price_b=1.10), snap('tipico', NOW, price_a=1.25, price_b=4.0))
     assert sharp.signals(df, threshold=0.0).empty
     close = sharp.closing_fair(frame(snap('betfair', NOW, price_a=1.27, price_b=4.4),
                                      snap('betfair', NOW + timedelta(minutes=30), price_a=1.06, price_b=1.10)))
-    assert close.iloc[0] == pytest.approx((1 / 1.27) / (1 / 1.27 + 1 / 4.4))
+    assert close.iloc[0] == pytest.approx(sharp.power_fair(1.27, 4.4))
+
+
+FAIR_B20 = snap('pinnacle', NOW, price_a=1.25, price_b=5.0)  # Buch 1,0, also B fair 0,20 und faire Quote 5,0
+STALE = ('williamhill', (1.05, 10.0))
+
+
+def market(*quotes, normal=(1.2, 4.4), n=6):
+    """n Bücher mit derselben Quote (normal) und dazu quotes als (Venue, (Quote A, Quote B))."""
+    books = [snap(f'book{i}', NOW, price_a=normal[0], price_b=normal[1]) for i in range(n)]
+    return books + [snap(venue, NOW, price_a=a, price_b=b) for venue, (a, b) in quotes]
+
+
+def test_outlier_loses_line_shopping_with_its_clone():
+    """Wie Putintseva am 27.10.: 10,0 bei William Hill und 888 (selber Feed) gegen Median 5,75. Die nächste Quote gewinnt."""
+    clones = (STALE, ('sport888', STALE[1]))
+    assert sharp.signals(frame(FAIR_B20, *market(*clones)), threshold=0.02).empty
+    sig = sharp.signals(frame(FAIR_B20, *market(*clones, ('matchbook', (1.21, 5.6)))), threshold=0.02)
+    assert list(sig['venue']) == ['matchbook'] and list(sig['odds']) == [5.6]  # 4,9 Punkte über dem Median, Edge 6 %
+
+
+@pytest.mark.parametrize('fair, normal, quote', [
+    ((1.5, 2.6), (1.5, 2.3), (1.75, 2.0)),  # Favorit: 9,5 Punkte, aber nur das 1,17-Fache
+    ((1.06, 11.0), (1.05, 12.0), (1.03, 19.0)),  # Außenseiter: nur 3,1 Punkte, aber das 1,58-Fache
+])
+def test_outlier_in_points_or_as_ratio(fair, normal, quote):
+    """Ein Maß allein reicht nicht: Der Quotient übersieht Favoriten, die Punkte übersehen lange Außenseiter."""
+    pin = snap('pinnacle', NOW, price_a=fair[0], price_b=fair[1])
+    assert sharp.signals(frame(pin, *market(('stale', quote), normal=normal)), threshold=0.02).empty
+    alone = market(('stale', quote), n=0)  # ohne andere Bücher greift die Regel nicht, die Quote wäre ein Signal
+    assert list(sharp.signals(frame(pin, *alone), threshold=0.02)['venue']) == ['stale']
+
+
+def test_normal_spread_of_exchanges_stays():
+    """Landaluce am 27.10.: Matchbook 10,5 gegen Median 7,7 (3,5 Punkte, 1,36-fach) ist bei einer Exchange ohne Marge normal.
+    Die Quote bleibt im Line Shopping, ist mit der Power-Marge aber kein Signal mehr (proportional waren es 12 % Edge)."""
+    pin = snap('pinnacle', NOW, price_a=1.09, price_b=8.57)
+    sig = sharp.signals(frame(pin, *market(('matchbook', (1.09, 10.5)), normal=(1.08, 7.7))), threshold=-1.0)
+    best = sig[sig['side'] == 'b']
+    assert list(best['venue']) == ['matchbook']
+    assert best['edge'].iloc[0] == pytest.approx(sharp.power_fair(8.57, 1.09) * 10.5 * (1 - sharp.DE_BET_TAX) - 1)
+
+
+@pytest.mark.parametrize('gap, out', [(sharp.MAX_GAP - 0.005, False), (sharp.MAX_GAP + 0.005, True)])
+def test_outlier_limit_in_points(gap, out):
+    """Knapp unter und über MAX_GAP, Median 2,0 (der Quotient bleibt unter MAX_RATIO)."""
+    pin = snap('pinnacle', NOW, price_a=2.0, price_b=2.0)
+    quote = 1 / (0.5 - gap)
+    assert sharp.signals(frame(pin, *market(('stale', (1.7, quote)), normal=(1.9, 2.0))), threshold=0.02).empty == out
+
+
+def test_outlier_needs_enough_books():
+    """Unter MIN_BOOKS Quoten ist der Median nicht belastbar, weil sich Bücher Feeds teilen: Die Quote bleibt."""
+    few = market(STALE, n=sharp.MIN_BOOKS - 2)
+    assert list(sharp.signals(frame(FAIR_B20, *few), threshold=0.02)['venue']) == ['williamhill']
+    assert sharp.signals(frame(FAIR_B20, *market(STALE, n=sharp.MIN_BOOKS - 1)), threshold=0.02).empty
+
+
+def test_outlier_with_swapped_players_and_on_prediction_markets():
+    """Das Maß gilt aus Sicht des Sharp-Events, auch wenn das Buch A und B tauscht, und ebenso für den Ask der Märkte."""
+    swapped = snap('williamhill', NOW, a='Carlos Alcaraz', b='Jannik Sinner', price_a=10.0, price_b=1.05)
+    assert sharp.signals(frame(FAIR_B20, *market(), swapped), threshold=0.02).empty
+    cheap = snap('polymarket', NOW, price_a=0.9, price_b=0.09, best_ask_a=0.91, best_ask_b=0.1)  # Ask 0,10 = Quote 10,0
+    assert sharp.signals(frame(FAIR_B20, *market(), cheap), threshold=0.02).empty
+
+
+def test_paper_bet_skips_outlier():
+    """Der Weg bis zur Wette: Die Paper-Runde bucht nicht den Ausreißer, sondern die nächste Quote mit Edge."""
+    now = pd.Timestamp(NOW + timedelta(minutes=1))
+    assert signals.sharp_signals(frame(FAIR_B20, *market(STALE)), now).empty
+    bets = signals.sharp_signals(frame(FAIR_B20, *market(STALE, ('matchbook', (1.21, 5.6)))), now)
+    assert list(bets['venue']) == ['matchbook'] and list(bets['odds']) == [5.6]
 
 
 def test_kelly_cap_and_shrink():
@@ -423,6 +531,138 @@ def test_run_once_uses_snapshots_collected_in_same_round(tmp_path, monkeypatch):
                            raw=True, sharp_threshold=0.02, history=False, segments='alle')
     bets, _, _ = run.run_once(args, log=lambda *a: None, prob=lambda row: 0.8, model_name='elo2')
     assert len(bets) == 1 and bets['player'].iloc[0] == 'Jannik Sinner'
+
+
+CHEAP_A = dict(price_a=0.495, price_b=0.505, best_bid_a=0.49, best_ask_a=0.50, best_bid_b=0.50, best_ask_b=0.51)
+
+
+def _collector_adapters(calls, ts=NOW):
+    """Collector ohne Netz: Jeder Adapter merkt sich den Aufruf. Pinnacle sieht A fair bei ~ 0,54, der Ask ist 0,50."""
+    def adapter(name, snapshot):
+        def fetch(log=print):
+            calls.append(name)
+            return [snapshot]
+        return fetch
+
+    return {'polymarket': adapter('polymarket', snap('polymarket', ts, **CHEAP_A)),
+            'kalshi': adapter('kalshi', snap('kalshi', ts, **CHEAP_A)),
+            'odds_api': adapter('odds_api', snap('pinnacle', ts, price_a=1.8, price_b=2.1))}
+
+
+def _sharp_round_args(tmp_path, root, **kw):
+    from types import SimpleNamespace
+    return SimpleNamespace(**{**dict(collect=False, odds_api=False, softbooks=False, snapshots=root, days=1,
+                                     bets=str(tmp_path / 'bets.parquet'), strategies=['sharp'], model='elo2',
+                                     threshold=0.05, raw=True, sharp_threshold=0.02, history=False, segments='auto'),
+                              **kw})
+
+
+def test_odds_api_run_also_queries_the_prediction_markets(tmp_path):
+    """--venues odds_api fragt Polymarket und Kalshi mit ab, sonst läge nie einer ihrer Preise im Fenster von sharp. Die
+    Odds API bleibt bei einer Abfrage je Lauf, und andere Läufe fragen sie gar nicht ab (Kontingent)."""
+    from src.odds import collect
+    from src.odds.schema import load_snapshots
+    calls, root = [], str(tmp_path)
+    adapters = _collector_adapters(calls)
+    result = collect.collect_once(['odds_api'], root, adapters=adapters, log=lambda *a: None)
+    assert calls == ['polymarket', 'kalshi', 'odds_api']
+    assert result == {'polymarket': 1, 'kalshi': 1, 'odds_api': 1}
+    assert sorted(sharp.align(load_snapshots(root=root))['venue']) == ['kalshi', 'polymarket']
+
+    for venues, expected in ((['polymarket', 'kalshi'], ['polymarket', 'kalshi']),  # Paper-Runde
+                             (['kalshi'], ['kalshi']),
+                             (['polymarket', 'kalshi', 'odds_api'], ['polymarket', 'kalshi', 'odds_api']),  # --odds-api
+                             (['odds_api', 'kalshi'], ['polymarket', 'odds_api', 'kalshi'])):
+        calls.clear()
+        collect.collect_once(venues, root, adapters=adapters, log=lambda *a: None)
+        assert calls == expected
+
+
+def test_failed_prediction_market_does_not_stop_the_odds_api_run(tmp_path):
+    """Fällt Polymarket aus, fehlt nur dessen Preis: Die Credits der Odds API sind damit nicht verloren."""
+    from src.odds import collect
+    from src.odds.schema import load_snapshots
+
+    def broken(log=print):
+        raise RuntimeError("Polymarket down")
+
+    calls, root = [], str(tmp_path)
+    adapters = {**_collector_adapters(calls), 'polymarket': broken}
+    result = collect.collect_once(['odds_api'], root, adapters=adapters, log=lambda *a: None)
+    assert result['polymarket'].startswith('Fehler: RuntimeError')
+    assert calls == ['kalshi', 'odds_api']
+    assert list(sharp.align(load_snapshots(root=root))['venue']) == ['kalshi']
+
+
+def test_sharp_compares_the_price_of_the_same_run_not_of_the_paper_round():
+    """Zeitplan: Odds API um :05, Paper-Runde um :18. Deren Preis liegt 13 Minuten neben dem Sharp-Preis und zählt
+    nicht, auch wenn er besser aussieht. Verglichen wird mit dem Preis, den der Odds-API-Lauf mit abgefragt hat."""
+    fair = snap('pinnacle', NOW, price_a=1.8, price_b=2.1)
+    same_run = snap('polymarket', NOW - timedelta(seconds=3), **CHEAP_A)
+    paper_round = snap('polymarket', NOW + timedelta(minutes=13), price_a=0.395, price_b=0.605, best_bid_a=0.39,
+                       best_ask_a=0.40, best_bid_b=0.60, best_ask_b=0.61)
+    now = pd.Timestamp(NOW + timedelta(minutes=13, seconds=5))
+    assert sharp.align(frame(fair, paper_round)).empty
+    assert signals.sharp_signals(frame(fair, paper_round), now).empty
+    out = signals.sharp_signals(frame(fair, same_run, paper_round), now)
+    assert list(out['venue']) == ['polymarket']
+    assert out['odds'].iloc[0] == pytest.approx(1 / 0.50)
+
+
+def test_sharp_signals_ignore_venue_price_after_the_start():
+    """Polymarket und Kalshi handeln im Match weiter: Liegt nur der Sharp-Preis vor dem Start, zählt der Preis nicht."""
+    fair = snap('pinnacle', START - timedelta(minutes=2), price_a=1.8, price_b=2.1)
+    before = snap('polymarket', START - timedelta(minutes=1), **CHEAP_A)
+    live = snap('polymarket', START + timedelta(minutes=1), **CHEAP_A)
+    assert sharp.signals(frame(fair, live), threshold=0.0).empty
+    assert sharp.coverage(frame(fair, live)) == {}
+    assert len(sharp.signals(frame(fair, before), threshold=0.0)) == 1
+    assert sharp.coverage(frame(fair, before)) == {'polymarket': 1}
+
+
+def test_paper_round_bets_on_the_prices_of_the_odds_api_run(tmp_path, monkeypatch):
+    """Der geplante Ablauf ohne Änderung der Tasks: Der Odds-API-Lauf schreibt alle drei Venues, die nächste Paper-Runde
+    wettet bei der besten davon. Das Log zeigt, womit sharp verglichen hat."""
+    from src.odds import collect, history
+    from src.paper import run
+    root = str(tmp_path / 'snaps')
+    collect.collect_once(['odds_api'], root, adapters=_collector_adapters([]), log=lambda *a: None)
+    monkeypatch.setattr(run, 'now_utc', lambda: NOW + timedelta(minutes=13))
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    logs = []
+    bets, _, _ = run.run_once(_sharp_round_args(tmp_path, root), log=logs.append)
+    assert list(zip(bets['strategy'], bets['venue'], bets['side'])) == [('sharp', 'polymarket', 'a')]
+    assert bets['odds'].iloc[0] == pytest.approx(2.0)
+    assert '  Sharp: 2 Vergleiche vor dem Start, davon Polymarket 1, Kalshi 1' in logs
+
+
+def test_paper_run_with_odds_api_bets_in_the_same_round(tmp_path, monkeypatch):
+    """python -m src.paper.run --odds-api --strategies sharp: abfragen und wetten in einem Lauf, ohne Predictor."""
+    from src.odds import collect, history
+    from src.paper import run
+    calls = []
+    monkeypatch.setattr(collect, 'ADAPTERS', _collector_adapters(calls))
+    monkeypatch.setattr(run, 'now_utc', lambda: NOW + timedelta(seconds=5))
+    monkeypatch.setattr(run, 'recent_matches', lambda now: ([], []))
+    monkeypatch.setattr(run, 'make_prob', lambda *a: pytest.fail("sharp braucht keinen Predictor"))
+    monkeypatch.setattr(history, 'read_history', lambda venue: pd.DataFrame())
+    args = _sharp_round_args(tmp_path, str(tmp_path / 'snaps'), collect=True, odds_api=True)
+    bets, _, _ = run.run_once(args, log=lambda *a: None)
+    assert calls == ['polymarket', 'kalshi', 'odds_api']
+    assert list(bets['venue']) == ['polymarket']
+
+
+def test_sharp_log_tells_when_prediction_markets_are_missing():
+    """Ohne Vergleich bei Polymarket und Kalshi wettet sharp nur bei Buchmachern: Das steht in jeder Runde im Log."""
+    now = pd.Timestamp(NOW + timedelta(minutes=1))
+    logs = []
+    signals.sharp_signals(frame(snap('polymarket', NOW, **BOOK)), now, log=logs.append)
+    assert logs == ['  Sharp: keine Sharp-Preise aus den letzten 90 Minuten']
+    logs.clear()
+    only_books = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1), snap('tipico', NOW, price_a=1.9, price_b=1.9))
+    signals.sharp_signals(only_books, now, log=logs.append)
+    assert logs == ['  Sharp: 1 Vergleiche vor dem Start, davon Polymarket 0, Kalshi 0']
 
 
 def test_open_results_queries_only_due_unknown_markets(monkeypatch):

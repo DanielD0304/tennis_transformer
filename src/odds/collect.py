@@ -4,6 +4,7 @@ Collector: alle Venues abfragen und die Snapshots an data/odds/snapshots/YYYY-MM
     python -m src.odds.collect                      # einmal
     python -m src.odds.collect --loop 20            # alle 20 Minuten (Strg+C beendet)
     python -m src.odds.collect --venues polymarket,kalshi
+    python -m src.odds.collect --venues odds_api    # Odds API, Polymarket und Kalshi immer mit dabei
     python -m src.odds.collect --history            # historische Polymarket-/Kalshi-Preise laden (Kalshi inkl. ITF)
     python -m src.odds.collect --history --levels main,challenger       # Kalshi ohne ITF (geteilte IP)
 
@@ -23,13 +24,24 @@ ADAPTERS = {
     'odds_api': odds_api.fetch_current,
     'softbooks': softbooks.fetch_current,
 }
+# Jeder Lauf der Odds API fragt diese Venues mit ab (kein Kontingent, wenige Sekunden): Die Strategie sharp vergleicht
+# nur Preise im selben Fenster (evaluation/sharp.WINDOW), und die Odds API läuft wegen des Kontingents getrennt.
+WITH_ODDS_API = ('polymarket', 'kalshi')
+
+
+def venues_of_run(venues):
+    """Die Auswahl, bei der Odds API davor WITH_ODDS_API: Ihr Zeitstempel fällt vor ihre teils langsamen Abfragen."""
+    venues = list(venues)
+    if 'odds_api' not in venues:
+        return venues
+    return [v for v in WITH_ODDS_API if v not in venues] + venues
 
 
 def collect_once(venues=tuple(ADAPTERS), root=SNAPSHOT_DIR, adapters=None, log=print):
     """Jede Venue einmal abfragen. Ergebnis: {venue: Anzahl Snapshots} bzw. {venue: 'Fehler: ...'}."""
     adapters = adapters or ADAPTERS
     result = {}
-    for name in venues:
+    for name in venues_of_run(venues):
         t0 = time.time()
         try:
             snaps = clean(adapters[name](log=log), log)
@@ -57,7 +69,8 @@ def loop(minutes, venues, odds_api_every=6, root=SNAPSHOT_DIR, log=print):
 def main(argv=None):
     p = argparse.ArgumentParser(description="Quoten-Snapshots sammeln (Polymarket, Kalshi, Odds API, Soft-Books)")
     p.add_argument('--loop', type=float, metavar='MINUTEN', help="dauerhaft alle N Minuten abfragen")
-    p.add_argument('--venues', default=','.join(ADAPTERS), help=f"Auswahl aus {','.join(ADAPTERS)}")
+    p.add_argument('--venues', default=','.join(ADAPTERS),
+                   help=f"Auswahl aus {','.join(ADAPTERS)} (odds_api fragt {' und '.join(WITH_ODDS_API)} immer mit ab)")
     p.add_argument('--odds-api-every', type=int, default=6, help="im Loop die Odds API nur jede n-te Runde")
     p.add_argument('--history', action='store_true', help="historische Polymarket-/Kalshi-Preise laden")
     p.add_argument('--since', help="--history: nur Matches ab Datum (YYYY-MM-DD)")
