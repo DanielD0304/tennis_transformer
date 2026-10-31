@@ -7,6 +7,7 @@ import pytest
 
 from src.evaluation import sharp
 from src.evaluation.betting import Kelly
+from src.evaluation.predictors import remove_margin
 from src.odds.schema import Snapshot, to_frame
 from src.paper import report, settle, signals
 from src.paper.store import add_bets, load_bets, save_bets
@@ -45,7 +46,7 @@ def test_align_within_five_minutes_only():
 
 
 def test_line_shopping_net_of_tax_and_fees():
-    p_fair = (1 / 1.8) / (1 / 1.8 + 1 / 2.1)
+    p_fair = sharp.power_fair(1.8, 2.1)
     df = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1),
                snap('tipico', NOW, price_a=2.00, price_b=1.80),  # 2,00 brutto, nach 5,3 % Steuer 1,894
                snap('polymarket', NOW, price_a=0.505, price_b=0.495, best_ask_a=0.51, best_ask_b=0.50))  # 1,96
@@ -104,13 +105,49 @@ def test_sharp_signals_ignore_polymarket_without_real_ask():
     assert list(sig['venue']) == ['tipico']
 
 
+@pytest.mark.parametrize('odds_a, odds_b', [(1.09, 8.57), (1.9, 1.95), (1.01, 26.0), (1.27, 4.4), (1.03, 15.0),
+                                            (2.04, 2.08), (1.52, 2.9), (1.002, 400.0), (1.05, 8.0)])
+def test_power_fair_sums_to_one_and_solves_k(odds_a, odds_b):
+    """Beide Seiten ergeben 1 (signals rechnet Seite B als 1 - p), auch bei Buch unter 1 und langen Außenseitern."""
+    p_a, p_b = sharp.power_fair(odds_a, odds_b), sharp.power_fair(odds_b, odds_a)
+    assert p_a + p_b == pytest.approx(1.0, abs=1e-12)
+    k = np.log(p_a) / np.log(1 / odds_a)  # p = (1/o)^k mit demselben k auf beiden Seiten
+    assert p_b == pytest.approx((1 / odds_b) ** k, abs=1e-12)
+
+
+def test_power_fair_takes_margin_from_longshot():
+    """Landaluce am 27.10.: Pinnacle 1,09/8,57. Proportional ergibt 0,113, über dem Betfair-Back von 10,5 (0,095)."""
+    p_dog = sharp.power_fair(8.57, 1.09)
+    assert p_dog == pytest.approx(0.09148, abs=1e-5)  # mit scipy.optimize.brentq nachgerechnet, k = 1,1133
+    assert remove_margin(8.57, 1.09) == pytest.approx(0.1129, abs=5e-4)
+    bid, ask = 1 - 1 / 1.09, 1 / 10.5  # Betfair 1,09/10,5: Back auf den Favoriten spiegelt das Bid des Außenseiters
+    assert bid < p_dog < ask < remove_margin(8.57, 1.09)
+    assert sharp.power_fair(2.0, 2.0) == pytest.approx(0.5)  # gleiche Quoten: nichts zu verteilen
+    assert sharp.power_fair(1 / 0.6, 1 / 0.4) == pytest.approx(0.6)  # ohne Marge bleibt der Preis
+
+
+@pytest.mark.parametrize('odds_a, odds_b', [(1.09, 10.5), (1.27, 4.4), (2.0, 1.98), (1.02, 34.0), (10.5, 1.09)])
+def test_power_fair_stays_between_betfair_bid_and_ask(odds_a, odds_b):
+    """Nur Back-Preise: Der faire Preis liegt zwischen dem Back auf A (Ask) und dem gespiegelten Back auf B (Bid)."""
+    assert 1 - 1 / odds_b < sharp.power_fair(odds_a, odds_b) < 1 / odds_a
+
+
+def test_longshot_signal_comes_from_margin_method():
+    """Die Exchange-Quote 10,5 gegen Pinnacle 8,57: proportional 12 % Edge nach Steuer, mit Power keine Wette."""
+    df = frame(snap('pinnacle', NOW, price_a=1.09, price_b=8.57), snap('matchbook', NOW, price_a=1.06, price_b=10.5))
+    assert remove_margin(8.57, 1.09) * 10.5 * (1 - sharp.DE_BET_TAX) - 1 > 0.12
+    assert sharp.signals(df, threshold=0.02).empty
+    aligned = sharp.align(df)
+    assert aligned['p_fair'].iloc[0] == pytest.approx(sharp.power_fair(1.09, 8.57))
+
+
 def test_implausible_sharp_book_is_no_fair_price():
     """Betfair 1,06/1,10 (Buch 185 %) ist kein fairer Preis: kein Signal, Closing aus dem letzten plausiblen Kurs."""
     df = frame(snap('betfair', NOW, price_a=1.06, price_b=1.10), snap('tipico', NOW, price_a=1.25, price_b=4.0))
     assert sharp.signals(df, threshold=0.0).empty
     close = sharp.closing_fair(frame(snap('betfair', NOW, price_a=1.27, price_b=4.4),
                                      snap('betfair', NOW + timedelta(minutes=30), price_a=1.06, price_b=1.10)))
-    assert close.iloc[0] == pytest.approx((1 / 1.27) / (1 / 1.27 + 1 / 4.4))
+    assert close.iloc[0] == pytest.approx(sharp.power_fair(1.27, 4.4))
 
 
 FAIR_B20 = snap('pinnacle', NOW, price_a=1.2, price_b=4.8)  # B fair 0,20, also faire Quote 5,0

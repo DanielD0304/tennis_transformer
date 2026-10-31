@@ -519,7 +519,38 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
 ## Sharp vs. Rest (`src/evaluation/sharp.py`)
 
 Strategie A aus dem ROI-Plan auf den Quoten-Snapshots: Die faire Wahrscheinlichkeit kommt von Pinnacle bzw.
-Betfair Exchange ohne Marge. Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
+Betfair Exchange ohne Marge.
+
+Die Marge entfernt die Power-Methode (`power_fair`): k so, dass (1/o_a)^k + (1/o_b)^k = 1, dann p = (1/o)^k. Die Backtests
+bleiben bei der proportionalen Methode (`predictors.remove_margin`). Sie setzt Außenseiter zu hoch an, und beim Line
+Shopping wird genau dieser Fehler zur Edge: Alle 5 Signale bis zum 30.10.2026 lagen bei Quoten von 4,25 bis 10,5. Die
+Tabelle zeigt, wie weit das mittlere p über der Siegquote der Außenseiter liegt, in Prozent, auf 49.703 Pinnacle-Matches
+(2015 bis Januar 2026, ohne W/O). In Klammern stehen nur beendete Matches, das gilt für Bücher, die bei Aufgabe stornieren.
+
+| Quote des Außenseiters | n | proportional | Shin | Power | Standardfehler |
+|---|---|---|---|---|---|
+| bis 2,75 | 22.153 | −1,8 (−1,5) | −2,3 (−1,9) | −2,5 (−2,1) | 0,8 |
+| 2,75 bis 4,25 | 15.824 | +1,6 (+3,3) | −0,3 (+1,4) | −1,2 (+0,5) | 1,2 |
+| 4,25 bis 7 | 7.393 | +5,0 (+9,5) | +0,6 (+4,8) | −1,9 (+2,3) | 2,5 |
+| 7 bis 10,5 | 2.432 | +15,8 (+21,9) | +6,3 (+12,0) | +0,8 (+6,1) | 6,0 |
+| ab 10,5 | 1.901 | +54,9 (+72,9) | +30,7 (+45,9) | +14,3 (+27,6) | 11,0 |
+
+- Betfair zeigt nur Back-Preise. Der Back auf den Außenseiter ist sein Ask, der Back auf den Favoriten spiegelt sein Bid,
+  der faire Preis liegt dazwischen. Jede der drei Methoden bleibt auf Betfairs eigenen Quoten in dieser Spanne. Verglichen
+  wird Pinnacle deshalb mit deren Mitte, auf denselben 1.222 Matches (August 2025 bis Januar 2026), proportional, Shin,
+  Power: Quote 4,25 bis 7 +7,8 %, +2,1 %, −1,0 %, Quote 7 bis 10,5 +18,2 %, +5,5 %, −2,3 %. Die 88 Live-Paare desselben
+  Zeitpunkts bis zum 31.10.2026 liegen näher an Shin (4,25 bis 7, n = 13: +5,0 %, −1,5 %, −5,1 %).
+- Shin ist bei zwei Ausgängen dasselbe wie additiv, also (1 + 1/o_a − 1/o_b) / 2, auf Betfair genau die Mitte. Über alle
+  Matches liegen Shin und Power beim Log Loss gleichauf (Differenz −0,04 × 10⁻⁴, 95-%-KI −0,82 bis +0,90). Ab Quote 4,25
+  ist Power auf den beendeten Matches besser (−4,9, KI −8,5 bis −1,3), mit Aufgaben nicht signifikant (−2,0, KI −5,3 bis
+  +1,4). Gewählt ist Power, weil der Fehler beim Außenseiter teurer ist: Ein Punkt Wahrscheinlichkeit sind bei Quote 10
+  rund 10 % Edge, bei Quote 1,1 rund 1 %. Gewählt nach Kalibrierung, nicht nach dem Paper-Gewinn, gefittet ist nichts.
+- Was keine der Methoden löst: Ab Quote 10,5 setzt auch Power den Außenseiter zu hoch an, die Schwelle von 2 % schützt
+  dort nicht. Nahe 50:50 liegen alle rund einen Punkt zu niedrig, der Favorit also rund einen Punkt zu hoch.
+- Wirkung auf den Snapshots bis zum 31.10.2026: Von 5 Signalen bleibt 1, die Ausreißer-Quote von Putintseva bei William
+  Hill. Wetten, die vorher abgerechnet wurden, behalten p, Edge und `clv_sharp` der alten Methode.
+
+Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
 die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei den Prediction Markets die
 Gebühren. Ein Signal entsteht, wenn p_fair × netto − 1 > Schwelle. Snapshots verschiedener Venues werden
 nur verknüpft, wenn sie höchstens 5 Minuten auseinanderliegen. Einsatz: Viertel-Kelly mit Deckel 2 % der
