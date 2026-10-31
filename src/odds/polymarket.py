@@ -13,6 +13,7 @@ werden ausgelassen.
 import json
 import re
 
+from ..evaluation.venues import POLYMARKET_FEE
 from ..names import candidate_keys
 from .http import JsonClient
 from .schema import Snapshot, dump_levels, mid, now_utc, utc
@@ -139,6 +140,13 @@ def fetch_resolution(client, market_id, player_a=None):
     return resolution(market[0] if isinstance(market, list) else market)
 
 
+def fee_rate(market):
+    """Rate der Taker-Gebühr laut Gamma, 0 wenn abgeschaltet, None wenn der Markt nichts dazu sagt."""
+    if market.get('feesEnabled') is None:
+        return None
+    return _float((market.get('feeSchedule') or {}).get('rate')) if market['feesEnabled'] else 0.0
+
+
 def match_info(event):
     """Gemeinsame Felder eines Match-Markts (für Snapshots und Historie) oder None."""
     m = match_market(event)
@@ -165,6 +173,7 @@ def match_info(event):
         'liquidity': _float(m.get('liquidityNum') if m.get('liquidityNum') is not None else m.get('liquidity')),
         'best_bid': _float(m.get('bestBid')),
         'best_ask': _float(m.get('bestAsk')),
+        'fee_rate': fee_rate(m),
         'outcome_prices': [_float(p) for p in _list(m.get('outcomePrices'))],
         'closed': bool(m.get('closed')),
         'winner': winner_of(m),
@@ -243,6 +252,10 @@ def fetch_current(client=None, log=print):
     client = client or JsonClient()
     events = open_events(client)
     infos = [i for i in map(match_info, events) if i and not i['closed']]
+    other_fee = [i['fee_rate'] for i in infos if i['fee_rate'] not in (None, POLYMARKET_FEE)]
+    if other_fee:  # die Gebühr kam schon einmal unbemerkt dazu, die Netto-Quoten rechnen mit venues.POLYMARKET_FEE
+        log(f"  Polymarket: {len(other_fee)} von {len(infos)} Märkten mit anderer Taker-Gebühr als in venues.py "
+            f"({POLYMARKET_FEE:g}): {sorted(set(other_fee))}")
     try:
         mids = midpoints(client, [t for i in infos for t in (i['token_a'], i['token_b'])])
     except Exception as e:  # ohne Mitte gehen auch die Gamma-Preise

@@ -9,6 +9,11 @@ damit. Für Kalshi und Polymarket (und Betfair vor August 2025: 'betfair_proxy')
 Pinnacle-Wahrscheinlichkeit (ohne Marge) als Preis, plus optionalem Spread. Diese Venues sind im
 Output als „Proxy“ markiert.
 
+Polymarket-Gebühr (docs.polymarket.com/trading/fees, Gamma: feeType sports_fees_v3, Stand Okt. 2026): je Anteil
+Rate * p * (1 - p) in USDC, nur für den Taker. Die Doku sagt nicht, ob sie beim Kauf in Anteilen oder USDC eingezogen
+wird. Gerechnet wird mit Anteilen: Rate * (1 - p) Anteile je Anteil, also die Rate auf den möglichen Gewinn. Das ist die
+vorsichtigere Lesart (Unterschied unter 0,2 % der Quote) und gilt exakt auch für den Durchschnittspreis mehrerer Level.
+
 Die RET-Regeln sind Annahmen und unterscheiden sich je Buchmacher/Markt (vor echtem Einsatz in den
 AGB prüfen). W/O ist immer void.
 """
@@ -17,6 +22,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 DE_BET_TAX = 0.053
+POLYMARKET_FEE = 0.05  # Rate für Sport, fetch_current meldet, wenn Gamma etwas anderes nennt
 
 
 def ceil_to_cent(x):
@@ -37,7 +43,7 @@ class Venue:
     stake_tax: float = 0.0  # Anteil des Einsatzes, der als Steuer einbehalten wird (DE: 5,3 %)
     commission: float = 0.0  # Anteil des Nettogewinns (Exchange)
     fee_model: str = 'none'  # 'none' | 'kalshi' | 'polymarket'
-    taker_fee: float = 0.0  # Polymarket: Anteil des Einsatzes
+    taker_fee: float = 0.0  # Polymarket: Rate der Gebühr (siehe oben), Anteil des möglichen Gewinns
     spread: float = 0.0  # Proxy-Preise: Aufschlag auf die faire Wahrscheinlichkeit (halber Spread je Seite)
     ret_rule: str = 'settled'  # 'void' (Einsatz zurück) oder 'settled' (Sieger wird ausgezahlt)
     max_stake: float = None  # Limit pro Wette in Währung, None = unbegrenzt
@@ -72,7 +78,7 @@ class Venue:
             price = 1 / odds
             net = 1 / (price + kalshi_fee(price))
         elif self.fee_model == 'polymarket':
-            net = odds * (1 - self.taker_fee)
+            net = 1 + (odds - 1) * (1 - self.taker_fee)
         else:
             net = odds * (1 - self.stake_tax)
         return 1 + (net - 1) * (1 - self.commission)
@@ -99,7 +105,7 @@ VENUES = {
     'betfair': Venue('betfair', price='bfe', commission=0.05),  # echte Exchange-Kurse, 5 % auf Gewinne
     'betfair_proxy': Venue('betfair_proxy', price='fair_ps', commission=0.05, proxy=True),
     'kalshi': Venue('kalshi', price='fair_ps', fee_model='kalshi', proxy=True),
-    'polymarket': Venue('polymarket', price='fair_ps', fee_model='polymarket', taker_fee=0.0, spread=0.02, proxy=True),
+    'polymarket': Venue('polymarket', price='fair_ps', fee_model='polymarket', taker_fee=POLYMARKET_FEE, spread=0.02, proxy=True),
 }
 
 

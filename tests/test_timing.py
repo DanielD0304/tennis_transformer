@@ -65,7 +65,10 @@ def test_polymarket_entry_with_spread_and_taker_fee():
     _, buy_a, buy_b = timing.entry_prices(df, '24h', 'polymarket', pm_spread=0.04)
     assert buy_a[0] == pytest.approx(0.50) and buy_b[0] == pytest.approx(0.54)
     net = timing.net_odds(buy_a, timing.venue_profile('polymarket', pm_fee=0.01))
-    assert net[0] == pytest.approx(1 / 0.50 * 0.99)
+    assert net[0] == pytest.approx(1 + 1.0 * 0.99)
+    # ohne Angabe die heutige Gebühr, auch für ältere Märkte
+    assert timing.net_odds(buy_a, timing.venue_profile('polymarket'))[0] == pytest.approx(1.95)
+    assert timing.net_odds(buy_a, timing.venue_profile('polymarket', pm_fee=0.0))[0] == pytest.approx(2.0)
 
 
 def test_polymarket_placeholder_and_first_real_price():

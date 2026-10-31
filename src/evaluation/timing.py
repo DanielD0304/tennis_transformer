@@ -4,7 +4,7 @@ Timing-Backtest (Phase 4): Lohnt es sich, bei Polymarket oder Kalshi früh einzu
 
     python -m src.evaluation.timing                         # alle Venues, Level und Zeitpunkte
     python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenger
-    python -m src.evaluation.timing --pm-spread 0.03 --pm-fee 0.01 --min-volume-kalshi 500
+    python -m src.evaluation.timing --pm-spread 0.03 --pm-fee 0 --min-volume-kalshi 500
 
 Ablauf:
 1. Walk-forward-Vorhersagen p (backtest.run, Elo und Fits nur mit Matches vor dem Testfenster, inkl. der
@@ -42,7 +42,7 @@ from ..sources.common import yyyymmdd
 from . import metrics
 from .betting import bootstrap_yield
 from .predictors import fit_logistic, logit, sigmoid
-from .venues import get_venue
+from .venues import POLYMARKET_FEE, get_venue
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_DIR = os.path.join(REPO_ROOT, "data", "eval")
@@ -151,7 +151,7 @@ def entry_prices(df, point, venue, pm_spread=0.02):
     return np.where(ok, mid, np.nan), buy_a, buy_b
 
 
-def venue_profile(venue, pm_fee=0.0):
+def venue_profile(venue, pm_fee=POLYMARKET_FEE):
     return get_venue('polymarket', taker_fee=pm_fee) if venue == 'polymarket' else get_venue(venue)
 
 
@@ -182,7 +182,7 @@ def usable(df, point, venue, min_volume=0.0):
 
 # --------------------------------------------------------------------- Wetten
 
-def candidate_bets(df, point, venue, model, pm_spread=0.02, pm_fee=0.0, min_volume=0.0):
+def candidate_bets(df, point, venue, model, pm_spread=0.02, pm_fee=POLYMARKET_FEE, min_volume=0.0):
     """
     Alle möglichen Einstiege (eine Zeile pro Markt, Seite mit dem höheren EV) zum Zeitpunkt point mit dem p des
     Modells. Spalten: event_id, start_time_utc, period, level, side, p, price (Kaufpreis), net_odds, ev, won,
@@ -357,7 +357,7 @@ def summarize_bets(bets, n_boot=2000, seed=0):
             **period_stats(bets, n_boot, seed)}
 
 
-def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=0.0, min_volume=None,
+def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=POLYMARKET_FEE, min_volume=None,
                  n_boot=2000, seed=0, with_blend=True):
     """
     linked: {venue: Ausgabe von link_predictions}. Gibt (Tabelle pro Segment, alle Walk-forward-Wetten, Blend-Gewichte
@@ -489,7 +489,8 @@ def main(argv=None):
     ap.add_argument('--points', default=','.join(POINTS))
     ap.add_argument('--tours', default='atp,wta')
     ap.add_argument('--pm-spread', type=float, default=0.02, help="Polymarket: angenommener Spread (Kauf = Preis + Hälfte)")
-    ap.add_argument('--pm-fee', type=float, default=0.0, help="Polymarket-Taker-Fee als Anteil des Einsatzes")
+    ap.add_argument('--pm-fee', type=float, default=POLYMARKET_FEE,
+                    help="Polymarket: Rate der Taker-Gebühr, auch für Märkte aus der Zeit vor der Gebühr (0 = ohne)")
     ap.add_argument('--min-volume-kalshi', type=float, default=100.0, help="Kalshi: Kontrakte gehandelt bis t")
     ap.add_argument('--min-volume-pm', type=float, default=0.0, help="Polymarket: Gesamtvolumen in $ (Look-ahead!)")
     ap.add_argument('--no-blend', action='store_true')

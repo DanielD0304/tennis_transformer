@@ -189,4 +189,5 @@ Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PH
   Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
   Closing mit `blend_gbdt`. Seit den Fixes wettet die Modell-Strategie bei Polymarket zum Durchschnittspreis ihres
   Einsatzes im CLOB-Orderbuch. Ohne brauchbares Ask, bei einem Preis von genau 0,5 und wenn das Buch den Einsatz nicht
-  füllt, gibt es keine Wette. Diese Segmente sagen deshalb erst mit Wetten ab diesem Stand etwas aus.
+  füllt, gibt es keine Wette. Seit dem 31.10. rechnet die Netto-Quote auch die Taker-Gebühr von Polymarket mit ein (5 %
+  auf den möglichen Gewinn). Diese Segmente sagen deshalb erst mit Wetten ab diesem Stand etwas aus.
