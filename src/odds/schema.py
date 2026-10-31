@@ -9,7 +9,11 @@ Markets der Preis in 0–1 (price_type 'probability'). odds_a/odds_b sind immer 
 Venue-Namen passen zu src/evaluation/venues.py ('pinnacle', 'betfair', 'kalshi', 'polymarket').
 Buchmacher ohne eigenes Profil heißen wie bei der Quelle ('bet365', 'tipico', 'bwin', ...);
 die DE-Steuer kommt erst im Venue-Profil dazu (bet365 -> bet365_de).
+
+asks_a/asks_b: Orderbuch der Kaufseite (Polymarket), JSON [[Preis, Anteile], ...] mit dem besten Preis zuerst. Ältere
+Tagesdateien haben diese Spalten nicht, beim Laden sind sie dort leer.
 """
+import json
 import math
 import os
 from dataclasses import asdict, dataclass, fields
@@ -45,6 +49,8 @@ class Snapshot:
     best_ask_a: float = None
     best_bid_b: float = None
     best_ask_b: float = None
+    asks_a: str = None  # nur Polymarket, siehe oben (dump_levels, load_levels)
+    asks_b: str = None
     volume: float = None
     liquidity: float = None
     source_url: str = None
@@ -97,6 +103,31 @@ def mid(bid, ask):
     if bid is None or ask is None or not (0 < bid <= ask < 1):
         return None
     return (bid + ask) / 2
+
+
+def dump_levels(levels):
+    """[(Preis, Anteile), ...] -> Text für asks_a/asks_b, ohne Level None."""
+    return json.dumps(levels, separators=(',', ':')) if levels else None
+
+
+def load_levels(text):
+    """Text aus asks_a/asks_b -> [[Preis, Anteile], ...], fehlend (None, NaN) -> []."""
+    return json.loads(text) if isinstance(text, str) else []
+
+
+def average_price(levels, stake):
+    """
+    Durchschnittspreis, wenn stake Dollar die Levels [(Preis, Anteile), ...] vom besten Preis an abkaufen: Einsatz /
+    gekaufte Anteile. None, wenn das Buch den Einsatz nicht füllt. Einsatz 0: der beste Preis.
+    """
+    left, shares = stake, 0.0
+    for price, size in levels:
+        if left <= price * size:
+            shares += left / price
+            return stake / shares if shares else price
+        left -= price * size
+        shares += size
+    return None
 
 
 def utc(value):
@@ -170,6 +201,7 @@ def to_frame(snapshots):
 
 def normalize_frame(df):
     import pandas as pd
+    df = df.reindex(columns=COLUMNS)  # ältere Dateien haben noch nicht alle Spalten
     for c in DATETIME_COLUMNS:
         df[c] = pd.to_datetime(df[c], utc=True)
     for c in FLOAT_COLUMNS:
@@ -177,7 +209,7 @@ def normalize_frame(df):
     for c in COLUMNS:
         if c not in DATETIME_COLUMNS + FLOAT_COLUMNS:
             df[c] = df[c].astype(object).where(df[c].notna(), None)
-    return df[COLUMNS]
+    return df
 
 
 def day_path(day, root=SNAPSHOT_DIR):

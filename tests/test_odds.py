@@ -2,8 +2,9 @@
 Tests für src/odds (ohne Netzwerk).
 
 Die Fixtures in tests/fixtures/odds/ sind echte, gekürzte Antworten von Polymarket (Gamma/CLOB) und
-Kalshi vom 25.10.2026, die ITF-Fixtures (*_itf*) vom 29.10.2026. Ausnahme: odds_api_odds_doku_format.json
-folgt dem dokumentierten Format der Odds API v4, weil in der Cloud-Session kein API-Key vorhanden war.
+Kalshi vom 25.10.2026, die ITF-Fixtures (*_itf*) vom 29.10.2026, polymarket_books_itf.json vom 30.10.2026.
+Ausnahme: odds_api_odds_doku_format.json folgt dem dokumentierten Format der Odds API v4, weil in der
+Cloud-Session kein API-Key vorhanden war.
 """
 import json
 import math
@@ -14,8 +15,8 @@ import pandas as pd
 import pytest
 
 from src.odds import collect, history, kalshi, matching, odds_api, polymarket, report, softbooks
-from src.odds.schema import (Snapshot, append_snapshots, load_snapshots, mid, odds_to_price, price_to_odds,
-                             to_decimal, utc, validate)
+from src.odds.schema import (Snapshot, append_snapshots, average_price, dump_levels, load_levels, load_snapshots, mid,
+                             odds_to_price, price_to_odds, to_decimal, to_frame, utc, validate)
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "odds")
 TS = datetime(2026, 10, 25, 14, 30, tzinfo=timezone.utc)
@@ -43,6 +44,25 @@ def test_price_odds_conversion():
     assert to_decimal(1.85, 'decimal') == 1.85 and to_decimal(0.8, 'probability') == 1.25
     assert mid(0.62, 0.63) == pytest.approx(0.625)
     assert mid(0.0, 1.0) is None and mid(None, 0.5) is None
+
+
+def test_average_price_walks_the_book():
+    levels = [(0.40, 5.0), (0.50, 20.0), (0.90, 10.0)]  # 2 USD, 10 USD, 9 USD: 21 USD im Buch
+    assert average_price(levels, 1.0) == pytest.approx(0.40)
+    assert average_price(levels, 2.0) == pytest.approx(0.40)  # genau das erste Level
+    assert average_price(levels, 7.0) == pytest.approx(7 / (5 + 5 / 0.50))
+    assert average_price(levels, 12.0) == pytest.approx(12 / 25)  # die ersten beiden Level
+    assert average_price(levels, 16.0) == pytest.approx(16 / (25 + 4 / 0.90))
+    assert average_price(levels, 21.0) == pytest.approx(21 / 35)  # das ganze Buch
+    assert average_price(levels, 21.01) is None and average_price([], 1.0) is None
+    assert average_price(levels, 0.0) == 0.40
+
+
+def test_levels_round_trip():
+    levels = [(0.24, 5.0), (0.25, 1234.56)]
+    assert load_levels(dump_levels(levels)) == [[0.24, 5.0], [0.25, 1234.56]]
+    assert dump_levels([]) is None
+    assert load_levels(None) == [] and load_levels(float('nan')) == []
 
 
 def test_snapshot_derives_odds():
@@ -103,6 +123,29 @@ def test_append_rejects_invalid(tmp_path):
     with pytest.raises(ValueError):
         append_snapshots([snap(price_a=2.0)], str(tmp_path))
     assert append_snapshots([], str(tmp_path)) == 0
+
+
+def test_old_parquet_files_without_depth_stay_readable(tmp_path):
+    """Tagesdateien von vor der Tiefe: Laden geht, auch gemischt mit neuen Dateien, Anhängen behält die alten Zeilen."""
+    root = str(tmp_path)
+    book = dump_levels([(0.41, 5.0), (0.42, 100.0)])
+    old = to_frame([snap(best_bid_a=0.39, best_ask_a=0.41), snap(event_id='2', best_ask_a=0.43)])
+    old.drop(columns=['asks_a', 'asks_b']).to_parquet(os.path.join(root, '2026-10-25.parquet'), index=False)
+
+    df = load_snapshots(root=root)
+    assert len(df) == 2 and df['asks_a'].isna().all() and df['asks_b'].isna().all()
+    assert list(df['best_ask_a']) == [0.41, 0.43]
+    assert all(v is None for v in df['asks_a'])  # wie alle Textspalten: fehlend ist None, nicht NaN
+    assert load_levels(df['asks_a'].iloc[0]) == []
+
+    # dieselbe Tagesdatei (alte Zeilen + neue mit Tiefe) und eine neue Datei
+    assert append_snapshots([snap(event_id='3', ts_utc=TS + timedelta(minutes=30), asks_a=book, asks_b=book)], root) == 1
+    assert append_snapshots([snap(event_id='4', ts_utc=TS + timedelta(days=1), asks_a=book)], root) == 1
+    df = load_snapshots(root=root)
+    assert list(df['event_id']) == ['1', '2', '3', '4']
+    assert [load_levels(v) for v in df['asks_a']] == [[], [], [[0.41, 5.0], [0.42, 100.0]], [[0.41, 5.0], [0.42, 100.0]]]
+    assert list(df['best_ask_a'])[:2] == [0.41, 0.43]
+    assert load_snapshots('2026-10-26', root=root)['asks_b'].iloc[0] is None
 
 
 # ---------------------------------------------------------------- Polymarket
@@ -180,16 +223,32 @@ def test_polymarket_fetch_current_includes_itf_series():
         validate(s)
 
 
-def test_polymarket_best_prices_from_clob_books():
-    """Das CLOB liefert das beste Ask zuletzt, best_prices verlässt sich nicht auf die Reihenfolge. Leere Seite: None."""
+def test_polymarket_order_books_from_clob():
+    """Das CLOB liefert das beste Level zuletzt, order_books verlässt sich nicht auf die Reihenfolge."""
     class Client:
         def post_json(self, url, payload):
             assert url.endswith('/books') and payload == [{'token_id': '1'}, {'token_id': '2'}]
-            return [{'asset_id': '1', 'bids': [{'price': '0.01', 'size': '5'}, {'price': '0.22', 'size': '5'}],
-                     'asks': [{'price': '0.99', 'size': '5'}, {'price': '0.24', 'size': '5'}]},
+            return [{'asset_id': '1', 'bids': [{'price': '0.01', 'size': '5'}, {'price': '0.22', 'size': '7.5'}],
+                     'asks': [{'price': '0.99', 'size': '5'}, {'price': '0.24', 'size': '6'}]},
                     {'asset_id': '2', 'bids': [], 'asks': []}]
 
-    assert polymarket.best_prices(Client(), ['1', '2', '1']) == {'1': (0.22, 0.24), '2': (None, None)}
+    assert polymarket.order_books(Client(), ['1', '2', '1']) == {
+        '1': ([(0.22, 7.5), (0.01, 5.0)], [(0.24, 6.0), (0.99, 5.0)]), '2': ([], [])}
+
+
+def test_polymarket_order_books_on_a_real_thin_itf_book():
+    """Echte /books-Antwort (W15 Sharm El Sheikh): Am besten Ask liegen 0,32 Anteile, 10 USD kosten fast 6 Cent mehr."""
+    data = fixture('polymarket_books_itf.json')
+
+    class Client:
+        def post_json(self, url, payload):
+            return data
+
+    token = data[0]['asset_id']
+    bids, asks = polymarket.order_books(Client(), [token])[token]
+    assert asks[:2] == [(0.55, 0.32), (0.61, 66.76)] and bids[0] == (0.47, 44.59)
+    assert average_price(asks, 10.0) == pytest.approx(10 / (0.32 + (10 - 0.55 * 0.32) / 0.61))
+    assert average_price(asks, 10.0) > 0.60
 
 
 def test_polymarket_fetch_current_takes_bid_ask_from_clob_book():
@@ -208,20 +267,34 @@ def test_polymarket_fetch_current_takes_bid_ask_from_clob_book():
                 return {}
             if self.fail:
                 raise RuntimeError('503')
-            return [{'asset_id': p['token_id'], 'bids': [{'price': '0.20', 'size': '5'}],
-                     'asks': [{'price': '0.23', 'size': '5'}]} for p in payload]
+            return [{'asset_id': p['token_id'], 'bids': [{'price': '0.05', 'size': '9'}, {'price': '0.20', 'size': '5'}],
+                     'asks': [{'price': '0.30', 'size': '7'}, {'price': '0.23', 'size': '5'}]} for p in payload]
 
     client, messages = Client(), []
     men = {s.player_a: s for s in polymarket.fetch_current(client, log=messages.append)}['Digvijay Pratap Singh']
     assert (men.best_bid_a, men.best_ask_a) == (0.20, 0.23) and not messages
     assert (men.best_bid_b, men.best_ask_b) == (pytest.approx(0.77), pytest.approx(0.80))  # Spiegelbild von Token A
     assert men.price_a == pytest.approx(0.78)
+    # Tiefe je Kaufseite: A aus den Asks von Token A, B aus dessen gespiegelten Bids, bester Preis zuerst
+    assert load_levels(men.asks_a) == [[0.23, 5.0], [0.30, 7.0]]
+    assert load_levels(men.asks_b) == [[0.80, 5.0], [0.95, 9.0]]
 
     client.fail = True
     men = {s.player_a: s for s in polymarket.fetch_current(client, log=messages.append)}['Digvijay Pratap Singh']
     assert men.best_ask_a is None and men.best_ask_b is None and men.best_bid_a is None
+    assert men.asks_a is None and men.asks_b is None
     assert men.price_a == pytest.approx(0.78)
     assert 'Orderbücher' in messages[0]
+
+
+def test_polymarket_empty_book_side_has_no_depth():
+    """Nur eine Seite voll: Ohne Bids gibt es auf B kein Ask und keine Tiefe, A kauft weiter."""
+    event = fixture('polymarket_events_itf_open.json')[0]
+    token_a = polymarket.match_info(event)['token_a']
+    s = polymarket.parse_events([event], TS, None, {token_a: ([], [(0.23, 5.0)])})[0]
+    assert s.best_ask_b is None and s.asks_b is None and s.best_bid_a is None
+    assert load_levels(s.asks_a) == [[0.23, 5.0]]
+    assert polymarket.parse_events([event], TS)[0].asks_a is None  # ohne books: kein Orderbuch, keine Tiefe
 
 
 # -------------------------------------------------------------------- Kalshi

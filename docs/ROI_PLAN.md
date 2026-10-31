@@ -187,6 +187,6 @@ Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PH
 - Nächster Schritt: Paper-Loop lokal dauerhaft laufen lassen (`python -m src.paper.run --loop 30`, mit
   `--odds-api` für Sharp vs. Rest) und am Kriterium messen: ≥ 300 Wetten, CLV > +2 %, untere Yield-KI-Grenze > 0.
   Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
-  Closing mit `blend_gbdt`. Seit dem Fix wettet Polymarket nur noch zum besten Ask aus dem CLOB-Orderbuch, ohne
-  brauchbares Ask und bei einem Preis von genau 0,5 gibt es keine Wette. Diese Segmente sagen deshalb erst mit Wetten
-  ab diesem Stand etwas aus. Die Orderbuch-Tiefe fließt noch nicht ein, bei ITF ist der beste Ask daher zu günstig.
+  Closing mit `blend_gbdt`. Seit den Fixes wettet die Modell-Strategie bei Polymarket zum Durchschnittspreis ihres
+  Einsatzes im CLOB-Orderbuch. Ohne brauchbares Ask, bei einem Preis von genau 0,5 und wenn das Buch den Einsatz nicht
+  füllt, gibt es keine Wette. Diese Segmente sagen deshalb erst mit Wetten ab diesem Stand etwas aus.
