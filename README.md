@@ -522,8 +522,30 @@ die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei d
 Gebühren. Ein Signal entsteht, wenn p_fair × netto − 1 > Schwelle. Snapshots verschiedener Venues werden
 nur verknüpft, wenn sie höchstens 5 Minuten auseinanderliegen. Einsatz: Viertel-Kelly mit Deckel 2 % der
 Bankroll, p vorher zur Hälfte Richtung Venue-Preis geschrumpft. Flat läuft zum Vergleich mit. Ohne
-Sharp-Snapshots (Odds API) gibt es keine Signale. Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe
-Paper-Trading: Die höchste Quote gewinnt, ein erfundener Preis würde also gerade wegen seiner Quote gewählt.
+Sharp-Snapshots (Odds API) gibt es keine Signale.
+
+Polymarket zählt beim Line Shopping nur mit echtem Ask, siehe Paper-Trading: Die höchste Quote gewinnt, ein erfundener
+Preis würde also gerade wegen seiner Quote gewählt. Aus demselben Grund scheiden Ausreißer vor dem Line Shopping aus. Eine
+Quote fällt weg, wenn sie mehr als 6 Punkte Wahrscheinlichkeit oder mehr als das 1,5-Fache über dem Median aller Quoten
+desselben Sharp-Zeitpunkts und derselben Seite liegt. Das gilt ab 6 Quoten, darunter trägt der Median nicht, weil sich
+Bücher Feeds teilen. Die nächste Quote kann weiter ein Signal sein. Anlass: Am 27.10.2026 stand Putintseva bei William
+Hill und 888 auf 10,0, der Median auf 5,75, acht Stunden später standen beide auf 6,5. Das waren 36 % Edge und eine Wette.
+- Die Grenzen kommen aus der Verteilung, nicht aus dem Gewinn (5.934 Quoten, 182 Märkte, 55 Matches, 27. bis 30.10.2026).
+  In Punkten ist der Abstand über alle Quotenbereiche gleich (p99 3,1 bis 3,6), halbiert sich je halben Punkt und endet
+  bei 5,2. Über 6 Punkten wäre rechnerisch weniger als eine Zeile normal. Die größten normalen Abstände haben Quellen ohne
+  Marge: Exchanges im Median 2,0 Punkte, im Replay Polymarket und Kalshi 2,3. Als Quotient wächst der Abstand mit der
+  Quote (p99 1,04 bis 1,34, Maximum 1,36), deshalb gilt er nur als Riegel für lange Außenseiter, bei denen Punkte nicht
+  greifen.
+- Die Stichprobe enthält nur diesen einen echten Ausreißer (7,4 Punkte, das 1,74-Fache). Von 5,5 bis 7 Punkten und vom
+  1,4- bis zum 1,6-Fachen fällt jeweils genau er heraus.
+- Eine Obergrenze der Edge träfe hier dasselbe, misst aber schlechter: Ein Punkt Abstand ist bei Quote 1,3 rund 1,3 % Edge,
+  bei Quote 10 rund 10 %. Eine Grenze, die einen veralteten Favoriten erwischt (Median 1,50, Quote 1,75, also 9,5 Punkte
+  und nur 5 % Edge), träfe auch die normale Exchange-Quote eines Außenseiters (Landaluce bei Matchbook, 3,5 Punkte, 12 %).
+- Die Regel prüft die Quote, nicht den fairen Preis. Den sichert `SHARP_BOOK`: Die Wette mit 86 % Edge vom 27.10. (Pohánková
+  bei coolbet, Quote 4,0 normal) kam von Betfair 1,10/1,06 und entstünde heute nicht mehr. Mit `SHARP_BOOK` weicht der
+  faire Preis an allen 91 Zeitpunkten höchstens 3 Punkte vom margenfreien Median der Bücher ab.
+- Ob ein Buch aus Deutschland nutzbar ist, prüft sie auch nicht. 11 der 35 Bücher tragen ein anderes Land im Namen, eine
+  Liste der nutzbaren Bücher gibt es noch nicht.
 
 ## Paper-Trading (`src/paper/`, Dashboard `/scraper/paper/`)
 

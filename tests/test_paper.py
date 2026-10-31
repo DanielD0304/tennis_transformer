@@ -113,6 +113,75 @@ def test_implausible_sharp_book_is_no_fair_price():
     assert close.iloc[0] == pytest.approx((1 / 1.27) / (1 / 1.27 + 1 / 4.4))
 
 
+FAIR_B20 = snap('pinnacle', NOW, price_a=1.2, price_b=4.8)  # B fair 0,20, also faire Quote 5,0
+STALE = ('williamhill', (1.05, 10.0))
+
+
+def market(*quotes, normal=(1.2, 4.4), n=6):
+    """n Bücher mit derselben Quote (normal) und dazu quotes als (Venue, (Quote A, Quote B))."""
+    books = [snap(f'book{i}', NOW, price_a=normal[0], price_b=normal[1]) for i in range(n)]
+    return books + [snap(venue, NOW, price_a=a, price_b=b) for venue, (a, b) in quotes]
+
+
+def test_outlier_loses_line_shopping_with_its_clone():
+    """Wie Putintseva am 27.10.: 10,0 bei William Hill und 888 (selber Feed) gegen Median 5,75. Die nächste Quote gewinnt."""
+    clones = (STALE, ('sport888', STALE[1]))
+    assert sharp.signals(frame(FAIR_B20, *market(*clones)), threshold=0.02).empty
+    sig = sharp.signals(frame(FAIR_B20, *market(*clones, ('matchbook', (1.21, 5.6)))), threshold=0.02)
+    assert list(sig['venue']) == ['matchbook'] and list(sig['odds']) == [5.6]  # 4,9 Punkte über dem Median, Edge 6 %
+
+
+@pytest.mark.parametrize('fair, normal, quote', [
+    ((1.5, 2.6), (1.5, 2.3), (1.75, 2.0)),  # Favorit: 9,5 Punkte, aber nur das 1,17-Fache
+    ((1.06, 11.0), (1.05, 12.0), (1.03, 19.0)),  # Außenseiter: nur 3,1 Punkte, aber das 1,58-Fache
+])
+def test_outlier_in_points_or_as_ratio(fair, normal, quote):
+    """Ein Maß allein reicht nicht: Der Quotient übersieht Favoriten, die Punkte übersehen lange Außenseiter."""
+    pin = snap('pinnacle', NOW, price_a=fair[0], price_b=fair[1])
+    assert sharp.signals(frame(pin, *market(('stale', quote), normal=normal)), threshold=0.02).empty
+    alone = market(('stale', quote), n=0)  # ohne andere Bücher greift die Regel nicht, die Quote wäre ein Signal
+    assert list(sharp.signals(frame(pin, *alone), threshold=0.02)['venue']) == ['stale']
+
+
+def test_normal_spread_of_exchanges_stays():
+    """Landaluce am 27.10.: Matchbook 10,5 gegen Median 7,7 (3,5 Punkte, 1,36-fach) ist bei einer Exchange ohne Marge normal."""
+    pin = snap('pinnacle', NOW, price_a=1.09, price_b=8.57)
+    sig = sharp.signals(frame(pin, *market(('matchbook', (1.09, 10.5)), normal=(1.08, 7.7))), threshold=0.02)
+    assert list(sig['venue']) == ['matchbook']
+    assert sig['edge'].iloc[0] == pytest.approx(0.122, abs=0.001)
+
+
+@pytest.mark.parametrize('gap, out', [(sharp.MAX_GAP - 0.005, False), (sharp.MAX_GAP + 0.005, True)])
+def test_outlier_limit_in_points(gap, out):
+    """Knapp unter und über MAX_GAP, Median 2,0 (der Quotient bleibt unter MAX_RATIO)."""
+    pin = snap('pinnacle', NOW, price_a=2.0, price_b=2.0)
+    quote = 1 / (0.5 - gap)
+    assert sharp.signals(frame(pin, *market(('stale', (1.7, quote)), normal=(1.9, 2.0))), threshold=0.02).empty == out
+
+
+def test_outlier_needs_enough_books():
+    """Unter MIN_BOOKS Quoten ist der Median nicht belastbar, weil sich Bücher Feeds teilen: Die Quote bleibt."""
+    few = market(STALE, n=sharp.MIN_BOOKS - 2)
+    assert list(sharp.signals(frame(FAIR_B20, *few), threshold=0.02)['venue']) == ['williamhill']
+    assert sharp.signals(frame(FAIR_B20, *market(STALE, n=sharp.MIN_BOOKS - 1)), threshold=0.02).empty
+
+
+def test_outlier_with_swapped_players_and_on_prediction_markets():
+    """Das Maß gilt aus Sicht des Sharp-Events, auch wenn das Buch A und B tauscht, und ebenso für den Ask der Märkte."""
+    swapped = snap('williamhill', NOW, a='Carlos Alcaraz', b='Jannik Sinner', price_a=10.0, price_b=1.05)
+    assert sharp.signals(frame(FAIR_B20, *market(), swapped), threshold=0.02).empty
+    cheap = snap('polymarket', NOW, price_a=0.9, price_b=0.09, best_ask_a=0.91, best_ask_b=0.1)  # Ask 0,10 = Quote 10,0
+    assert sharp.signals(frame(FAIR_B20, *market(), cheap), threshold=0.02).empty
+
+
+def test_paper_bet_skips_outlier():
+    """Der Weg bis zur Wette: Die Paper-Runde bucht nicht den Ausreißer, sondern die nächste Quote mit Edge."""
+    now = pd.Timestamp(NOW + timedelta(minutes=1))
+    assert signals.sharp_signals(frame(FAIR_B20, *market(STALE)), now).empty
+    bets = signals.sharp_signals(frame(FAIR_B20, *market(STALE, ('matchbook', (1.21, 5.6)))), now)
+    assert list(bets['venue']) == ['matchbook'] and list(bets['odds']) == [5.6]
+
+
 def test_kelly_cap_and_shrink():
     k = Kelly(0.25, 0.02)
     assert k.amount(1000, 0.9, 3.0) == pytest.approx(20.0)  # Deckel 2 %
