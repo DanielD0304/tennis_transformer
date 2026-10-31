@@ -3,7 +3,8 @@ Strategie A „Sharp vs. Rest“ auf Quoten-Snapshots (data/odds/snapshots, sche
 
 Die faire Wahrscheinlichkeit kommt aus Pinnacle bzw. Betfair Exchange ohne Marge. Gewettet wird bei der Venue
 mit dem besten Netto-Preis (Line Shopping über Polymarket, Kalshi, Tipico/bwin und die Buchmacher der Odds
-API, jeweils nach Gebühr bzw. 5,3 % Wettsteuer), wenn p_fair * Netto-Quote - 1 > Schwelle.
+API, jeweils nach Gebühr bzw. 5,3 % Wettsteuer), wenn p_fair * Netto-Quote - 1 > Schwelle. Eine Quote weit über den
+anderen desselben Zeitpunkts zählt dabei nicht (_drop_outliers).
 
     from src.odds.schema import load_snapshots
     from src.evaluation import sharp
@@ -12,9 +13,11 @@ API, jeweils nach Gebühr bzw. 5,3 % Wettsteuer), wenn p_fair * Netto-Quote - 1 
 
 Verknüpfung: Dasselbe Match bei verschiedenen Venues wird über build.MatchIndex (Namen + Datum) erkannt
 (link_events), die Snapshots über die Zeit mit merge_asof: ein Preis zählt nur, wenn er höchstens WINDOW
-(5 Minuten) vom Sharp-Snapshot entfernt ist (align).
+(5 Minuten) vom Sharp-Snapshot entfernt ist (align). Polymarket und Kalshi fragt deshalb jeder Lauf der Odds API mit ab
+(odds/collect.py).
 Staking: Viertel-Kelly mit Deckel (2 % der Bankroll), p vorher Richtung des Venue-Preises geschrumpft
 (shrink_to_market); Flat läuft zum Vergleich mit.
+Marge: Power-Methode (power_fair), nicht proportional wie die Backtests (predictors.remove_margin).
 """
 import numpy as np
 import pandas as pd
@@ -22,7 +25,6 @@ import pandas as pd
 from ..sources.build import ODDS_RANGE, MatchIndex
 from ..sources.common import yyyymmdd
 from .betting import Kelly
-from .predictors import remove_margin
 from .timing import PLACEHOLDER
 from .venues import DE_BET_TAX, VENUES, Venue
 
@@ -30,10 +32,21 @@ SHARP = ('pinnacle', 'betfair')  # Reihenfolge = Priorität
 # Plausibles Buch (Summe der Kehrwerte) einer Sharp-Quote, wie bei den historischen Exchange-Quoten: Pinnacle liegt
 # bei ~1,03, Betfair nahe 1,00. Außerhalb ist der Markt dünn oder veraltet (z.B. 1,06/1,10) und kein fairer Preis.
 SHARP_BOOK = ODDS_RANGE['BFEW']
+# Nicht vergrößern, um Preise anderer Läufe mitzunehmen: Beim typischen Signal (Edge 3,7 % mit proportionaler Marge,
+# Quote 4,3) kostet ein Cent 4,2 % Edge, und in 20 bis 40 Minuten bewegt sich jede fünfte Seite um mindestens einen Cent
+# (Stand 30.10.2026).
 WINDOW = pd.Timedelta(minutes=5)
 DEFAULT_THRESHOLD = 0.02
 SHRINK = 0.5  # Anteil, um den p für Kelly Richtung Venue-Preis geschrumpft wird
 PM_SPREAD = 0.02  # Kalshi ohne Ask im Snapshot: Kauf zum Preis + halber Spread (Polymarket: kein Kauf, siehe buy_odds)
+# Ausreißer beim Line Shopping (_drop_outliers), Abstand zum Median aller Quoten desselben Zeitpunkts. Aus der Verteilung
+# von 5.934 Quoten in 182 Märkten (27. bis 30.10.2026), nicht aus dem Gewinn: In Punkten Wahrscheinlichkeit ist er über
+# alle Quotenbereiche gleich (p99 3,1 bis 3,6) und halbiert sich je halben Punkt, das Maximum liegt bei 5,2, über 6 Punkten
+# wäre weniger als eine Zeile normal. Als Quotient wächst er mit der Quote (p99 1,04 bis 1,34, Maximum 1,36), zählt also
+# nur für lange Außenseiter, wo Punkte nicht mehr greifen: Bei Median 12 läge die Grenze sonst erst bei Quote 43.
+MAX_GAP = 0.06
+MAX_RATIO = 1.5
+MIN_BOOKS = 6  # darunter trägt der Median nicht, Bücher teilen sich Feeds (williamhill/sport888, unibet_nl/casumo)
 # Buchmacher ohne eigenes Profil: deutsche Wettsteuer auf den Einsatz, RET void (Annahme, je Buch prüfen)
 DE_BOOK = Venue('de_book', price='none', stake_tax=DE_BET_TAX, ret_rule='void')
 PROFILES = {
@@ -121,13 +134,30 @@ def buy_odds(df, pm_spread=PM_SPREAD):
     return out
 
 
+def power_fair(odds_a, odds_b, iters=10):
+    """
+    Faire Wahrscheinlichkeit für A nach der Power-Methode: (1/o_a)^k + (1/o_b)^k = 1, p = (1/o_a)^k, Newton ab k = 1.
+    1/o normiert (predictors.remove_margin) setzt den Außenseiter zu hoch an, weil er dann kaum Marge trägt, Messwerte
+    im README unter „Sharp vs. Rest“. Auf Betfair-Quoten (nur Back-Preise) bleibt p zwischen Bid und Ask.
+    """
+    log_a, log_b = np.log(1 / np.asarray(odds_a, float)), np.log(1 / np.asarray(odds_b, float))
+    k = np.ones_like(log_a)
+    for _ in range(iters):
+        p_a, p_b = np.exp(k * log_a), np.exp(k * log_b)
+        k = k - (p_a + p_b - 1) / (log_a * p_a + log_b * p_b)
+    return np.exp(k * log_a)
+
+
 def sharp_fair(df):
     """Faire Wahrscheinlichkeit für A aus den Sharp-Snapshots (ohne Marge), NaN bei unplausiblem Buch (SHARP_BOOK)."""
     odds_a, odds_b = df['odds_a'].to_numpy(float), df['odds_b'].to_numpy(float)
     with np.errstate(divide='ignore', invalid='ignore'):
         book = 1 / odds_a + 1 / odds_b
     low, high = SHARP_BOOK
-    return np.where((book >= low) & (book <= high), remove_margin(odds_a, odds_b), np.nan)
+    plausible = (book >= low) & (book <= high)
+    fair = np.full(len(df), np.nan)
+    fair[plausible] = power_fair(odds_a[plausible], odds_b[plausible])
+    return fair
 
 
 def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
@@ -168,12 +198,38 @@ def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
     return df.drop(columns=['venue_start'])
 
 
+def _before_start(df):
+    """Zeilen von align, deren beide Preise vor der Startzeit liegen (wo bekannt). Polymarket und Kalshi handeln im
+    Match weiter, ein Sharp-Preis vor dem Start reicht deshalb nicht."""
+    start = df['start_time_utc']
+    return df[start.isna() | ((df['ts_utc'] < start) & (df['venue_ts'] < start))]
+
+
+def coverage(snaps, window=WINDOW):
+    """Für das Log: Womit werden die Sharp-Preise in snaps vor dem Start verglichen? {venue: Zeilen von align}."""
+    df = align(snaps, window)
+    return {} if df.empty else _before_start(df)['venue'].value_counts().to_dict()
+
+
 # --------------------------------------------------------------------- Signale
+
+def _drop_outliers(cand):
+    """
+    Kandidaten ohne Ausreißer. Beim Line Shopping gewinnt die höchste Quote, also auch eine veraltete oder falsche (27.10.:
+    10,0 bei William Hill und 888 gegen Median 5,75, acht Stunden später 6,5). Raus fällt je Sharp-Snapshot und Seite, was
+    mehr als MAX_GAP Wahrscheinlichkeit oder mehr als das MAX_RATIO-Fache über dem Median der Bruttoquoten liegt, sobald es
+    MIN_BOOKS Quoten gibt. Die nächste Quote kann weiter ein Signal sein.
+    """
+    quotes = cand.groupby(['match_key', 'ts_utc', 'side'])['odds']
+    median, books = quotes.transform('median'), quotes.transform('size')
+    out = (1 / median - 1 / cand['odds'] > MAX_GAP) | (cand['odds'] / median > MAX_RATIO)
+    return cand[~(out & (books >= MIN_BOOKS))]
+
 
 def signals(snaps, threshold=DEFAULT_THRESHOLD, window=WINDOW, pm_spread=PM_SPREAD, before_start=True):
     """
-    Line Shopping: pro Sharp-Snapshot und Seite die Venue mit der besten Netto-Quote, Signal wenn
-    p_fair * netto - 1 > threshold. before_start: nur Preise vor der Startzeit (wo bekannt).
+    Line Shopping: pro Sharp-Snapshot und Seite die Venue mit der besten Netto-Quote ohne Ausreißer (_drop_outliers),
+    Signal wenn p_fair * netto - 1 > threshold. before_start: nur Preise vor der Startzeit (wo bekannt).
     Spalten: ts_utc, match_key, side ('a'/'b'), player, venue, event_id, odds (brutto), net_odds, p_fair, edge, ...
     """
     df = align(snaps, window, pm_spread)
@@ -181,7 +237,7 @@ def signals(snaps, threshold=DEFAULT_THRESHOLD, window=WINDOW, pm_spread=PM_SPRE
         return pd.DataFrame(columns=['ts_utc', 'match_key', 'side', 'player', 'venue', 'event_id', 'odds', 'net_odds',
                                      'p_fair', 'edge'])
     if before_start:
-        df = df[df['start_time_utc'].isna() | (df['ts_utc'] < df['start_time_utc'])]
+        df = _before_start(df)
     rows = []
     for side in ('a', 'b'):
         gross = df[f'gross_{side}'].to_numpy(float)
@@ -194,7 +250,7 @@ def signals(snaps, threshold=DEFAULT_THRESHOLD, window=WINDOW, pm_spread=PM_SPRE
                          edge=p * net - 1)
         rows.append(part)
     cand = pd.concat(rows, ignore_index=True)
-    cand = cand[np.isfinite(cand['edge'])]
+    cand = _drop_outliers(cand[np.isfinite(cand['edge'])])
     # Line Shopping: beste Netto-Quote je Sharp-Snapshot und Seite
     best = cand.sort_values('net_odds', ascending=False).drop_duplicates(['match_key', 'ts_utc', 'side'])
     return best[best['edge'] > threshold].sort_values('ts_utc').reset_index(drop=True)

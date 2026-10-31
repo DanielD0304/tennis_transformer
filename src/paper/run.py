@@ -13,7 +13,9 @@ Pro Runde:
 2. Strategie „modell“: elo2/gbdt (MatchPredictor) gegen den aktuellen Preis bei Polymarket/Kalshi, nur in den
    Segmenten (Venue x Level x Stunden bis zum Start), die der Timing-Backtest als Kandidat oder GO ausweist
    (--segments). Jede Wette trägt ihr Segment, Go/No-Go gibt es zusätzlich je Segment.
-   Strategie „sharp“: Pinnacle/Betfair ohne Marge gegen den besten Netto-Preis aller anderen Venues.
+   Strategie „sharp“: Pinnacle/Betfair ohne Marge gegen den besten Netto-Preis aller anderen Venues. Verglichen wird
+   nur innerhalb von 5 Minuten, also mit den Preisen, die der Odds-API-Lauf mit abfragt (odds/collect.py). Mit
+   --odds-api --strategies sharp fragt dieser Lauf selbst ab und wettet sofort, ohne Predictor.
 3. Abrechnung über die PM/Kalshi-Auflösung bzw. die Matchdaten, CLV gegen den letzten Snapshot vor dem Start.
    Fällige offene Wetten werden gezielt per Markt-ID (Polymarket) bzw. Event-Ticker (Kalshi) abgefragt, die volle
    Historie lädt der Nightly-Lauf (python -m src.odds.collect --history).
@@ -203,7 +205,8 @@ def run_once(args, log=print, prob=None, model_name=None):
                                          args.threshold, strategy='modell', log=log, blend=blend, model=model_name,
                                          segments=segments, levels=lambda df: fill_levels(df, level_rows)))
     if 'sharp' in args.strategies and not snaps.empty:
-        new.append(signals.sharp_signals(snaps, pd.Timestamp(now), report.bankroll(bets, 'sharp'), args.sharp_threshold))
+        new.append(signals.sharp_signals(snaps, pd.Timestamp(now), report.bankroll(bets, 'sharp'), args.sharp_threshold,
+                                         log=log))
     for part in new:
         fill_levels(part, level_rows)
         bets, n = add_bets(bets, part)
