@@ -150,7 +150,7 @@ def test_implausible_sharp_book_is_no_fair_price():
     assert close.iloc[0] == pytest.approx(sharp.power_fair(1.27, 4.4))
 
 
-FAIR_B20 = snap('pinnacle', NOW, price_a=1.2, price_b=4.8)  # B fair 0,20, also faire Quote 5,0
+FAIR_B20 = snap('pinnacle', NOW, price_a=1.25, price_b=5.0)  # Buch 1,0, also B fair 0,20 und faire Quote 5,0
 STALE = ('williamhill', (1.05, 10.0))
 
 
@@ -181,11 +181,13 @@ def test_outlier_in_points_or_as_ratio(fair, normal, quote):
 
 
 def test_normal_spread_of_exchanges_stays():
-    """Landaluce am 27.10.: Matchbook 10,5 gegen Median 7,7 (3,5 Punkte, 1,36-fach) ist bei einer Exchange ohne Marge normal."""
+    """Landaluce am 27.10.: Matchbook 10,5 gegen Median 7,7 (3,5 Punkte, 1,36-fach) ist bei einer Exchange ohne Marge normal.
+    Die Quote bleibt im Line Shopping, ist mit der Power-Marge aber kein Signal mehr (proportional waren es 12 % Edge)."""
     pin = snap('pinnacle', NOW, price_a=1.09, price_b=8.57)
-    sig = sharp.signals(frame(pin, *market(('matchbook', (1.09, 10.5)), normal=(1.08, 7.7))), threshold=0.02)
-    assert list(sig['venue']) == ['matchbook']
-    assert sig['edge'].iloc[0] == pytest.approx(0.122, abs=0.001)
+    sig = sharp.signals(frame(pin, *market(('matchbook', (1.09, 10.5)), normal=(1.08, 7.7))), threshold=-1.0)
+    best = sig[sig['side'] == 'b']
+    assert list(best['venue']) == ['matchbook']
+    assert best['edge'].iloc[0] == pytest.approx(sharp.power_fair(8.57, 1.09) * 10.5 * (1 - sharp.DE_BET_TAX) - 1)
 
 
 @pytest.mark.parametrize('gap, out', [(sharp.MAX_GAP - 0.005, False), (sharp.MAX_GAP + 0.005, True)])

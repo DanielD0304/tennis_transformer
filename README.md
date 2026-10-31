@@ -547,8 +547,10 @@ Tabelle zeigt, wie weit das mittlere p über der Siegquote der Außenseiter lieg
   rund 10 % Edge, bei Quote 1,1 rund 1 %. Gewählt nach Kalibrierung, nicht nach dem Paper-Gewinn, gefittet ist nichts.
 - Was keine der Methoden löst: Ab Quote 10,5 setzt auch Power den Außenseiter zu hoch an, die Schwelle von 2 % schützt
   dort nicht. Nahe 50:50 liegen alle rund einen Punkt zu niedrig, der Favorit also rund einen Punkt zu hoch.
-- Wirkung auf den Snapshots bis zum 31.10.2026: Von 5 Signalen bleibt 1, die Ausreißer-Quote von Putintseva bei William
-  Hill. Wetten, die vorher abgerechnet wurden, behalten p, Edge und `clv_sharp` der alten Methode.
+- Wirkung auf den Snapshots bis zum 31.10.2026: Von 5 Signalen bleibt mit Power 1, die Ausreißer-Quote von Putintseva bei
+  William Hill, und die fällt durch die Regel weiter unten. Im 5-Minuten-Fenster ist damit keines mehr übrig. Polymarket und
+  Kalshi lagen dort bisher nie. In einem 30-Minuten-Fenster mit ihnen bleiben 4 von 13, die Preise sind dort aber verschoben,
+  das zeigt nur die Größenordnung. Wetten, die vorher abgerechnet wurden, behalten p, Edge und `clv_sharp` der alten Methode.
 
 Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
 die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei den Prediction Markets die
@@ -562,7 +564,8 @@ Preis würde also gerade wegen seiner Quote gewählt. Aus demselben Grund scheid
 Quote fällt weg, wenn sie mehr als 6 Punkte Wahrscheinlichkeit oder mehr als das 1,5-Fache über dem Median aller Quoten
 desselben Sharp-Zeitpunkts und derselben Seite liegt. Das gilt ab 6 Quoten, darunter trägt der Median nicht, weil sich
 Bücher Feeds teilen. Die nächste Quote kann weiter ein Signal sein. Anlass: Am 27.10.2026 stand Putintseva bei William
-Hill und 888 auf 10,0, der Median auf 5,75, acht Stunden später standen beide auf 6,5. Das waren 36 % Edge und eine Wette.
+Hill und 888 auf 10,0, der Median auf 5,75, acht Stunden später standen beide auf 6,5. Das waren mit der alten Marge 36 %
+Edge und eine Wette, mit Power wären es immer noch 23 %.
 - Die Grenzen kommen aus der Verteilung, nicht aus dem Gewinn (5.934 Quoten, 182 Märkte, 55 Matches, 27. bis 30.10.2026).
   In Punkten ist der Abstand über alle Quotenbereiche gleich (p99 3,1 bis 3,6), halbiert sich je halben Punkt und endet
   bei 5,2. Über 6 Punkten wäre rechnerisch weniger als eine Zeile normal. Die größten normalen Abstände haben Quellen ohne
@@ -572,11 +575,11 @@ Hill und 888 auf 10,0, der Median auf 5,75, acht Stunden später standen beide a
 - Die Stichprobe enthält nur diesen einen echten Ausreißer (7,4 Punkte, das 1,74-Fache). Von 5,5 bis 7 Punkten und vom
   1,4- bis zum 1,6-Fachen fällt jeweils genau er heraus.
 - Eine Obergrenze der Edge träfe hier dasselbe, misst aber schlechter: Ein Punkt Abstand ist bei Quote 1,3 rund 1,3 % Edge,
-  bei Quote 10 rund 10 %. Eine Grenze, die einen veralteten Favoriten erwischt (Median 1,50, Quote 1,75, also 9,5 Punkte
-  und nur 5 % Edge), träfe auch die normale Exchange-Quote eines Außenseiters (Landaluce bei Matchbook, 3,5 Punkte, 12 %).
+  bei Quote 10 rund 10 %. Ein veralteter Favorit (Median 1,50, Quote 1,75, also 9,5 Punkte) hat nur 7 % Edge, Putintseva mit
+  7,4 Punkten 23 %. Ein Deckel, der auch den Favoriten trifft, ließe über der Schwelle von 2 % kaum Platz.
 - Die Regel prüft die Quote, nicht den fairen Preis. Den sichert `SHARP_BOOK`: Die Wette mit 86 % Edge vom 27.10. (Pohánková
   bei coolbet, Quote 4,0 normal) kam von Betfair 1,10/1,06 und entstünde heute nicht mehr. Mit `SHARP_BOOK` weicht der
-  faire Preis an allen 91 Zeitpunkten höchstens 3 Punkte vom margenfreien Median der Bücher ab.
+  faire Preis an allen 91 Zeitpunkten höchstens 2,2 Punkte vom Median der Bücher ab, beide mit Power ohne Marge.
 - Ob ein Buch aus Deutschland nutzbar ist, prüft sie auch nicht. 11 der 35 Bücher tragen ein anderes Land im Namen, eine
   Liste der nutzbaren Bücher gibt es noch nicht.
 
@@ -586,12 +589,13 @@ bis 156 Minuten vom nächsten Polymarket-Snapshot entfernt, das ergab 0 von 3.24
 nicht:
 - 30 Minuten decken nur 4 der 6 Läufe ab (136 Zeilen), denn der Abstand hängt davon ab, ob gerade eine Paper-Runde lief.
   Das Mitabfragen deckt alle 6 ab (174 Zeilen vor dem Start im Replay).
-- Der alte Preis kostet die Edge, um die es geht. Das typische Signal hat 3,7 % Edge bei Quote 4,3, ein Cent kostet dort
-  4,2 %, und von 12 Signalen im 30-Minuten-Fenster bleibt mit einem Cent mehr nur eines. In 20 bis 40 Minuten bewegen
-  sich zwar 80 % der Kaufpreise um weniger als einen Cent, aber jede fünfte Seite um mindestens einen.
+- Der alte Preis kostet die Edge, um die es geht. Das typische Signal hatte mit der alten Marge 3,7 % Edge bei Quote 4,3,
+  ein Cent kostet dort 4,2 %, und von 12 Signalen im 30-Minuten-Fenster blieb mit einem Cent mehr nur eines. Mit Power sind
+  die Edges kleiner, der Cent wiegt also schwerer. In 20 bis 40 Minuten bewegen sich zwar 80 % der Kaufpreise um weniger
+  als einen Cent, aber jede fünfte Seite um mindestens einen.
 - Im Vergleich Kalshi-Mitte gegen Polymarket-Ask (eine Runde alt gegen frisch) sind 27 % (alter Kaufpreis, 37 Signale)
-  bzw. 31 % (alter fairer Preis, 45 Signale) der Signale zu frischen Preisen keine mehr. Mit echten Sharp-Preisen ist
-  die Stichprobe klein: 12 von 13 Signalen tragen auch mit dem Kaufpreis rund 30 Minuten später.
+  bzw. 31 % (alter fairer Preis, 45 Signale) der Signale zu frischen Preisen keine mehr. Mit echten Sharp-Preisen und der
+  alten Marge ist die Stichprobe klein: 12 von 13 Signalen tragen auch mit dem Kaufpreis rund 30 Minuten später.
 
 Jede Paper-Runde schreibt ins Log, womit sharp verglichen hat (`Sharp: 137 Vergleiche vor dem Start, davon Polymarket 4,
 Kalshi 4`).

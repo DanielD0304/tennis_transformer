@@ -32,8 +32,9 @@ SHARP = ('pinnacle', 'betfair')  # Reihenfolge = Priorität
 # Plausibles Buch (Summe der Kehrwerte) einer Sharp-Quote, wie bei den historischen Exchange-Quoten: Pinnacle liegt
 # bei ~1,03, Betfair nahe 1,00. Außerhalb ist der Markt dünn oder veraltet (z.B. 1,06/1,10) und kein fairer Preis.
 SHARP_BOOK = ODDS_RANGE['BFEW']
-# Nicht vergrößern, um Preise anderer Läufe mitzunehmen: Beim typischen Signal (Edge 3,7 %, Quote 4,3) kostet ein Cent
-# 4,2 % Edge, und in 20 bis 40 Minuten bewegt sich jede fünfte Seite um mindestens einen Cent (Stand 30.10.2026).
+# Nicht vergrößern, um Preise anderer Läufe mitzunehmen: Beim typischen Signal (Edge 3,7 % mit proportionaler Marge,
+# Quote 4,3) kostet ein Cent 4,2 % Edge, und in 20 bis 40 Minuten bewegt sich jede fünfte Seite um mindestens einen Cent
+# (Stand 30.10.2026).
 WINDOW = pd.Timedelta(minutes=5)
 DEFAULT_THRESHOLD = 0.02
 SHRINK = 0.5  # Anteil, um den p für Kelly Richtung Venue-Preis geschrumpft wird
