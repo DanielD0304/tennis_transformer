@@ -21,7 +21,7 @@ Welches Modell rechnet, ist konfigurierbar (config.live_model oder MatchPredicto
     transformer  trainierter Transformer (models/best_model.pt, symmetrisch, mit Temperatur)
     gbdt         LightGBM (models/gbdt_<tour>.pkl, erzeugt mit python -m src.models.gbdt --tour atp)
     elo2         Elo2 (src/elo.py), braucht kein trainiertes Modell
-Gewählt wird das Modell, das im Walk-forward-Backtest am besten abschneidet (siehe PR/README).
+Gewählt wird das Modell, das im Walk-forward-Backtest am besten abschneidet (siehe PR und docs/DETAILS.md).
 
 Nutzung:
     from src.predict import MatchPredictor

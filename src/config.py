@@ -8,7 +8,6 @@ from dataclasses import dataclass
 class TrainingConfig:
     """Training hyperparameters and paths."""
     
-    dropout: float = 0.3
     # Model architecture
     d_model: int = 64
     num_heads: int = 4

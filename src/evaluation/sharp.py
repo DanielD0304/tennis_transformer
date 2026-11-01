@@ -138,7 +138,7 @@ def power_fair(odds_a, odds_b, iters=10):
     """
     Faire Wahrscheinlichkeit für A nach der Power-Methode: (1/o_a)^k + (1/o_b)^k = 1, p = (1/o_a)^k, Newton ab k = 1.
     1/o normiert (predictors.remove_margin) setzt den Außenseiter zu hoch an, weil er dann kaum Marge trägt, Messwerte
-    im README unter „Sharp vs. Rest“. Auf Betfair-Quoten (nur Back-Preise) bleibt p zwischen Bid und Ask.
+    in docs/DETAILS.md unter „Sharp vs. Rest“. Auf Betfair-Quoten (nur Back-Preise) bleibt p zwischen Bid und Ask.
     """
     log_a, log_b = np.log(1 / np.asarray(odds_a, float)), np.log(1 / np.asarray(odds_b, float))
     k = np.ones_like(log_a)
