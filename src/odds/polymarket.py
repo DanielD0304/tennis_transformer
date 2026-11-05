@@ -147,6 +147,11 @@ def fee_rate(market):
     return _float((market.get('feeSchedule') or {}).get('rate')) if market['feesEnabled'] else 0.0
 
 
+def fee_exponent(market):
+    """Exponent der Gebührenkurve laut Gamma (bisher in allen Tennis-Märkten 1), None ohne Angabe."""
+    return _float((market.get('feeSchedule') or {}).get('exponent'))
+
+
 def match_info(event):
     """Gemeinsame Felder eines Match-Markts (für Snapshots und Historie) oder None."""
     m = match_market(event)
@@ -174,6 +179,7 @@ def match_info(event):
         'best_bid': _float(m.get('bestBid')),
         'best_ask': _float(m.get('bestAsk')),
         'fee_rate': fee_rate(m),
+        'fee_exponent': fee_exponent(m),
         'outcome_prices': [_float(p) for p in _list(m.get('outcomePrices'))],
         'closed': bool(m.get('closed')),
         'winner': winner_of(m),
@@ -256,6 +262,10 @@ def fetch_current(client=None, log=print):
     if other_fee:  # die Wetten nehmen die Rate des Markts, der Backtest braucht dann venues.POLYMARKET_FEE_SINCE neu
         log(f"  Polymarket: {len(other_fee)} von {len(infos)} Märkten mit anderer Taker-Gebühr als in venues.py "
             f"({POLYMARKET_FEE:g}): {sorted(set(other_fee))}")
+    other_exponent = [i['fee_exponent'] for i in infos if i['fee_exponent'] not in (None, 1.0)]
+    if other_exponent:  # die Formel in venues.polymarket_fee gilt für Exponent 1
+        log(f"  Polymarket: {len(other_exponent)} von {len(infos)} Märkten mit Gebühren-Exponent ungleich 1: "
+            f"{sorted(set(other_exponent))}, die Netto-Quoten rechnen mit 1")
     try:
         mids = midpoints(client, [t for i in infos for t in (i['token_a'], i['token_b'])])
     except Exception as e:  # ohne Mitte gehen auch die Gamma-Preise

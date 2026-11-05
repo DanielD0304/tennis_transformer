@@ -348,6 +348,11 @@ def test_polymarket_warns_when_gamma_reports_another_fee():
     client.fees = {'feesEnabled': False}
     polymarket.fetch_current(client, log=messages.append)
     assert '[0.0]' in messages[1]
+    # die Formel gilt für Exponent 1, ein anderer steht im Log (und nur dann)
+    messages.clear()
+    client.fees = {'feesEnabled': True, 'feeSchedule': {'rate': 0.05, 'exponent': 2}}
+    polymarket.fetch_current(client, log=messages.append)
+    assert len(messages) == 1 and 'Exponent ungleich 1' in messages[0] and '[2.0]' in messages[0]
 
 
 def test_polymarket_empty_book_side_has_no_depth():
