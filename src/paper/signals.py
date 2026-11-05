@@ -25,7 +25,7 @@ import pandas as pd
 from ..evaluation import sharp
 from ..evaluation.betting import Kelly
 from ..evaluation.predictors import logit, sigmoid
-from ..odds.schema import average_price, load_levels
+from ..odds.schema import fill, load_levels
 from .store import bet_id, normalize
 
 MODEL_THRESHOLD = 0.05
@@ -161,40 +161,47 @@ def _stakes(p, odds, net, bankroll, shrink=sharp.SHRINK):
     return KELLY.amount(bankroll, p_k, net)
 
 
+def _level_cost(prof):
+    """Was ein Anteil eines Orderbuch-Levels mit dessen eigener Gebühr kostet: Preis -> Preis + Gebühr."""
+    return lambda price: 1 / float(prof.net_odds_from_gross(1 / price))
+
+
 def kelly_fill(asks, p, prof, bankroll):
     """
     Kelly-Einsatz und sein Durchschnittspreis im Orderbuch. Der Einsatz hängt vom Preis ab und der Preis vom Einsatz:
     Kelly sinkt mit dem Preis, der Preis steigt mit dem Einsatz, also passt genau ein Einsatz zu seinem eigenen Preis
-    (Bisektion). -> (Einsatz, Preis), None, wenn Kelly mehr will, als im Buch liegt.
+    (Bisektion). -> (Einsatz, Preis ohne Gebühr, Preis mit Gebühr), None, wenn Kelly mehr will, als im Buch liegt.
     """
-    def wanted(price):
-        return _stakes(p, 1 / price, float(prof.net_odds_from_gross(1 / price)), bankroll)
+    def wanted(price, with_fee):
+        return _stakes(p, 1 / price, 1 / with_fee, bankroll)
 
     if not asks:
         return None
-    low, high = 0.0, wanted(asks[0][0])  # zum besten Preis will Kelly am meisten
+    cost = _level_cost(prof)
+    low, high = 0.0, wanted(asks[0][0], cost(asks[0][0]))  # zum besten Preis will Kelly am meisten
     for _ in range(50):
         stake = (low + high) / 2
-        price = average_price(asks, stake)
-        if price is not None and wanted(price) >= stake:
+        filled = fill(asks, stake, cost)
+        if filled is not None and wanted(*filled) >= stake:
             low = stake
         else:
             high = stake
-    price = average_price(asks, low)
-    return None if wanted(price) > low + 0.01 else (low, price)
+    filled = fill(asks, low, cost)
+    return None if wanted(*filled) > low + 0.01 else (low, *filled)
 
 
 def book_fill(asks, p, prof, bankroll):
     """
     Was die Einsätze im Orderbuch asks ([[Preis, Anteile], ...], bester Preis zuerst) kosten: (Kelly-Einsatz,
-    Bruttoquote Kelly, Bruttoquote flat). None, wenn das Buch einen der beiden Einsätze nicht füllt: Dann gibt es keine
+    Bruttoquote Kelly, Netto-Quote Kelly, Netto-Quote flat). Jedes Level zahlt seine eigene Gebühr, der Einsatz enthält
+    sie. None, wenn das Buch einen der beiden Einsätze nicht füllt: Dann gibt es keine
     Wette und auch keinen Teil davon. Ein Rest von wenigen Dollar zählte in Wettenzahl und mittlerem CLV des Go/No-Go wie
     eine volle Wette, und gerade dünne Bücher zeigen Preise, die für den geplanten Einsatz nie zu haben waren.
     """
-    kelly, flat = kelly_fill(asks, p, prof, bankroll), average_price(asks, FLAT_STAKE)
+    kelly, flat = kelly_fill(asks, p, prof, bankroll), fill(asks, FLAT_STAKE, _level_cost(prof))
     if kelly is None or flat is None:
         return None
-    return kelly[0], 1 / kelly[1], 1 / flat
+    return kelly[0], 1 / kelly[1], 1 / kelly[2], 1 / flat[1]
 
 
 def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, strategy='modell',
@@ -228,7 +235,7 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
         q = r['price_a'] if r['price_type'] == 'probability' and r['price_a'] == r['price_a'] else None
         p, used = blended(p, q, hours, blend, r['venue'], model)
         n_blend += used is not None
-        prof = sharp.profile(r['venue'])
+        prof = sharp.profile(r['venue'], r['fee_rate'])
         best = None
         for side, odds, p_side in (('a', gross_a[i], p), ('b', gross_b[i], 1 - p)):
             if not np.isfinite(odds) or odds <= 1:
@@ -242,12 +249,11 @@ def model_signals(snaps, prob, now, bankroll=1000.0, threshold=MODEL_THRESHOLD, 
         side, odds, net, edge, p_side = best
         net_flat = None
         if r['venue'] == 'polymarket':
-            fill = book_fill(load_levels(r[f'asks_{side}']), p_side, prof, bankroll)
-            if fill is None:
+            filled = book_fill(load_levels(r[f'asks_{side}']), p_side, prof, bankroll)
+            if filled is None:
                 thin += 1
                 continue
-            stake, odds, odds_flat = fill
-            net, net_flat = float(prof.net_odds_from_gross(odds)), float(prof.net_odds_from_gross(odds_flat))
+            stake, odds, net, net_flat = filled
             edge = p_side * net - 1
             if p_side * min(net, net_flat) - 1 <= threshold:  # auch der teurere Einsatz muss die Schwelle schaffen
                 costly += 1

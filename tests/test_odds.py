@@ -16,7 +16,7 @@ import pytest
 
 from src.evaluation.predictors import power_fair
 from src.odds import collect, history, kalshi, matching, odds_api, polymarket, report, softbooks
-from src.odds.schema import (Snapshot, append_snapshots, average_price, dump_levels, load_levels, load_snapshots, mid,
+from src.odds.schema import (Snapshot, append_snapshots, average_price, dump_levels, fill, load_levels, load_snapshots, mid,
                              odds_to_price, price_to_odds, to_decimal, to_frame, utc, validate)
 
 FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "odds")
@@ -57,6 +57,29 @@ def test_average_price_walks_the_book():
     assert average_price(levels, 21.0) == pytest.approx(21 / 35)  # das ganze Buch
     assert average_price(levels, 21.01) is None and average_price([], 1.0) is None
     assert average_price(levels, 0.0) == 0.40
+
+
+def test_fill_charges_each_level_its_own_fee():
+    """Die Gebühr hängt am Preis des Levels und steckt im Einsatz, der Preis ohne Gebühr bleibt der des Buchs."""
+    levels = [(0.20, 100.0), (0.80, 100.0)]
+    cost = lambda price: price + 0.05 * price * (1 - price)
+    assert fill(levels, 10.0) == (pytest.approx(0.20), pytest.approx(0.20))  # ohne cost: beide Preise gleich
+    assert fill(levels, 20.8, cost) == (pytest.approx(0.20), pytest.approx(0.208))  # genau das erste Level
+    price, with_fee = fill(levels, 101.6, cost)  # 200 Anteile, 100 USD und 1,60 USD Gebühr
+    assert (price, with_fee) == (pytest.approx(0.50), pytest.approx(101.6 / 200))
+    assert with_fee < cost(price)  # am Durchschnittspreis gerechnet wäre die Gebühr 2,50 USD
+    assert fill(levels, 101.61, cost) is None
+    assert fill(levels, 0.0, cost) == (0.20, pytest.approx(0.208))
+
+
+def test_old_snapshot_files_have_no_fee_rate(tmp_path):
+    """Tagesdateien von vor der Spalte laden weiter, neue Snapshots hängen sich dahinter."""
+    root = str(tmp_path / 'snaps')
+    os.makedirs(root)
+    to_frame([snap()]).drop(columns=['fee_rate']).to_parquet(os.path.join(root, f"{TS:%Y-%m-%d}.parquet"), index=False)
+    assert load_snapshots(root=root)['fee_rate'].isna().all()
+    append_snapshots([snap(event_id='2', fee_rate=0.05)], root)
+    assert list(load_snapshots(root=root).sort_values('event_id')['fee_rate'].fillna(-1)) == [-1, 0.05]
 
 
 def test_levels_round_trip():
@@ -288,8 +311,20 @@ def test_polymarket_fetch_current_takes_bid_ask_from_clob_book():
     assert 'Orderbücher' in messages[0]
 
 
+def test_polymarket_snapshot_carries_the_fee_of_its_market():
+    """Die Gebühr gilt je Markt: Gamma nennt sie (fee_rate), abgeschaltet ist 0, ohne Angabe bleibt sie leer."""
+    event = fixture('polymarket_events_itf_open.json')[0]
+    market = next(m for m in event['markets'] if m.get('sportsMarketType') == 'moneyline')
+    for fees, rate in (({'feesEnabled': True, 'feeSchedule': {'rate': 0.05, 'exponent': 1}}, 0.05),
+                       ({'feesEnabled': True, 'feeSchedule': {'rate': 0.03, 'exponent': 1}}, 0.03),
+                       ({'feesEnabled': False, 'feeSchedule': None}, 0.0),
+                       ({'feesEnabled': None, 'feeSchedule': None}, None)):
+        s = polymarket.parse_events([{**event, 'markets': [{**market, **fees}]}], TS)[0]
+        assert s.fee_rate == rate
+
+
 def test_polymarket_warns_when_gamma_reports_another_fee():
-    """venues.py rechnet mit einer festen Rate. Nennt Gamma eine andere, steht das im Log der Runde."""
+    """Der Backtest kennt die Raten nur nach Datum. Nennt Gamma eine andere, steht das im Log der Runde."""
     event = fixture('polymarket_events_itf_open.json')[0]
     market = next(m for m in event['markets'] if m.get('sportsMarketType') == 'moneyline')
 
@@ -313,6 +348,11 @@ def test_polymarket_warns_when_gamma_reports_another_fee():
     client.fees = {'feesEnabled': False}
     polymarket.fetch_current(client, log=messages.append)
     assert '[0.0]' in messages[1]
+    # die Formel gilt für Exponent 1, ein anderer steht im Log (und nur dann)
+    messages.clear()
+    client.fees = {'feesEnabled': True, 'feeSchedule': {'rate': 0.05, 'exponent': 2}}
+    polymarket.fetch_current(client, log=messages.append)
+    assert len(messages) == 1 and 'Exponent ungleich 1' in messages[0] and '[2.0]' in messages[0]
 
 
 def test_polymarket_empty_book_side_has_no_depth():

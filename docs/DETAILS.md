@@ -320,7 +320,7 @@ out-of-sample ist erst das Jahr danach. Der Transformer wird im Walk-forward nic
 | `betfair` | `BFEW/BFEL` (Betfair Exchange, ab August 2025) | 5 % Kommission auf den Nettogewinn | gewertet |
 | `betfair_proxy` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | 5 % Kommission auf den Nettogewinn | gewertet |
 | `kalshi` (Proxy) | faire Pinnacle-Wahrscheinlichkeit | Fee pro Kontrakt = ceil_to_cent(0,07 · p · (1−p)) | gewertet |
-| `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Gebühr 5 % auf den möglichen Gewinn (0,05 · p · (1−p) je Anteil) | gewertet |
+| `polymarket` (Proxy) | faire Pinnacle-Wahrscheinlichkeit + Spread (Standard 2 Punkte) | Taker-Gebühr Rate · p · (1−p) je Anteil, zusätzlich zum Preis (Rate je Markt: keine / 0,03 / 0,05 nach Datum) | gewertet |
 
 W/O ist immer void. Alle Werte sind per `Venue.with_(...)` änderbar (z. B. `ret_rule='void'`,
 `max_stake=50`). Die RET-Regeln unterscheiden sich je Anbieter und müssen vor echtem Einsatz in den
@@ -497,8 +497,10 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
 - Zeitpunkte: Eröffnung, −24 h, −6 h, −1 h, Closing. Es zählt jeweils der letzte Preis ≤ t vor der geplanten
   Startzeit, nie ein späterer (`odds/history.price_at`).
 - Erreichbarer Preis: Kalshi kauft zum Ask aus den Stunden-Candles (B über 1 − Bid von A), dazu kommt die
-  Kalshi-Gebühr. Polymarket kauft zum Preis + halben Spread (`--pm-spread`, Standard 2 %), dazu die
-  Taker-Gebühr (`--pm-fee`, Standard 0,05, auch für Märkte aus der Zeit vor der Gebühr). Die „Eröffnung“ ist bei Polymarket der erste echte Kurs: Der erste Punkt ist
+  Kalshi-Gebühr. Polymarket kauft zum Preis + halben Spread (`--pm-spread`, Standard 2 %), dazu die Taker-Gebühr mit
+  der Rate des Spieldatums (keine bis 30.03.2026, 0,03 bis 10.07.2026, danach 0,05, siehe `venues.POLYMARKET_FEE_SINCE`
+  und den Abschnitt zur Gebühr im Paper-Trading). `--pm-fee` setzt eine Rate für alle Märkte, 0 = ohne. Die „Eröffnung“
+  ist bei Polymarket der erste echte Kurs: Der erste Punkt ist
   meist der Mittelpreis 0,5 eines leeren Orderbuchs. Preise von genau 0,5 gelten dort als Platzhalter.
 - Liquidität: Kalshi verlangt mindestens `--min-volume-kalshi` Kontrakte, die bis t gehandelt wurden.
   Polymarket kennt historisch nur das Gesamtvolumen. Dieser Filter ist deshalb ein Blick in die Zukunft
@@ -686,12 +688,18 @@ python -m src.paper.run --segments polymarket:challenger:24h,polymarket:itf:0.5-
   Challenger höchstens 0,1), davor zahlen vor allem dünne, oft frisch gelistete Märkte drauf (Qualifikationen der
   Haupttour 2,8 / 4,0 Cent). Eine Stunde ist wenig: Vier Stunden früher (18:51 UTC) lagen bei 54 % der ITF-Seiten unter
   10 USD am besten Ask.
-- Taker-Gebühr: Gamma führt die Tennis-Märkte mit `feesEnabled` und `sports_fees_v3`, also 0,05 × p × (1 − p) je Anteil.
-  Die Doku sagt nicht, ob sie beim Kauf in Anteilen oder USDC eingezogen wird. `venues.py` rechnet mit Anteilen, das ist
-  die vorsichtigere Lesart: 5 % auf den möglichen Gewinn, Netto-Quote = 1 + (Quote − 1) × 0,95, bei p = 0,5 also 2,5 % des
-  Einsatzes. Edge, Schwelle, Kelly und der Gewinn rechnen damit, in `modell` und `sharp`. Nennt Gamma eine andere Rate,
-  steht das im Log der Runde. Wetten von vorher behalten ihre Netto-Quote ohne Gebühr, das Go/No-Go mischt sie mit den
-  neuen. Die Mindestorder von 5 prüft der Lauf nicht.
+- Taker-Gebühr: Polymarket zieht von Takern Rate × p × (1 − p) je Anteil ein, zusätzlich zum Preis. Auf Polygon geprüft
+  (Oktober 2026): Der Käufer erhält alle Anteile und zahlt die Gebühr obendrauf, ein Anteil kostet also p + Gebühr, die
+  Netto-Quote ist 1 / (p + Gebühr), bei p = 0,5 und Rate 0,05 kostet das 2,5 % des Einsatzes. Die Rate hängt am Markt:
+  Gamma nennt sie je Markt (`feesEnabled`, `feeSchedule.rate`, Exponent überall 1), der Snapshot trägt sie als
+  `fee_rate`. In der Historie gilt: keine Gebühr bis Ende März 2026, 0,03 (`sports_fees_v2`) bis 10.07.2026, danach 0,05
+  (`sports_fees_v3`). Im Orderbuch zahlt jedes Level seine eigene Gebühr, der Einsatz enthält sie (`schema.fill`,
+  `signals.book_fill`). Edge, Schwelle, Kelly und der Gewinn rechnen mit der Rate des Markts (ohne Angabe mit der
+  aktuellen, 0,05), in `modell` und `sharp`. Nennt Gamma eine andere Rate als 0,05 oder einen Exponenten ungleich 1,
+  steht das im Log der Runde. Die `rebateRate` im `feeSchedule` geht an die Maker, das Rebate-Programm für Taker (ab
+  28.05.2026, nach Volumen) ist nicht eingerechnet. Wetten bis 31.10. haben keine Gebühr in der Netto-Quote
+  (`net_odds_flat` leer), Wetten ab 01.11. rechnen sie nach der Formel „in Anteilen“ (`net_odds` um höchstens 0,25 %
+  von der belegten Formel entfernt). Das Go/No-Go mischt beide. Die Mindestorder von 5 prüft der Lauf nicht.
 - Wetten liegen in `data/paper/bets.parquet`: Zeitstempel, Venue, Preis brutto/netto, Einsatz Kelly/flat,
   Strategie, Segment, Level, p, Edge, Status, Gewinn, Schlussquote, CLV. Gewettet wird nur der damals
   verfügbare Preis (Durchschnittspreis, Ask bzw. Quote), jede Strategie höchstens einmal pro Match und Segment. Jedes

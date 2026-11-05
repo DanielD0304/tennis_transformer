@@ -17,7 +17,7 @@ import pandas as pd
 
 from ..evaluation import metrics
 from ..evaluation.predictors import power_fair
-from ..evaluation.venues import get_venue
+from ..evaluation.venues import get_venue, polymarket_fee_at
 from .history import HISTORY_DIR, read_history
 from .matching import link_matches, load_matches, pair_venues
 from .schema import SNAPSHOT_DIR, load_snapshots
@@ -122,6 +122,8 @@ def vs_pinnacle(df, venue, matches, min_volume=0.0, price_col='close_price_a', b
     boot = metrics.paired_bootstrap(loss_v, loss_p)
 
     profile = get_venue(venue)
+    if venue == 'polymarket':
+        profile = profile.with_(taker_fee=polymarket_fee_at(m['start_time_utc']))
     # Kauf zum Ask, wo es eins gibt (Kalshi-Closing), sonst Mitte plus halber Spread des Venue-Profils
     half = profile.spread / 2 if profile.spread else 0.01
     has_ba = (m['close_ask_a'].notna() & m['close_bid_a'].notna()).to_numpy() if price_col == 'close_price_a' else False
