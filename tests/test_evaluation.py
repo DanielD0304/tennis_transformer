@@ -11,7 +11,7 @@ import pytest
 
 from src.evaluation import backtest, betting, metrics
 from src.evaluation.predictors import (BlendPredictor, Predictor, RankPredictor, make_predictors,
-                                       prepare_matches, remove_margin)
+                                       power_fair, prepare_matches, remove_margin)
 from src.evaluation.venues import VENUES, Venue, ceil_to_cent, kalshi_fee
 
 
@@ -66,6 +66,17 @@ def test_remove_margin_sums_to_one():
     assert pa[0] == pytest.approx((1 / 1.5) / (1 / 1.5 + 1 / 2.6))
 
 
+def test_market_uses_power_and_proxy_stays_proportional():
+    """Markt-p mit Power (Außenseiter trägt mehr Marge), fair_ps als Preis-Proxy weiter proportional."""
+    raw = synthetic_matches(years=(2020,), per_month=5).head(10).copy()
+    raw['PSW'], raw['PSL'] = 1.09, 8.57
+    m = prepare_matches(raw, with_elo=False)
+    fav = np.where(m['label'] == 1, m['p_market_fair'], 1 - m['p_market_fair'])
+    np.testing.assert_allclose(fav, power_fair(1.09, 8.57))
+    np.testing.assert_allclose(np.where(m['label'] == 1, m['fair_ps'], 1 - m['fair_ps']), remove_margin(1.09, 8.57))
+    assert power_fair(8.57, 1.09) < remove_margin(8.57, 1.09)
+
+
 def test_orientation_consistent(matches):
     # A ist mal Sieger, mal Verlierer
     assert 0.3 < matches['label'].mean() < 0.7
@@ -114,7 +125,7 @@ def test_market_fallback_chain_pinnacle_betfair_avg():
     p = pd.Series(make_predictors(['market'])[0].predict(m), index=m.index)
     for book in ('ps', 'bfe', 'avg'):
         rows = m[src == book]
-        np.testing.assert_allclose(p[rows.index], remove_margin(rows[f'{book}_a'], rows[f'{book}_b']))
+        np.testing.assert_allclose(p[rows.index], power_fair(rows[f'{book}_a'], rows[f'{book}_b']))
     # Betfair-Quoten werden mit A/B getauscht wie alle anderen
     won = m['label'] == 1
     np.testing.assert_allclose(np.where(won, m['BFEW'], m['BFEL'])[src == 'bfe'], m.loc[src == 'bfe', 'bfe_a'])

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
+from src.evaluation.predictors import power_fair
 from src.odds import collect, history, kalshi, matching, odds_api, polymarket, report, softbooks
 from src.odds.schema import (Snapshot, append_snapshots, average_price, dump_levels, load_levels, load_snapshots, mid,
                              odds_to_price, price_to_odds, to_decimal, to_frame, utc, validate)
@@ -586,16 +587,16 @@ def test_vs_pinnacle():
     r = report.vs_pinnacle(df, 'kalshi', MATCHES)
     # Zeile K1 (Kym gewinnt laut Markt, laut matches.csv aber Rinderknech) fällt raus
     assert r['n'] == 2
-    p_pin = (1 / 2.7) / (1 / 2.7 + 1 / 1.5)
+    p_pin = float(power_fair(2.7, 1.5))  # ohne Marge nach Power, wie im Backtest
     assert r['mittel_abs_dp'] == pytest.approx((abs(0.30 - p_pin) + abs(0.35 - p_pin)) / 2)
     assert r['ll_bench'] == pytest.approx(-math.log(1 - p_pin))
-    # Pinnacle fair für Kym: 0.357. K0: Ask 0.31 + Fee 0.02 = 0.33 -> Edge +8 %, Kym verliert -> -100 %.
-    # K2: Ask 0.36 + 0.02 = 0.38 zu teuer, Rinderknech 1 - 0.34 + 0.02 = 0.68 > 0.643 auch -> keine Wette
+    # Pinnacle fair für Kym: 0.349. K0: Ask 0.31 + Fee 0.02 = 0.33 -> Edge +5,8 %, Kym verliert -> -100 %.
+    # K2: Ask 0.36 + 0.02 = 0.38 zu teuer, Rinderknech 1 - 0.34 + 0.02 = 0.68 > 0.651 auch -> keine Wette
     assert r['wetten'] == 1 and r['yield_flat'] == -1.0
     assert r['edge_mittel'] == pytest.approx(p_pin / 0.33 - 1)
     assert report.vs_pinnacle(df, 'kalshi', []) is None
     avg = report.vs_pinnacle(df, 'kalshi', MATCHES, bench='avg')
-    assert avg['gegen'] == 'avg' and avg['ll_bench'] == pytest.approx(-math.log(1 - (1 / 2.6) / (1 / 2.6 + 1 / 1.45)))
+    assert avg['gegen'] == 'avg' and avg['ll_bench'] == pytest.approx(-math.log(1 - power_fair(2.6, 1.45)))
 
 
 def test_polymarket_itf_tour_and_level():

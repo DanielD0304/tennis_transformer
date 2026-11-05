@@ -47,8 +47,9 @@ robustness rule over quarters): of 120 segments, 0 are GO, 91 NO-GO, 6 candidate
 ## Method notes
 
 - The benchmark is the market, not a rank baseline. Accuracy alone says little about betting value.
-- Margin removal matters: the proportional method overstates long shots; the "sharp vs rest" strategy uses the
-  power method (see `docs/DETAILS.md`, section "Sharp vs. Rest").
+- Margin removal matters: the proportional method overstates long shots. Fair probabilities (market baseline, blend,
+  stack, "sharp vs rest") use the power method; only the price proxy for Kalshi and Polymarket stays proportional,
+  because those markets price long shots even higher (see `docs/DETAILS.md`, "Sharp vs. Rest" and "Marge in den Backtests").
 - Rules against false positives were tightened after each artifact: profits must hold in at least two
   quarters, and no quarter may carry more than 60 % of the bets.
 

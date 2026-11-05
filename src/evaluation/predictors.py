@@ -42,9 +42,27 @@ def a_is_winner(mid, seed=ORIENTATION_SEED):
 
 
 def remove_margin(odds_a, odds_b):
-    """Faire Wahrscheinlichkeit für A aus zwei Quoten (1/o normiert, Summe beider Seiten = 1)."""
+    """
+    Wahrscheinlichkeit für A aus zwei Quoten, 1/o normiert (Summe beider Seiten = 1). Setzt Außenseiter zu hoch an und
+    dient deshalb nur noch als Preis-Proxy (fair_ps), als faire Wahrscheinlichkeit gilt power_fair.
+    """
     inv_a, inv_b = 1.0 / np.asarray(odds_a, float), 1.0 / np.asarray(odds_b, float)
     return inv_a / (inv_a + inv_b)
+
+
+def power_fair(odds_a, odds_b, iters=10):
+    """
+    Faire Wahrscheinlichkeit für A nach der Power-Methode: (1/o_a)^k + (1/o_b)^k = 1, p = (1/o_a)^k, Newton ab k = 1.
+    1/o normiert (remove_margin) setzt den Außenseiter zu hoch an, weil er dann kaum Marge trägt, Messwerte in
+    docs/DETAILS.md unter „Sharp vs. Rest“ und „Marge in den Backtests“. Auf Betfair-Quoten (nur Back-Preise) bleibt p
+    zwischen Bid und Ask. Fehlende Quoten ergeben NaN.
+    """
+    log_a, log_b = np.log(1 / np.asarray(odds_a, float)), np.log(1 / np.asarray(odds_b, float))
+    k = np.ones_like(log_a)
+    for _ in range(iters):
+        p_a, p_b = np.exp(k * log_a), np.exp(k * log_b)
+        k = k - (p_a + p_b - 1) / (log_a * p_a + log_b * p_b)
+    return np.exp(k * log_a)
 
 
 def _valid_odds(a, b):
@@ -57,7 +75,7 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
     Behält alle Originalspalten (der Transformer-Adapter braucht sie) und ergänzt:
     match_id, date, year, tour, player_a, player_b, label (1 = A gewinnt), status,
     rank_a/b, elo_a/b, elo2_* (siehe elo.elo2_features), <book>_a/<book>_b für b365, ps, avg, max, bfe,
-    market_source und p_market_fair (faire Wahrscheinlichkeit aus der Quelle laut MARKET_SOURCES).
+    market_source, p_market_fair (faire Wahrscheinlichkeit aus der Quelle laut MARKET_SOURCES, Power-Methode) und fair_ps.
     """
     df = df.dropna(subset=['winner_name', 'loser_name', 'tourney_date']).copy()
     if 'match_num' not in df.columns:
@@ -104,7 +122,9 @@ def prepare_matches(df, seed=ORIENTATION_SEED, with_elo=True, elo2_params=None):
         df[f'{book}_b'] = np.where(a_win, ol, ow)
 
     df['p_market_fair'], df['market_source'] = market_probability(df)
-    # Faire Pinnacle-Wahrscheinlichkeit (nur PS, ohne Fallback): Preis-Proxy für Exchange/PM-Venues
+    # Pinnacle ohne Marge (nur PS, ohne Fallback) als Preis-Proxy für Exchange/PM-Venues. Bewusst proportional: Kalshi und
+    # Polymarket bewerten Außenseiter höher als jede faire Pinnacle-Schätzung, proportional liegt dort näher am echten
+    # Preis (Kalshi Closing ab Quote 4,25, Median +3,6 / +5,0 / -1,2 % gegen -3,5 / -10,3 / -28,5 % mit Power, docs/DETAILS.md).
     df['fair_ps'] = remove_margin(df['ps_a'], df['ps_b'])
     return chronological(df).reset_index(drop=True)
 
@@ -119,13 +139,13 @@ def match_status(df):
 
 
 def market_probability(df, sources=MARKET_SOURCES):
-    """Faire Markt-Wahrscheinlichkeit für A aus der ersten Quelle mit gültigen Quoten -> (p, Quelle)."""
+    """Faire Markt-Wahrscheinlichkeit für A (Power-Methode) aus der ersten Quelle mit gültigen Quoten -> (p, Quelle)."""
     p = np.full(len(df), np.nan)
     source = np.full(len(df), 'none', dtype=object)
     for book in sources:
         if f'{book}_a' not in df.columns:
             continue
-        fair = remove_margin(df[f'{book}_a'], df[f'{book}_b'])
+        fair = power_fair(df[f'{book}_a'], df[f'{book}_b'])
         take = np.isnan(p) & np.isfinite(fair)
         p[take], source[take] = fair[take], book
     return p, source
