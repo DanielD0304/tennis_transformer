@@ -189,5 +189,9 @@ Details, Tabellen und Reproduktion: [`docs/ERGEBNISSE_PHASE45.md`](ERGEBNISSE_PH
   Seit #15 sammelt der Collector ITF, und `--segments auto` nimmt alle Kandidaten, also auch PM ITF −6 h, −1 h und
   Closing mit `blend_gbdt`. Seit den Fixes wettet die Modell-Strategie bei Polymarket zum Durchschnittspreis ihres
   Einsatzes im CLOB-Orderbuch. Ohne brauchbares Ask, bei einem Preis von genau 0,5 und wenn das Buch den Einsatz nicht
-  füllt, gibt es keine Wette. Seit dem 31.10. rechnet die Netto-Quote auch die Taker-Gebühr von Polymarket mit ein (5 %
-  auf den möglichen Gewinn). Diese Segmente sagen deshalb erst mit Wetten ab diesem Stand etwas aus.
+  füllt, gibt es keine Wette. Ab dem 01.11. rechnet die Netto-Quote auch die Taker-Gebühr von Polymarket mit ein
+  (Rate × p × (1 − p) je Anteil zusätzlich zum Preis, Rate je Markt, zuletzt 0,05, bei p = 0,5 rund 2,5 % des Einsatzes),
+  im Backtest zahlen Märkte vor der Einführung nichts. Alle vier Paper-Segmente bleiben Kandidat, kein GO. Bei fester
+  Schwelle streicht die Gebühr 29 bis 51 % ihrer Wetten, der Yield der übrigen bleibt etwa gleich, der Gewinn in Einheiten
+  sinkt um 3 bis 52 % (Zahlen: ERGEBNISSE_PHASE45, Abschnitt Polymarket-Taker-Gebühr). Diese Segmente sagen deshalb erst
+  mit Wetten ab diesem Stand etwas aus.

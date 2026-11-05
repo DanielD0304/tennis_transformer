@@ -134,13 +134,53 @@ stammen. Erst die Konzentration (97 % der Wetten im Q4) stoppt es.
 
 ## Timing-Tabelle (gbdt und Blend aus gbdt + Preis)
 
-Polymarket verlangt auf Tennis-Märkten eine Taker-Gebühr von 5 % auf den möglichen Gewinn, bei p = 0,5 sind das 2,5 %
-des Einsatzes. Diese Tabelle rechnet Polymarket ohne sie, seit dem 31.10.2026 ist sie Standard (`--pm-fee`). Ein
-Vergleich auf den Vorhersagen vom 27.10. (ohne die Orderbuch-Tiefe) zeigt für die Paper-Segmente mit `blend_gbdt`, ohne /
-mit Gebühr: Challenger −24 h 272 / 79 Wetten, Yield +16,6 % / +50,2 %; ITF −6 h 1.446 / 1.637, +21,3 % / +16,0 %; ITF −1 h
-1.670 / 875, +23,7 % / +25,7 %; ITF Closing 1.175 / 573, +13,5 % / +14,4 %. Die Schwellen ändern sich dabei walk-forward,
-deshalb ändert sich auch die Wettenzahl. Alle vier bleiben Kandidat. Bei Polymarket fällt von den Kandidaten nur Challenger
-−24 h mit `elo2` zu NO-GO (Yield +6,5 % / +3,2 %).
+### Polymarket-Taker-Gebühr (Stand 05.11.2026)
+
+Polymarket zieht von Takern Rate × p × (1 − p) je Anteil ein, zusätzlich zum Preis. Auf Polygon geprüft (Käufe in Märkten
+von Februar bis Oktober 2026): Der Käufer erhält alle Anteile und zahlt die Gebühr obendrauf, ein Anteil kostet also
+p + Gebühr, die Netto-Quote ist 1 / (p + Gebühr). Bei p = 0,5 sind das 2,5 % des Einsatzes bei Rate 0,05. Die Rate hängt
+am Markt (Gamma: `feesEnabled`, `feeSchedule.rate`, Exponent überall 1). Von den 44.772 Märkten der Historie hat keiner
+mit Erstellung bis 27.03.2026 eine Gebühr (zwei Testmärkte vom 15.01. und 22.02. ausgenommen), ab 28.03. kommt sie
+schrittweise, alle ab dem 30.03. erstellten haben 0,03 (`sports_fees_v2`) und alle ab dem 10.07. 16:00 UTC erstellten
+0,05 (`sports_fees_v3`). Das deckt sich mit dem Changelog der Doku (30.03.: „Fee Structure V2“, 10.07.: Sportsatz von
+0,03 auf 0,05). Auf der Kette zahlten Märkte von Februar und März (vor der Grenze) nichts, Märkte von Mai und Juni 0,030
+und Märkte von August 0,050 (je 3 Einzelkäufe geprüft, Abweichung höchstens 0,1 % des gezahlten Betrags). Ein
+April-Beleg ist nicht auswertbar (mehrere Fills in einer Transaktion).
+
+Die Historie kennt nur den Spielbeginn. `venues.POLYMARKET_FEE_SINCE` setzt die Grenzen auf den 30.03.2026 12:00 und den
+10.07.2026 18:00 UTC und trifft damit 44.737 der 44.772 Märkte (99,92 %). Der Timing-Backtest rechnet seit dem 05.11.2026
+so (`--pm-fee` setzt eine Rate für alle Märkte, 0 = ohne), Märkte vor der Einführung zahlen nichts.
+
+Wirkung auf die vier Paper-Segmente mit `blend_gbdt`, nachgerechnet auf den Vorhersagen vom 27.10. und der Historie vom
+31.10. Die Spalte ohne Gebühr reproduziert den gespeicherten Lauf bis auf je eine Wette bei ITF −1 h und Closing. Yield mit 95-%-KI, CLV gegen das
+Closing (ohne Gebühr gerechnet, ändert sich nur über die Auswahl der Wetten):
+
+| Segment | ohne Gebühr | mit Gebühr, Schwelle je Quartal neu gewählt | mit Gebühr, Schwelle des Laufs fest |
+|---|---|---|---|
+| Challenger −24 h | 272 Wetten, +16,6 % [+0,5 %, +32,0 %], CLV +17,6 % | 94, +51,2 % [+20,8 %, +84,4 %], CLV +44,3 % | 192, +22,8 % [+3,7 %, +43,0 %], CLV +22,2 % |
+| ITF −6 h | 1.446, +21,3 % [+14,5 %, +29,3 %], CLV +5,9 % | 1.657, +16,0 % [+10,3 %, +22,2 %], CLV +5,2 % | 952, +21,8 % [+13,2 %, +30,2 %], CLV +8,5 % |
+| ITF −1 h | 1.670, +23,7 % [+17,2 %, +30,8 %], CLV +2,0 % | 277, +49,5 % [+31,5 %, +69,7 %], CLV +6,3 % | 893, +26,3 % [+17,1 %, +36,0 %], CLV +3,4 % |
+| ITF Closing | 1.175, +13,5 % [+5,4 %, +22,4 %], CLV −2,7 % | 581, +13,1 % [+0,3 %, +26,8 %], CLV −2,7 % | 581, +13,1 % [+0,4 %, +27,2 %], CLV −2,7 % |
+
+- **Feste Schwelle** (rechte Spalte, aus `data/eval/timing_bets.parquet`): Die Gebühr streicht 29 % (Challenger), 34 %
+  (ITF −6 h), 46 % (ITF −1 h) und 51 % (ITF Closing) der Wetten. Es sind die schwächsten, ihr Yield lag vorher bei
+  −3,5 %, +13,9 %, +17,0 % und +11,2 %. Der Yield der übrigen bleibt deshalb gleich oder steigt, der Gewinn in
+  Einheiten (flat) sinkt von +45,3 / +308 / +397 / +160 auf +43,8 / +208 / +235 / +76.
+- **Schwelle neu gewählt** (mittlere Spalte): Wettenzahl und Yield springen, weil die Schwelle eines Quartals die mit
+  dem höchsten Gewinn in den Quartalen davor ist. ITF besteht fast nur aus Q4 (95 bis 100 % der Wetten), die Schwelle
+  stützt sich auf die wenigen Märkte davor. Bei ITF −1 h wählt der Lauf mit der Datumsregel 0,08, mit 0,05 für alle
+  Märkte 0,02, das sind 277 gegen 883 Wetten. Challenger −24 h wählt für Q4 mit Gebühr 0,2 statt 0,02: Es bleiben 3
+  Wetten in Q4, die +51 % stammen aus Q1 bis Q3 (91 von 94 Wetten), und in Q4 lag der Yield ohne Gebühr bei −5 % (167
+  Wetten). Beide Zahlen sind deshalb kein Beleg für einen größeren Vorteil, sondern für eine wacklige Schwellenwahl.
+- **Entscheidung:** GO weiterhin keines, alle vier Segmente bleiben Kandidat (Challenger −24 h mit KI-Untergrenze
+  > 0, aber in keinem Quartal einzeln bestätigt). Bei Polymarket fällt von den Kandidaten nur Challenger −24 h mit
+  `elo2` zu NO-GO (Yield +6,5 % → +4,0 % [−4,4 %, +12,9 %]). Der Live-Einsatz im Paper-Trading nutzt weiter die feste
+  Schwelle 0,05, die rechte Spalte ist ihm näher als die mittlere.
+- **Nicht gerechnet:** Das Rebate-Programm für Taker (ab 28.05.2026, 3 bis 50 % der Gebühr je nach 30-Tage-Volumen). Die
+  `rebateRate` im `feeSchedule` geht laut Doku an die Maker.
+
+Die Tabelle unten ist der Lauf vom 30.10.2026 (Daten bis 29.10.) und rechnet Polymarket ohne Gebühr. Ein Neulauf
+(`python -m src.evaluation.timing`) rechnet sie mit.
 
 Lauf vom 30.10.2026 (Daten bis 29.10.). Flat-Einsatz, Polymarket-Spread 2 %, Kalshi zum Ask mit Gebühr (ab 100
 bis t gehandelten Kontrakten). Schwellen walk-forward pro Quartal. Yield mit 95-%-Bootstrap-KI, CLV gegen das

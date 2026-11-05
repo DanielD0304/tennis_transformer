@@ -58,6 +58,10 @@ robustness rule over quarters): of 120 segments, 0 are GO, 91 NO-GO, 6 candidate
 - Closing odds from tennis-data are not obtainable prices; timestamped snapshots exist only since October 2026.
 - Polymarket history has no order-book depth, so entry prices are approximated there. Paper trading uses real
   asks.
+- Polymarket charges a taker fee of rate × p × (1 − p) per share on top of the price, with the rate set per market
+  (none until March 2026, 0.03 until 10 July, then 0.05). The timing backtest applies it by match date and paper
+  trading by market; the segment counts above come from a run before that. With the fee all four paper segments
+  stay candidates (no GO), see `docs/ERGEBNISSE_PHASE45.md`.
 - Bootstrap intervals treat bets as independent; bets from the same day or tournament are correlated.
 - Sackmann data is licensed CC BY-NC-SA 4.0 (non-commercial). Whether Polymarket or Kalshi may be used from
   your jurisdiction is up to you to check. This is not financial or legal advice.
