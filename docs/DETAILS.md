@@ -524,9 +524,9 @@ python -m src.evaluation.timing --models elo2 --venues kalshi --levels challenge
 Strategie A aus dem ROI-Plan auf den Quoten-Snapshots: Die faire Wahrscheinlichkeit kommt von Pinnacle bzw.
 Betfair Exchange ohne Marge.
 
-Die Marge entfernt die Power-Methode (`power_fair`): k so, dass (1/o_a)^k + (1/o_b)^k = 1, dann p = (1/o)^k. Die Backtests
-bleiben bei der proportionalen Methode (`predictors.remove_margin`). Sie setzt Außenseiter zu hoch an, und beim Line
-Shopping wird genau dieser Fehler zur Edge: Alle 5 Signale bis zum 30.10.2026 lagen bei Quoten von 4,25 bis 10,5. Die
+Die Marge entfernt die Power-Methode (`predictors.power_fair`): k so, dass (1/o_a)^k + (1/o_b)^k = 1, dann p = (1/o)^k.
+Seit November 2026 gilt das auch in den Backtests (Abschnitt „Marge in den Backtests“ unten). Die proportionale Methode
+(`predictors.remove_margin`) setzt Außenseiter zu hoch an, und beim Line Shopping wird genau dieser Fehler zur Edge: Alle 5 Signale bis zum 30.10.2026 lagen bei Quoten von 4,25 bis 10,5. Die
 Tabelle zeigt, wie weit das mittlere p über der Siegquote der Außenseiter liegt, in Prozent, auf 49.703 Pinnacle-Matches
 (2015 bis Januar 2026, ohne W/O). In Klammern stehen nur beendete Matches, das gilt für Bücher, die bei Aufgabe stornieren.
 
@@ -554,6 +554,33 @@ Tabelle zeigt, wie weit das mittlere p über der Siegquote der Außenseiter lieg
   William Hill, und die fällt durch die Regel weiter unten. Im 5-Minuten-Fenster ist damit keines mehr übrig. Polymarket und
   Kalshi lagen dort bisher nie. In einem 30-Minuten-Fenster mit ihnen bleiben 4 von 13, die Preise sind dort aber verschoben,
   das zeigt nur die Größenordnung. Wetten, die vorher abgerechnet wurden, behalten p, Edge und `clv_sharp` der alten Methode.
+
+### Marge in den Backtests
+
+`predictors.market_probability` (also `p_market_fair`, `MarketPredictor`, Baseline, Blend, Stack, `Value('market')` und
+`clv_sharp` im Timing-Backtest) und `odds/report.vs_pinnacle` rechnen seit November 2026 mit Power statt proportional.
+`fair_ps`, der Preis-Proxy für `betfair_proxy`, Kalshi und Polymarket, bleibt proportional. Ältere Backtest-Ausgaben sind
+deshalb nicht direkt vergleichbar. Gemessen auf Kopien der Daten vom 31.10.2026:
+
+- **GO und Kandidaten ändern sich nicht.** Im Timing-Backtest steckt die Marge nur in `clv_sharp`. Wetten, Yield, CLV,
+  `p_holm` und Entscheidung sind mit beiden Methoden gleich (105.216 Wetten, 112 Segmente). Die Kandidaten liegen bei
+  Challenger und ITF, dort gibt es keinen Pinnacle-Preis. Blend und Stack bleiben gegen den Markt NO-GO.
+- **`Value('market', 0.02)`** (Haupttour 2015 bis 10/2026, Yield mit 95-%-KI, proportional / Power): bet365 mit Steuer
+  −16,6 % [−28,4, −4,9] auf 719 Wetten / +0,7 % [−20,3, +22,2] auf 285. Bestquote ohne Steuer (Ausreißer über dem
+  1,5-Fachen von Pinnacle entfernt) +1,9 % [−0,4, +4,0] auf 20.563 / +4,1 % [+2,4, +5,9] auf 17.749. Die Wetten, die nur
+  proportional macht, verlieren ab Quote 10,5 klar: Bestquote −26,8 % [−47,2, −4,5] auf 993, bet365 −80,9 % auf 119,
+  vorhergesagt waren +10 bis +13 %. Das gilt in allen drei Perioden seit 2015 und bei ATP wie WTA.
+- **`clv_sharp`** fällt im Mittel über 60 Haupttour-Segmente von +3,2 % auf 0,0 %. Bei Polymarket ab Quote 10,5 von +15,9 %
+  auf +6,2 %, bei Kalshi von −0,6 % auf −13,0 %.
+- **`vs_pinnacle`:** Polymarket gegen Pinnacle-Closing (808 Matches) Log-Loss-Differenz −0,0070 [−0,0142, −0,0002] /
+  −0,0059 [−0,0132, +0,0010], also nicht mehr signifikant besser.
+- **Warum `fair_ps` proportional bleibt:** Kalshi und Polymarket bewerten Außenseiter höher als jede faire
+  Pinnacle-Schätzung. Abweichung des Proxys vom echten Kalshi-Closing, Median, proportional / Power: Quote 4,25 bis 7
+  +3,6 % / −3,5 %, 7 bis 10,5 +5,0 % / −10,3 %, ab 10,5 −1,2 % / −28,5 % (329, 114, 86 Märkte). Mit Power würden die
+  Proxy-Backtests auf Außenseiter wetten (Anteil bei `blend_gbdt` 11 % statt 28 %), mit Edges, die es am Markt nicht gibt.
+- Zu beobachten: Ab Februar 2026 ist Betfair die Quelle, dessen Preis sich mit Power kaum ändert, die Gewichte von Blend
+  und Stack stammen aber aus der Pinnacle-Zeit. Auf `betfair` steigt der Außenseiteranteil der Stack-Wetten dadurch von
+  29 % auf 44 %, noch im Rauschen.
 
 Gewettet wird beim besten Netto-Preis über Polymarket, Kalshi, Tipico/bwin und
 die Buchmacher der Odds API. Bei deutschen Büchern gehen 5,3 % Steuer ab, bei den Prediction Markets die

@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from ..evaluation import metrics
-from ..evaluation.predictors import remove_margin
+from ..evaluation.predictors import power_fair
 from ..evaluation.venues import get_venue
 from .history import HISTORY_DIR, read_history
 from .matching import link_matches, load_matches, pair_venues
@@ -101,7 +101,7 @@ def head_to_head(pm, ks, min_volume=0.0):
 
 def vs_pinnacle(df, venue, matches, min_volume=0.0, price_col='close_price_a', bench='ps'):
     """
-    Venue-Preis gegen Pinnacle-Closing (bench='ps') bzw. Ø-Schlussquote (bench='avg'), beide ohne Marge,
+    Venue-Preis gegen Pinnacle-Closing (bench='ps') bzw. Ø-Schlussquote (bench='avg'), beide ohne Marge (Power),
     auf denselben Matches: Log Loss, Brier, gepaarter
     Bootstrap der Log-Loss-Differenz, mittlere Preisabweichung und Anteil mit Edge nach Gebühren
     (faire Pinnacle-Wahrscheinlichkeit × Netto-Quote der Venue - 1 > 0, gekauft zum Ask, sonst zur Mitte).
@@ -117,7 +117,7 @@ def vs_pinnacle(df, venue, matches, min_volume=0.0, price_col='close_price_a', b
     if m.empty:
         return None
     y, p = m['y'].to_numpy(float), m[price_col].to_numpy(float)
-    p_pin = remove_margin(m[f'{bench}_a'].to_numpy(float), m[f'{bench}_b'].to_numpy(float))
+    p_pin = power_fair(m[f'{bench}_a'].to_numpy(float), m[f'{bench}_b'].to_numpy(float))
     loss_v, loss_p = metrics.pointwise_log_loss(y, p), metrics.pointwise_log_loss(y, p_pin)
     boot = metrics.paired_bootstrap(loss_v, loss_p)
 
