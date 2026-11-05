@@ -8,7 +8,7 @@ import pytest
 from src.evaluation import sharp
 from src.evaluation.betting import Kelly
 from src.evaluation.predictors import remove_margin
-from src.odds.schema import Snapshot, average_price, dump_levels, to_frame
+from src.odds.schema import Snapshot, dump_levels, fill, to_frame
 from src.paper import report, settle, signals
 from src.paper.store import add_bets, load_bets, normalize, save_bets
 
@@ -16,9 +16,14 @@ NOW = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
 START = NOW + timedelta(hours=5)
 
 
+def with_fee(price, rate=0.05):
+    """Was ein Polymarket-Anteil zu diesem Preis mit der Taker-Gebühr kostet."""
+    return price + rate * price * (1 - price)
+
+
 def after_fee(gross):
-    """Netto-Quote bei Polymarket: 5 % Taker-Gebühr auf den möglichen Gewinn."""
-    return 1 + (gross - 1) * 0.95
+    """Netto-Quote bei Polymarket mit der Taker-Gebühr von 5 % x p x (1 - p) je Anteil."""
+    return 1 / with_fee(1 / gross)
 
 
 def deep(price):
@@ -349,13 +354,58 @@ def test_model_signals_polymarket_pays_average_price_of_each_stake():
     out = model_bets(polymarket_market([(0.40, 5.0), (0.42, 100.0), (0.70, 1000.0)]), 0.8)
     assert len(out) == 1
     b = out.iloc[0]
-    kelly_shares, flat_shares = 5 + 18 / 0.42, 5 + 8 / 0.42
+    first = 5 * with_fee(0.40)  # das erste Level mit seiner Gebühr, der Rest des Einsatzes kauft zu 0,42 mit Gebühr
+    kelly_rest, flat_rest = (20 - first) / with_fee(0.42), (10 - first) / with_fee(0.42)
     assert b['stake'] == pytest.approx(20.0) and b['stake_flat'] == signals.FLAT_STAKE
-    assert b['odds'] == pytest.approx(kelly_shares / 20)  # 1 / 0,4184, nicht 1 / 0,40
-    assert b['net_odds'] == pytest.approx(after_fee(kelly_shares / 20))
-    assert b['net_odds_flat'] == pytest.approx(after_fee(flat_shares / 10))
-    assert b['edge'] == pytest.approx(0.8 * after_fee(kelly_shares / 20) - 1)
+    assert 1 / b['odds'] == pytest.approx((5 * 0.40 + kelly_rest * 0.42) / (5 + kelly_rest))  # nicht 0,40
+    assert b['net_odds'] == pytest.approx((5 + kelly_rest) / 20)
+    assert b['net_odds_flat'] == pytest.approx((5 + flat_rest) / 10)
+    assert b['edge'] == pytest.approx(0.8 * (5 + kelly_rest) / 20 - 1)
     assert b['p_market'] == pytest.approx(0.39)  # weiter die Mitte
+
+
+def test_model_signals_every_level_pays_its_own_fee():
+    """Wetten zu 0,20 und 0,80 kosten zusammen weniger Gebühr, als die Formel am Durchschnittspreis 0,50 sagt."""
+    asks = [(0.20, 2.5), (0.80, 1000.0)]  # 0,52 USD im ersten Level, der Rest läuft ins zweite
+    b = model_bets(polymarket_market(asks, price_a=0.19), 0.95).iloc[0]
+    rest = (20 - 2.5 * with_fee(0.20)) / with_fee(0.80)
+    assert b['net_odds'] == pytest.approx((2.5 + rest) / 20)
+    # die Gebühr je Level und die Formel am Durchschnittspreis sind nicht dasselbe
+    assert b['net_odds'] != pytest.approx(after_fee(b['odds']), abs=1e-5)
+
+
+@pytest.mark.parametrize('rate', [0.0, 0.03, 0.05, 0.07])
+def test_model_signals_take_the_fee_of_the_market(rate):
+    """Die Rate gilt je Markt (Gamma), 0 ohne Gebühr, die Schwelle rechnet damit."""
+    b = model_bets(frame(snap('polymarket', NOW, price_a=0.39, price_b=0.61, best_bid_a=0.38, best_ask_a=0.40, best_bid_b=0.60,
+                              best_ask_b=0.62, asks_a=deep(0.40), asks_b=deep(0.62), fee_rate=rate)), 0.8).iloc[0]
+    assert b['odds'] == pytest.approx(1 / 0.40)
+    assert b['net_odds'] == pytest.approx(1 / with_fee(0.40, rate))
+    assert b['net_odds_flat'] == pytest.approx(1 / with_fee(0.40, rate))
+    assert b['edge'] == pytest.approx(0.8 / with_fee(0.40, rate) - 1)
+    # 4,5 % Vorteil: nur ohne Gebühr bleibt die Wette bei einer Schwelle von 4 %
+    edge_case = polymarket_market([(0.50, 1000.0)], price_a=0.49)
+    edge_case['fee_rate'] = rate
+    assert len(model_bets(edge_case, 0.5225, threshold=0.04)) == (rate == 0.0)
+
+
+def test_model_signals_unknown_fee_takes_the_current_rate():
+    """Snapshot ohne Rate (ältere Datei, Gamma sagt nichts): lieber mit als ohne Gebühr."""
+    b = model_bets(polymarket_market([(0.40, 1000.0)]), 0.8).iloc[0]
+    assert b['net_odds'] == pytest.approx(1 / with_fee(0.40))
+
+
+@pytest.mark.parametrize('rate, venue', [(0.0, 'polymarket'), (0.05, 'tipico')])
+def test_line_shopping_takes_the_fee_of_the_market(rate, venue):
+    """Sharp: dieselbe Quote ist ohne Gebühr die beste, mit Gebühr gewinnt das Buch (Tipico 2,09 nach Steuer 1,979)."""
+    df = frame(snap('pinnacle', NOW, price_a=1.8, price_b=2.1),
+               snap('tipico', NOW, price_a=2.09, price_b=1.70),
+               snap('polymarket', NOW, price_a=0.495, price_b=0.505, best_ask_a=0.50, best_ask_b=0.51, fee_rate=rate))
+    a = sharp.signals(df, threshold=0.0)
+    a = a[a['side'] == 'a'].iloc[0]
+    assert a['venue'] == venue
+    if venue == 'polymarket':
+        assert a['net_odds'] == pytest.approx(2.0)
 
 
 def test_model_signals_deep_book_pays_best_ask():
@@ -366,13 +416,13 @@ def test_model_signals_deep_book_pays_best_ask():
 
 
 def test_model_signals_edge_is_after_taker_fee():
-    """6 % Vorteil zum Preis, nach 5 % Gebühr auf den Gewinn bleiben 3,35 %: unter der Schwelle keine Wette."""
+    """6 % Vorteil zum Preis, nach 1,25 Cent Gebühr je Anteil bleiben 3,4 %: unter der Schwelle keine Wette."""
     assert model_bets(polymarket_market([(0.50, 1000.0)], price_a=0.49), 0.53).empty
     b = model_bets(polymarket_market([(0.50, 1000.0)], price_a=0.49), 0.56).iloc[0]
-    assert (b['odds'], b['net_odds']) == (pytest.approx(2.0), pytest.approx(1.95))
-    assert b['edge'] == pytest.approx(0.56 * 1.95 - 1)
+    assert (b['odds'], b['net_odds']) == (pytest.approx(2.0), pytest.approx(1 / 0.5125))
+    assert b['edge'] == pytest.approx(0.56 / 0.5125 - 1)
     # Kelly rechnet mit der Netto-Quote, der Preis, zu dem p geschrumpft wird, bleibt der Marktpreis
-    assert b['stake'] == pytest.approx(signals.KELLY.amount(1000.0, sharp.shrink_to_market(0.56, 0.50), 1.95))
+    assert b['stake'] == pytest.approx(signals.KELLY.amount(1000.0, sharp.shrink_to_market(0.56, 0.50), 1 / 0.5125))
 
 
 def test_kelly_stake_fits_its_own_average_price():
@@ -380,15 +430,16 @@ def test_kelly_stake_fits_its_own_average_price():
     asks = [(0.50, 6.0), (0.52, 1000.0)]
     p = 0.56
     at_best_ask = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, 0.50), after_fee(1 / 0.50))
-    assert at_best_ask == pytest.approx(8.82, abs=0.01)  # zum besten Ask will Kelly 8,82 USD, Deckel 20 USD
+    assert at_best_ask == pytest.approx(8.98, abs=0.01)  # zum besten Ask will Kelly 8,98 USD, Deckel 20 USD
     b = model_bets(polymarket_market(asks, price_a=0.49), p).iloc[0]
-    price = average_price(asks, b['stake'])
+    price, price_with_fee = fill(asks, b['stake'], with_fee)
     assert 1 / b['odds'] == pytest.approx(price)
-    wanted = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, price), after_fee(1 / price))
+    assert b['net_odds'] == pytest.approx(1 / price_with_fee)
+    wanted = signals.KELLY.amount(1000.0, sharp.shrink_to_market(p, price), 1 / price_with_fee)
     assert b['stake'] == pytest.approx(wanted, abs=1e-6)
     assert 3.0 < b['stake'] < at_best_ask  # über dem ersten Level, teurer als der beste Ask, deshalb weniger Einsatz
     assert price > 0.50
-    assert b['net_odds_flat'] == pytest.approx(after_fee(1 / average_price(asks, 10.0)))
+    assert b['net_odds_flat'] == pytest.approx(1 / fill(asks, 10.0, with_fee)[1])
 
 
 @pytest.mark.parametrize('case, asks', [
@@ -422,9 +473,9 @@ def test_model_signals_average_price_can_eat_the_edge():
 
 
 def test_model_signals_threshold_counts_for_the_more_expensive_stake():
-    """Kelly (6,25 USD) passt ans beste Level und hätte 7 % Vorteil, flat (10 USD) läuft in 0,60 und schafft 5 % nicht."""
+    """Kelly (6,41 USD) passt ans beste Level und hätte 7 % Vorteil, flat (10 USD) läuft in 0,60 und schafft 5 % nicht."""
     asks = [(0.50, 16.0), (0.60, 1000.0)]
-    kelly_edge, flat_edge = (0.55 * after_fee(1 / average_price(asks, stake)) - 1 for stake in (6.25, 10.0))
+    kelly_edge, flat_edge = (0.55 / fill(asks, stake, with_fee)[1] - 1 for stake in (6.41, 10.0))
     assert kelly_edge > 0.05 > flat_edge
     logs = []
     assert model_bets(polymarket_market(asks, price_a=0.49), 0.55, logs).empty
@@ -455,9 +506,11 @@ def test_snapshot_book_to_bet_on_side_b(tmp_path):
     append_snapshots(snaps, root)
     b = model_bets(load_snapshots(root=root), 0.05).iloc[0]
     assert (b['side'], b['player']) == ('b', 'Carlos Alcaraz')
-    # 5 Anteile zu 0,41 (2,05 USD), der Rest zu 0,50
-    assert b['net_odds_flat'] == pytest.approx(after_fee((5 + (10 - 2.05) / 0.50) / 10))
-    assert b['odds'] == pytest.approx((5 + (20 - 2.05) / 0.50) / 20)
+    # 5 Anteile zu 0,41, der Rest zu 0,50, jeweils mit Gebühr
+    first = 5 * with_fee(0.41)
+    assert b['net_odds_flat'] == pytest.approx((5 + (10 - first) / with_fee(0.50)) / 10)
+    kelly_rest = (20 - first) / with_fee(0.50)
+    assert 1 / b['odds'] == pytest.approx((5 * 0.41 + kelly_rest * 0.50) / (5 + kelly_rest))
 
 
 def test_settle_kelly_and_flat_each_at_their_own_price():

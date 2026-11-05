@@ -210,7 +210,7 @@ def parse_events(events, ts=None, midpoints=None, books=None):
             # Binärmarkt: Bid auf B = 1 - Ask auf A und umgekehrt, das gilt für das ganze Buch
             best_bid_b=1 - ask if ask is not None else None, best_ask_b=1 - bid if bid is not None else None,
             asks_a=dump_levels(asks), asks_b=dump_levels([(round(1 - price, 6), size) for price, size in bids]),
-            volume=info['volume'], liquidity=info['liquidity'], source_url=info['source_url'],
+            fee_rate=info['fee_rate'], volume=info['volume'], liquidity=info['liquidity'], source_url=info['source_url'],
         ))
     return out
 
@@ -253,7 +253,7 @@ def fetch_current(client=None, log=print):
     events = open_events(client)
     infos = [i for i in map(match_info, events) if i and not i['closed']]
     other_fee = [i['fee_rate'] for i in infos if i['fee_rate'] not in (None, POLYMARKET_FEE)]
-    if other_fee:  # die Gebühr kam schon einmal unbemerkt dazu, die Netto-Quoten rechnen mit venues.POLYMARKET_FEE
+    if other_fee:  # die Wetten nehmen die Rate des Markts, der Backtest braucht dann venues.POLYMARKET_FEE_SINCE neu
         log(f"  Polymarket: {len(other_fee)} von {len(infos)} Märkten mit anderer Taker-Gebühr als in venues.py "
             f"({POLYMARKET_FEE:g}): {sorted(set(other_fee))}")
     try:

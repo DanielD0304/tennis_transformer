@@ -15,9 +15,9 @@ Ablauf:
    siehe odds/history.price_at), nie ein späterer.
 3. Einstieg zum erreichbaren Preis: Kalshi kauft zum Ask aus den Candlesticks (B über 1 - Bid von A),
    Polymarket zum Preis + halbem Spread (--pm-spread, historisch gibt es dort kein Bid/Ask). Danach Gebühren
-   laut venues.py (Kalshi-Formel, Polymarket-Taker-Fee). Bei Polymarket ist die „Eröffnung“ der erste echte
-   Kurs (der erste Punkt ist meist der Mittelpreis 0,5 eines leeren Orderbuchs), Preise von genau 0,5 gelten
-   als Platzhalter und werden nicht gehandelt.
+   laut venues.py (Kalshi-Formel, Polymarket-Taker-Gebühr mit der Rate des Spieldatums, davor keine). Bei Polymarket
+   ist die „Eröffnung“ der erste echte Kurs (der erste Punkt ist meist der Mittelpreis 0,5 eines leeren Orderbuchs),
+   Preise von genau 0,5 gelten als Platzhalter und werden nicht gehandelt.
 4. Wette, wenn p * Netto-Quote - 1 > Schwelle. Die Schwelle wird walk-forward gewählt: pro Quartal die
    Schwelle mit dem höchsten Gewinn in allen Quartalen davor (erstes Quartal: DEFAULT_THRESHOLD).
 5. Kennzahlen pro Venue x Level x Zeitpunkt x Modell: Wetten, Yield mit Bootstrap-KI, CLV gegen das Closing
@@ -42,7 +42,7 @@ from ..sources.common import yyyymmdd
 from . import metrics
 from .betting import bootstrap_yield
 from .predictors import fit_logistic, logit, sigmoid
-from .venues import POLYMARKET_FEE, get_venue
+from .venues import POLYMARKET_FEE, get_venue, polymarket_fee_at
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT_DIR = os.path.join(REPO_ROOT, "data", "eval")
@@ -182,13 +182,14 @@ def usable(df, point, venue, min_volume=0.0):
 
 # --------------------------------------------------------------------- Wetten
 
-def candidate_bets(df, point, venue, model, pm_spread=0.02, pm_fee=POLYMARKET_FEE, min_volume=0.0):
+def candidate_bets(df, point, venue, model, pm_spread=0.02, pm_fee=None, min_volume=0.0):
     """
     Alle möglichen Einstiege (eine Zeile pro Markt, Seite mit dem höheren EV) zum Zeitpunkt point mit dem p des
     Modells. Spalten: event_id, start_time_utc, period, level, side, p, price (Kaufpreis), net_odds, ev, won,
     profit (pro Einheit Einsatz), clv (gegen Closing der Venue), clv_sharp (gegen Pinnacle/Betfair ohne Marge).
+    pm_fee: Rate der Polymarket-Gebühr für alle Märkte, None: die Rate des Spieldatums (venues.polymarket_fee_at).
     """
-    profile = venue_profile(venue, pm_fee)
+    profile = venue_profile(venue, polymarket_fee_at(df['start_time_utc']) if pm_fee is None else pm_fee)
     ok = usable(df, point, venue, min_volume).copy()
     p = df[f'p_{model}'].to_numpy(float)
     mid, buy_a, buy_b = entry_prices(df, point, venue, pm_spread)
@@ -357,7 +358,7 @@ def summarize_bets(bets, n_boot=2000, seed=0):
             **period_stats(bets, n_boot, seed)}
 
 
-def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=POLYMARKET_FEE, min_volume=None,
+def run_segments(linked, venues, levels, points, models, pm_spread=0.02, pm_fee=None, min_volume=None,
                  n_boot=2000, seed=0, with_blend=True):
     """
     linked: {venue: Ausgabe von link_predictions}. Gibt (Tabelle pro Segment, alle Walk-forward-Wetten, Blend-Gewichte
@@ -489,8 +490,8 @@ def main(argv=None):
     ap.add_argument('--points', default=','.join(POINTS))
     ap.add_argument('--tours', default='atp,wta')
     ap.add_argument('--pm-spread', type=float, default=0.02, help="Polymarket: angenommener Spread (Kauf = Preis + Hälfte)")
-    ap.add_argument('--pm-fee', type=float, default=POLYMARKET_FEE,
-                    help="Polymarket: Rate der Taker-Gebühr, auch für Märkte aus der Zeit vor der Gebühr (0 = ohne)")
+    ap.add_argument('--pm-fee', type=float, default=None,
+                    help="Polymarket: Rate der Taker-Gebühr für alle Märkte (0 = ohne), Standard: die Rate des Spieldatums")
     ap.add_argument('--min-volume-kalshi', type=float, default=100.0, help="Kalshi: Kontrakte gehandelt bis t")
     ap.add_argument('--min-volume-pm', type=float, default=0.0, help="Polymarket: Gesamtvolumen in $ (Look-ahead!)")
     ap.add_argument('--no-blend', action='store_true')

@@ -9,10 +9,11 @@ damit. Für Kalshi und Polymarket (und Betfair vor August 2025: 'betfair_proxy')
 Pinnacle-Wahrscheinlichkeit (ohne Marge) als Preis, plus optionalem Spread. Diese Venues sind im
 Output als „Proxy“ markiert.
 
-Polymarket-Gebühr (docs.polymarket.com/trading/fees, Gamma: feeType sports_fees_v3, Stand Okt. 2026): je Anteil
-Rate * p * (1 - p) in USDC, nur für den Taker. Die Doku sagt nicht, ob sie beim Kauf in Anteilen oder USDC eingezogen
-wird. Gerechnet wird mit Anteilen: Rate * (1 - p) Anteile je Anteil, also die Rate auf den möglichen Gewinn. Das ist die
-vorsichtigere Lesart (Unterschied unter 0,2 % der Quote) und gilt exakt auch für den Durchschnittspreis mehrerer Level.
+Polymarket-Gebühr (docs.polymarket.com/trading/fees, Gamma je Markt: feesEnabled, feeSchedule, Stand Okt. 2026): je
+Anteil Rate * p * (1 - p) in USDC, nur für den Taker. Belegt mit Transaktionen auf Polygon: Ein Kauf erhält alle Anteile und
+zahlt die Gebühr zusätzlich zum Preis, ein Anteil kostet also p + Gebühr. Bei mehreren Orderbuch-Leveln zahlt jedes
+seine eigene Gebühr (signals.book_fill). Der Einsatz enthält die Gebühr. feeSchedule.rebateRate geht an die Maker, das
+Rebate-Programm für Taker hängt am Volumen und ist nicht eingerechnet.
 
 Die RET-Regeln sind Annahmen und unterscheiden sich je Buchmacher/Markt (vor echtem Einsatz in den
 AGB prüfen). W/O ist immer void.
@@ -22,7 +23,20 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 DE_BET_TAX = 0.053
-POLYMARKET_FEE = 0.05  # Rate für Sport, fetch_current meldet, wenn Gamma etwas anderes nennt
+POLYMARKET_FEE = 0.05  # Rate neuer Sport-Märkte, Live gilt die Rate im Snapshot, fetch_current meldet eine andere
+# Spielbeginn (UTC) -> Rate. Die Rate hängt am Markt und kommt mit seiner Erstellung (sports_fees_v2 ab 28.03.2026, v3 ab
+# 10.07.2026), die Historie kennt aber nur den Spielbeginn. Trifft 99,92 % der 44.772 Tennis-Märkte laut Gamma (31.10.2026).
+POLYMARKET_FEE_SINCE = (('2026-03-30 12:00', 0.03), ('2026-07-10 18:00', POLYMARKET_FEE))
+
+
+def polymarket_fee_at(start):
+    """Rate der Polymarket-Märkte mit diesem Spielbeginn (Array, vor der ersten Rate 0)."""
+    import pandas as pd
+    start = pd.to_datetime(pd.Series(start), utc=True)
+    rate = np.zeros(len(start))
+    for since, value in POLYMARKET_FEE_SINCE:
+        rate[(start >= pd.Timestamp(since, tz='UTC')).to_numpy()] = value
+    return rate
 
 
 def ceil_to_cent(x):
@@ -36,6 +50,12 @@ def kalshi_fee(price, contracts=1):
     return ceil_to_cent(0.07 * contracts * price * (1 - price))
 
 
+def polymarket_fee(price, rate=POLYMARKET_FEE):
+    """Polymarket-Taker-Gebühr in Dollar je Anteil: Rate * p * (1 - p)."""
+    price = np.asarray(price, float)
+    return rate * price * (1 - price)
+
+
 @dataclass(frozen=True)
 class Venue:
     name: str
@@ -43,7 +63,7 @@ class Venue:
     stake_tax: float = 0.0  # Anteil des Einsatzes, der als Steuer einbehalten wird (DE: 5,3 %)
     commission: float = 0.0  # Anteil des Nettogewinns (Exchange)
     fee_model: str = 'none'  # 'none' | 'kalshi' | 'polymarket'
-    taker_fee: float = 0.0  # Polymarket: Rate der Gebühr (siehe oben), Anteil des möglichen Gewinns
+    taker_fee: float = 0.0  # Polymarket: Rate der Gebühr (siehe oben), Array für eine Rate je Markt
     spread: float = 0.0  # Proxy-Preise: Aufschlag auf die faire Wahrscheinlichkeit (halber Spread je Seite)
     ret_rule: str = 'settled'  # 'void' (Einsatz zurück) oder 'settled' (Sieger wird ausgezahlt)
     max_stake: float = None  # Limit pro Wette in Währung, None = unbegrenzt
@@ -78,7 +98,8 @@ class Venue:
             price = 1 / odds
             net = 1 / (price + kalshi_fee(price))
         elif self.fee_model == 'polymarket':
-            net = 1 + (odds - 1) * (1 - self.taker_fee)
+            price = 1 / odds
+            net = 1 / (price + polymarket_fee(price, self.taker_fee))
         else:
             net = odds * (1 - self.stake_tax)
         return 1 + (net - 1) * (1 - self.commission)

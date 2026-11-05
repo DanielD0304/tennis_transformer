@@ -62,8 +62,13 @@ PROFILES = {
 PREDICTION_MARKETS = ('polymarket', 'kalshi')
 
 
-def profile(venue):
-    return PROFILES.get(venue) or DE_BOOK.with_(name=venue)
+def profile(venue, fee_rate=None):
+    """Venue-Profil. fee_rate: Rate der Polymarket-Märkte laut Snapshot (Zahl oder Array), wo sie fehlt, die aktuelle."""
+    prof = PROFILES.get(venue) or DE_BOOK.with_(name=venue)
+    if venue == 'polymarket' and fee_rate is not None:
+        fee_rate = np.asarray(fee_rate, float)
+        prof = prof.with_(taker_fee=np.where(np.isfinite(fee_rate), fee_rate, prof.taker_fee))
+    return prof
 
 
 def shrink_to_market(p, p_market, weight=SHRINK):
@@ -170,7 +175,7 @@ def align(snaps, window=WINDOW, pm_spread=PM_SPREAD):
     rest['implied_a'] = rest['price_a'].where(rest['price_type'] == 'probability', 1 / rest['odds_a'])
     out = []
     for venue, g in rest.groupby('venue'):
-        right = g[['ts_utc', 'match_key', 'event_id', 'gross_a', 'gross_b', 'level', 'start_time_utc', 'flip',
+        right = g[['ts_utc', 'match_key', 'event_id', 'gross_a', 'gross_b', 'fee_rate', 'level', 'start_time_utc', 'flip',
                    'player_a', 'player_b', 'tourney']] \
             .rename(columns={'ts_utc': 'venue_ts', 'start_time_utc': 'venue_start', 'flip': 'venue_flip',
                              'player_a': 'venue_player_a', 'player_b': 'venue_player_b'}).sort_values('venue_ts')
@@ -231,7 +236,7 @@ def signals(snaps, threshold=DEFAULT_THRESHOLD, window=WINDOW, pm_spread=PM_SPRE
         net = np.full(len(df), np.nan)
         for venue in df['venue'].unique():
             m = (df['venue'] == venue).to_numpy()
-            net[m] = profile(venue).net_odds_from_gross(gross[m])
+            net[m] = profile(venue, df['fee_rate'].to_numpy(float)[m]).net_odds_from_gross(gross[m])
         p = df['p_fair'].to_numpy(float) if side == 'a' else 1 - df['p_fair'].to_numpy(float)
         part = df.assign(side=side, player=df[f'player_{side}'], odds=gross, net_odds=net, p_fair=p,
                          edge=p * net - 1)

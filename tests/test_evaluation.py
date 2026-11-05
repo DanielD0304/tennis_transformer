@@ -12,7 +12,7 @@ import pytest
 from src.evaluation import backtest, betting, metrics
 from src.evaluation.predictors import (BlendPredictor, Predictor, RankPredictor, make_predictors,
                                        power_fair, prepare_matches, remove_margin)
-from src.evaluation.venues import VENUES, Venue, ceil_to_cent, kalshi_fee
+from src.evaluation.venues import VENUES, Venue, ceil_to_cent, kalshi_fee, polymarket_fee, polymarket_fee_at
 
 
 def synthetic_matches(years=(2019, 2020, 2021), per_month=40, n_players=40, seed=0, margin=1.05):
@@ -319,19 +319,27 @@ def test_polymarket_spread_and_fee():
     venue = VENUES['polymarket'].with_(spread=0.02, taker_fee=0.01)
     ga, gb = venue.gross_odds(_one())
     assert ga[0] == pytest.approx(1 / 0.51) and gb[0] == pytest.approx(1 / 0.51)
-    assert venue.net_odds_from_gross(2.0) == pytest.approx(1 + 1.0 * 0.99)
+    assert venue.net_odds_from_gross(2.0) == pytest.approx(1 / (0.50 + 0.01 * 0.25))
 
 
-def test_polymarket_taker_fee_as_in_the_docs():
-    """Doku: Gebühr = Anteile x 0,05 x p x (1 - p), 100 Anteile zu 0,50 kosten 1,25 USD. Eingezogen in Anteilen."""
+def test_polymarket_taker_fee_as_on_chain():
+    """Doku: Gebühr = Anteile x 0,05 x p x (1 - p), 100 Anteile zu 0,50 kosten 1,25 USD. Auf Polygon (Oktober 2026): Der
+    Kauf erhält alle Anteile und zahlt die Gebühr zusätzlich, 200 Anteile zu 0,77 kosten 155,771 USD."""
     venue = VENUES['polymarket']
-    assert venue.net_odds_from_gross(2.0) == pytest.approx((100 - 1.25 / 0.50) / 50)
-    assert venue.net_odds_from_gross(5.0) == pytest.approx((1 - 0.05 * 0.2 * 0.8 / 0.2) / 0.2)  # 4,8 statt 5
-    # Mehrere Level: Gebühr je Level gerechnet ist dasselbe wie die Formel am Durchschnittspreis
-    levels = [(0.40, 10.0), (0.60, 30.0), (0.80, 5.0)]
-    spent = sum(p * s for p, s in levels)
-    shares = sum(s * (1 - 0.05 * (1 - p)) for p, s in levels)
-    assert venue.net_odds_from_gross(sum(s for _, s in levels) / spent) == pytest.approx(shares / spent)
+    assert polymarket_fee(0.50) * 100 == pytest.approx(1.25)
+    assert venue.net_odds_from_gross(2.0) == pytest.approx(100 / (50 + 1.25))
+    assert venue.net_odds_from_gross(1 / 0.77) == pytest.approx(200 / 155.771)
+    assert venue.net_odds_from_gross(5.0) == pytest.approx(1 / 0.208)  # 4,81 statt 5
+    assert venue.with_(taker_fee=0.0).net_odds_from_gross(2.0) == pytest.approx(2.0)
+    # Je Markt eine Rate
+    assert list(venue.with_(taker_fee=np.array([0.0, 0.03, 0.05])).net_odds_from_gross(np.array([2.0, 2.0, 2.0]))) == \
+        pytest.approx([2.0, 1 / 0.5075, 1 / 0.5125])
+
+
+@pytest.mark.parametrize('start, rate', [('2026-03-30 11:59', 0.0), ('2026-03-30 12:00', 0.03), ('2026-07-10 17:59', 0.03),
+                                         ('2026-07-10 18:00', 0.05), ('2026-11-01 00:00', 0.05)])
+def test_polymarket_fee_at_match_date(start, rate):
+    assert polymarket_fee_at([pd.Timestamp(start, tz='UTC')])[0] == rate
 
 
 def test_ret_void_vs_settled_and_wo_always_void():

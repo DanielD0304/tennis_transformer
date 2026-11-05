@@ -65,10 +65,41 @@ def test_polymarket_entry_with_spread_and_taker_fee():
     _, buy_a, buy_b = timing.entry_prices(df, '24h', 'polymarket', pm_spread=0.04)
     assert buy_a[0] == pytest.approx(0.50) and buy_b[0] == pytest.approx(0.54)
     net = timing.net_odds(buy_a, timing.venue_profile('polymarket', pm_fee=0.01))
-    assert net[0] == pytest.approx(1 + 1.0 * 0.99)
-    # ohne Angabe die heutige Gebühr, auch für ältere Märkte
-    assert timing.net_odds(buy_a, timing.venue_profile('polymarket'))[0] == pytest.approx(1.95)
+    assert net[0] == pytest.approx(1 / (0.50 + 0.01 * 0.25))
+    assert timing.net_odds(buy_a, timing.venue_profile('polymarket'))[0] == pytest.approx(1 / 0.5125)
     assert timing.net_odds(buy_a, timing.venue_profile('polymarket', pm_fee=0.0))[0] == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize('start, rate', [
+    ('2025-10-01 12:00', 0.0),
+    ('2026-03-30 11:59', 0.0),  # Märkte ohne Gebühr laufen bis hier aus
+    ('2026-03-30 12:00', 0.03),
+    ('2026-07-10 17:59', 0.03),
+    ('2026-07-10 18:00', 0.05),
+    ('2026-10-20 12:00', 0.05),
+])
+def test_polymarket_backtest_charges_the_rate_of_the_match_date(start, rate):
+    """Ein Markt zahlt die Rate seiner Zeit, vor der Einführung keine Gebühr."""
+    start = pd.Timestamp(start, tz='UTC')
+    df = _market_frame(start_time_utc=[start], close_ts=[start - timedelta(minutes=10)],
+                       t24h_ts=[start - timedelta(hours=25)], t24h_price_a=[0.49])
+    bet = timing.candidate_bets(df, '24h', 'polymarket', 'elo2').iloc[0]
+    assert bet['net_odds'] == pytest.approx(1 / (0.50 + rate * 0.25))
+    assert bet['ev'] == pytest.approx(0.60 * bet['net_odds'] - 1)
+    assert bet['profit'] == pytest.approx(bet['net_odds'] - 1)
+    # --pm-fee gilt für alle Märkte
+    assert timing.candidate_bets(df, '24h', 'polymarket', 'elo2', pm_fee=0.0)['net_odds'].iloc[0] == pytest.approx(2.0)
+    assert timing.candidate_bets(df, '24h', 'polymarket', 'elo2', pm_fee=0.05)['net_odds'].iloc[0] == pytest.approx(1 / 0.5125)
+
+
+def test_polymarket_fee_differs_within_one_frame():
+    """Märkte verschiedener Zeiten im selben Lauf zahlen je ihre Rate."""
+    starts = [pd.Timestamp(s, tz='UTC') for s in ('2026-02-01 12:00', '2026-05-01 12:00', '2026-09-01 12:00')]
+    df = pd.concat([_market_frame(event_id=[f'e{i}'], start_time_utc=[s], close_ts=[s - timedelta(minutes=10)],
+                                  t24h_ts=[s - timedelta(hours=25)], t24h_price_a=[0.49]) for i, s in enumerate(starts)],
+                   ignore_index=True)
+    bets = timing.candidate_bets(df, '24h', 'polymarket', 'elo2')
+    assert list(bets['net_odds']) == pytest.approx([2.0, 1 / (0.50 + 0.03 * 0.25), 1 / 0.5125])
 
 
 def test_polymarket_placeholder_and_first_real_price():

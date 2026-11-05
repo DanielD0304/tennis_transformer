@@ -12,6 +12,8 @@ die DE-Steuer kommt erst im Venue-Profil dazu (bet365 -> bet365_de).
 
 asks_a/asks_b: Orderbuch der Kaufseite (Polymarket), JSON [[Preis, Anteile], ...] mit dem besten Preis zuerst. Ältere
 Tagesdateien haben diese Spalten nicht, beim Laden sind sie dort leer.
+
+fee_rate: Rate der Taker-Gebühr dieses Polymarket-Markts laut Gamma, 0 = keine Gebühr, leer = unbekannt (venues.py).
 """
 import json
 import math
@@ -51,6 +53,7 @@ class Snapshot:
     best_ask_b: float = None
     asks_a: str = None  # nur Polymarket, siehe oben (dump_levels, load_levels)
     asks_b: str = None
+    fee_rate: float = None  # nur Polymarket, siehe oben
     volume: float = None
     liquidity: float = None
     source_url: str = None
@@ -65,7 +68,7 @@ class Snapshot:
 COLUMNS = [f.name for f in fields(Snapshot)]
 DATETIME_COLUMNS = ['ts_utc', 'start_time_utc']
 FLOAT_COLUMNS = ['price_a', 'price_b', 'odds_a', 'odds_b', 'best_bid_a', 'best_ask_a', 'best_bid_b',
-                 'best_ask_b', 'volume', 'liquidity']
+                 'best_ask_b', 'fee_rate', 'volume', 'liquidity']
 
 
 # ------------------------------------------------------------ Preis <-> Quote
@@ -115,19 +118,28 @@ def load_levels(text):
     return json.loads(text) if isinstance(text, str) else []
 
 
-def average_price(levels, stake):
+def fill(levels, stake, cost=None):
     """
-    Durchschnittspreis, wenn stake Dollar die Levels [(Preis, Anteile), ...] vom besten Preis an abkaufen: Einsatz /
-    gekaufte Anteile. None, wenn das Buch den Einsatz nicht füllt. Einsatz 0: der beste Preis.
+    Durchschnittspreise, wenn stake Dollar die Levels [(Preis, Anteile), ...] vom besten Preis an abkaufen: (Preis ohne
+    Gebühr, Preis mit Gebühr) je gekauftem Anteil. cost(Preis): was ein Anteil dieses Levels mit Gebühr kostet, der Einsatz
+    enthält sie dann. None, wenn das Buch den Einsatz nicht füllt. Einsatz 0: der beste Preis.
     """
-    left, shares = stake, 0.0
+    left, shares, paid = stake, 0.0, 0.0
     for price, size in levels:
-        if left <= price * size:
-            shares += left / price
-            return stake / shares if shares else price
-        left -= price * size
-        shares += size
+        each = cost(price) if cost else price
+        if left <= each * size:
+            bought = left / each
+            shares, paid = shares + bought, paid + bought * price
+            return (paid / shares, stake / shares) if shares else (price, each)
+        left -= each * size
+        shares, paid = shares + size, paid + size * price
     return None
+
+
+def average_price(levels, stake):
+    """Durchschnittspreis ohne Gebühr (fill): Einsatz / gekaufte Anteile. None, wenn das Buch den Einsatz nicht füllt."""
+    filled = fill(levels, stake)
+    return filled[0] if filled else None
 
 
 def utc(value):
