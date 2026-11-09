@@ -79,7 +79,9 @@ class GBDTParams:
     bagging_fraction: float = 0.8
     bagging_freq: int = 1
     lambda_l2: float = 1.0
-    max_rounds: int = 2000
+    # 2000 reichte bei WTA nicht: dort lief das Training in 10 von 12 Quartalen bis an die Grenze. Mit 6000 stoppt es
+    # bei 1800 bis 2500 Runden, der Gewinn ist aber klein (WTA 2024-2026: Log Loss 0,5415 -> 0,5414).
+    max_rounds: int = 4000
     early_stopping: int = 100
     seed: int = 0
     num_threads: int = 0
