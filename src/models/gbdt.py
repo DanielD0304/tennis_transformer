@@ -100,6 +100,10 @@ class GBDTModel:
     half_life_years: Gewicht einer Trainingszeile = 0,5 ^ (Alter in Jahren / half_life_years), Alter gegen das jüngste
     Match der Historie (None = alle gleich). n_seeds: so viele Modelle mit verschiedenen Seeds, Vorhersage gemittelt;
     Rundenzahl und Kalibrator stammen vom ersten.
+    Beides ist standardmäßig aus. Gemessen im Walk-forward 2024-2026 (ATP, 104.065 Matches, gegen refit_all allein mit
+    Log Loss 0,5723): Halbwertszeit 3 Jahre +0,0000 insgesamt und +0,0012 auf der Haupttour (schlechter), 3 Seeds
+    zusätzlich -0,0001. Ein Level-Feature (main/challenger/itf) brachte +0,0002 und ist deshalb nicht eingebaut; die
+    Runde fehlt 2026 bei den meisten Challenger- und ITF-Matches und live.
     """
 
     def __init__(self, params=None, calibration='platt', features=FEATURES, refit_all=False, half_life_years=None,
