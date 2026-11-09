@@ -202,6 +202,41 @@ def test_gbdt_refit_all_uses_validation_window():
     np.testing.assert_allclose(p, 1 - full.predict(swap_ab(table)), atol=1e-9)
 
 
+def test_gbdt_time_weights_and_seeds(tmp_path):
+    """Zeitgewichte halbieren sich je Halbwertszeit; mehrere Seeds werden gemittelt und überleben save/load."""
+    pytest.importorskip('lightgbm')
+    from src.models.gbdt import GBDTModel, GBDTParams, fit_on_history, gbdt_table
+    model = GBDTModel(half_life_years=2)
+    ref = pd.Timestamp('2020-01-01')
+    w = model._weights(pd.Series([ref, ref - pd.Timedelta(days=730.5), ref - pd.Timedelta(days=1461)]), ref)
+    np.testing.assert_allclose(w, [1, 0.5, 0.25] * 2, atol=1e-3)  # das Alter zählt in ganzen Tagen
+    assert GBDTModel()._weights(pd.Series([ref]), ref) is None
+
+    m = prepare_matches(synthetic_matches(years=(2018, 2019, 2020), per_month=40, n_players=30))
+    table = gbdt_table(m)
+    y, dates = table['label'].to_numpy(float), table['date']
+    params = GBDTParams(max_rounds=60, min_data_in_leaf=20)
+    one = fit_on_history(table, y, dates, params)
+    weighted = fit_on_history(table, y, dates, params, half_life_years=1)
+    assert not np.allclose(one.predict_raw(table), weighted.predict_raw(table))
+    three = fit_on_history(table, y, dates, params, n_seeds=3)
+    assert len(three.boosters) == 3 and three.best_iteration == one.best_iteration
+    singles = []
+    for b in three.boosters:
+        single = GBDTModel(params, features=three.features)
+        single.boosters, single.best_iteration = [b], three.best_iteration
+        singles.append(single.predict_raw(table))
+    np.testing.assert_allclose(singles[0], one.predict_raw(table))  # Seed 0 = das einzelne Modell
+    assert not np.allclose(singles[0], singles[1])
+    np.testing.assert_allclose(three.predict_raw(table), np.mean(singles, axis=0))
+    np.testing.assert_allclose(three.predict(table), 1 - three.predict(swap_ab(table)), atol=1e-9)
+    path = tmp_path / 'gbdt.pkl'
+    three.save(str(path))
+    loaded = GBDTModel.load(str(path))
+    assert loaded.n_seeds == 3 and len(loaded.boosters) == 3
+    np.testing.assert_allclose(loaded.predict(table), three.predict(table))
+
+
 def swap_ab(table):
     from src.models.gbdt import swap
     return swap(table)
