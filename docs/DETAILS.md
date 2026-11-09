@@ -281,7 +281,7 @@ python -m src.evaluation.backtest --start 2023 --end 2025 --kelly 0.25 --kelly-c
 | Predictor | Datei | Modell |
 |---|---|---|
 | `elo2` | `src/elo.py` | K im 538-Stil `c/(n+o)^s`, Mix aus Gesamt- und Untergrund-Elo, optional Best-of-5 über die Satz-Wahrscheinlichkeit, pro Tour. Parameter (`ELO2_PARAMS`) nur auf Daten vor 2020 gewählt: `python -m src.elo --tour atp` |
-| `gbdt` | `src/models/gbdt.py` | LightGBM auf `features.feature_table` + Elo2. Walk-forward neu gefittet (`--gbdt-refit quarter`/`year`), Early Stopping und Platt-Kalibrierung auf den letzten 12 Monaten vor dem Fenster, Training mit gespiegelten Zeilen, Vorhersage symmetrisiert. Live-Modell: `python -m src.models.gbdt --tour atp` |
+| `gbdt` | `src/models/gbdt.py` | LightGBM auf `features.feature_table` + Elo2. Walk-forward neu gefittet (`--gbdt-refit quarter`/`year`), Early Stopping und Platt-Kalibrierung auf den letzten 12 Monaten vor dem Fenster, danach Refit der Bäume auf allen Daten inklusive dieser 12 Monate (`refit_all`, seit November 2026; ATP 2024–2026: Log Loss 0,5745 → 0,5723, Haupttour gegen den Markt unverändert), Training mit gespiegelten Zeilen, Vorhersage symmetrisiert. Live-Modell: `python -m src.models.gbdt --tour atp` |
 | `transformer` | `src/train.py` | Cross-Entropy (Focal Loss per `config.loss='focal'`), Elo2-Logit als zusätzlicher Input, symmetrische Logits, Temperature Scaling auf `val_year` (Temperatur im Checkpoint) |
 | `stack`, `stack_bands`, `stack_tf` | `src/models/stack.py` | Logistische Regression ohne Intercept auf `logit(p_market)` und die Logits von `elo2` + `gbdt` (`_tf`: + Transformer, `_bands`: Interaktion mit dem Quotenbereich), walk-forward auf out-of-sample-Vorhersagen |
 
