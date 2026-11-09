@@ -181,6 +181,32 @@ def test_gbdt_predictions_symmetric():
     assert np.corrcoef(a['p'][flipped], 1 - b['p'][flipped])[0, 1] > 0.9
 
 
+def test_gbdt_refit_all_uses_validation_window():
+    """refit_all: Die Bäume sehen auch das Validierungsfenster, der Kalibrator bleibt der aus dem ersten Schritt."""
+    pytest.importorskip('lightgbm')
+    from src.models.gbdt import GBDTParams, fit_on_history, gbdt_table
+    m = prepare_matches(synthetic_matches(years=(2018, 2019, 2020), per_month=40, n_players=30))
+    table = gbdt_table(m)
+    y, dates = table['label'].to_numpy(float), table['date']
+    params = GBDTParams(max_rounds=100, min_data_in_leaf=20)
+    base = fit_on_history(table, y, dates, params, refit_all=False)
+    full = fit_on_history(table, y, dates, params)
+    n_train = int((dates <= dates.max() - pd.DateOffset(months=12)).sum())
+    assert base.n_rows == n_train and full.n_rows == len(table)
+    assert not np.allclose(base.predict_raw(table), full.predict_raw(table))
+    assert full.best_iteration == round(base.best_iteration * len(table) / n_train)
+    assert full.booster.num_trees() == full.best_iteration
+    q = np.linspace(0.05, 0.95, 7)
+    np.testing.assert_allclose(full.calibrator.predict(q), base.calibrator.predict(q))
+    p = full.predict(table)
+    np.testing.assert_allclose(p, 1 - full.predict(swap_ab(table)), atol=1e-9)
+
+
+def swap_ab(table):
+    from src.models.gbdt import swap
+    return swap(table)
+
+
 def test_gbdt_feature_importance(gbdt_run):
     _, preds, _ = gbdt_run
     imp = next(p for p in preds if p.name == 'gbdt').importance()
