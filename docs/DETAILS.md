@@ -209,6 +209,25 @@ letzte Refresh älter als 24 Stunden ist. Beim Zusammenführen werden Spielernam
 („Medvedev D.“, „Wu Yibing“, „Aleksandr Shevchenko“ → ein Name pro Spieler), Duplikate über
 Zeitfenster + Spielerpaar erkannt und die Quoten von tennis-data an alle Matches gehängt.
 
+**Namensabgleich** (`src/names.py`, `sources/build.py`). Jede Quelle schreibt Spieler anders, und nach dem
+Sackmann-Ende gibt es für ein Match oft keine zweite Quelle, an der sich eine Schreibweise prüfen ließe. Die Regeln:
+- Kurzformen von tennis-data gehen über Nachname und Initial. Bei gleichem Nachnamen und Initial kürzt tennis-data
+  weiter aus (`Wang Xin.`, `Wang Xiy.`, `Blanch Dar.`): Das Kürzel muss dann zum Vornamen passen (`Wang Xin.` ist
+  `Xin Yu Wang`, nicht `Xiyu Wang`).
+- Volle Namen mit denselben Namensteilen in anderer Reihenfolge oder Trennung gelten als derselbe Spieler
+  (`Wang Xinyu` bei ESPN, `Xin Yu Wang` bei Sackmann). Die Sackmann-Schreibweise ist die Referenz.
+- Führt eine Quelle einen Spieler unter anderem Vornamen (`Osorio M.` für Camila Osorio, `Catherine McNally` für
+  `Caty Mcnally`), belegt dasselbe Match den Zusammenhang: gleiches Zeitfenster, gleiches Ergebnis über mindestens
+  zwei Sätze, der Gegner stimmt, der Nachname auch (`MatchIndex.find_by_score`, Zähler `score_matches`).
+- Was sich so nicht klären lässt, kommt in `build.MANUAL_ALIASES`.
+- Kurzformen ohne Zuordnung werden nicht still zu Spielern: `update_data` gibt eine Warnung aus und schreibt sie als
+  `unresolved_names` nach `data/update_state.json`. `tuk_unmatched` zählt die tennis-data-Zeilen vor dem Sackmann-Ende
+  ohne Gegenstück (ihre Quoten fehlen im Datensatz), `tuk_unmatched_names` nennt die häufigsten Namen.
+
+Bis November 2026 (Issue #40) galten Kürzel mit mehr als zwei Buchstaben als volle Namen. `Wang Xin.` fand deshalb nie
+zu ihrem Match: Vor dem Sackmann-Ende fehlten die Quoten, danach stand jedes Match doppelt im Datensatz, einmal mit
+einer Spielerin ohne Historie, und genau diese Zeile trug die Quote.
+
 Für Matches ohne Stats (tennis-data, ESPN) sind die Stat-Features 0 und `has_stats` ist 0. Im
 Training werden die Stats zufällig bei 15 % der Historien-Matches entfernt (`stats_dropout`), damit
 das Modell damit umgehen kann. Die ATP-Seite selbst blockt automatisierte Abrufe (Cloudflare) und

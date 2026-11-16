@@ -180,6 +180,7 @@ def test_same_player_rules():
     assert not sp('Eduardo Nava', 'Emilio Nava')
     assert not sp('Alexander Zverev', 'Alexander Bublik')
     assert not sp('Daniel Altmaier', 'Adolfo Daniel Vallejo')
+    assert not sp('Jing Jing Lu', 'Jia Jing Lu')  # zwei Spielerinnen, kein Teilname
 
 
 def test_clean():
@@ -322,3 +323,175 @@ def test_tourney_country():
     assert tourney_country('Monte Carlo Masters') == 'MON'
     assert tourney_country('BNP Paribas Masters', 'Paris') == 'FRA'
     assert tourney_country('Davis Cup WG R1: CZE vs AUS') == ''
+
+
+# ---------------------------------------------------------------- Issue #40: Kurzformen und andere Schreibweisen
+
+def _names(rows):
+    return {n for r in rows for n in (r['winner_name'], r['loser_name'])}
+
+
+def test_long_abbreviations_are_short_forms():
+    # tennis-data kürzt bei gleichem Nachnamen und Initial weiter aus
+    for name in ('Wang Xin.', 'Wang Xiy.', 'Blanch Dar.', 'Wongteanchai Vara.', 'Herbert P.H', 'Zhang Zh.'):
+        assert not build._is_full(name), name
+    for name in ('Xin Yu Wang', 'Wang Xinyu', 'Eric Jr. Olivarez', 'Daniil Medvedev'):
+        assert build._is_full(name), name
+
+    sp = build._same_player
+    assert sp('Wang Xin.', 'Xin Yu Wang') and sp('Wang Xin.', 'Wang Xinyu')
+    assert sp('Wang Xiy.', 'Xiyu Wang') and sp('Blanch Dar.', 'Darwin Blanch')
+    # das Kürzel unterscheidet Spieler mit gleichem Nachnamen und Initial
+    assert not sp('Wang Xin.', 'Xiyu Wang') and not sp('Wang Xiy.', 'Xin Yu Wang')
+    assert not sp('Blanch Dar.', 'Dali Blanch') and not sp('Pliskova Ka.', 'Kristyna Pliskova')
+    assert not sp('Wang Xin.', 'Wang Xiy.')
+    assert sp('Wang X.', 'Wang Xin.')  # ein kürzeres Kürzel widerspricht nicht
+    # gleiche Namensteile, andere Reihenfolge oder Trennung
+    assert sp('Wang Xinyu', 'Xin Yu Wang') and sp('Ma YeXin', 'Yexin Ma')
+    assert not sp('Wang Xinyu', 'Xiyu Wang')
+
+
+def test_registry_uses_prefix_and_reference_spelling():
+    registry = build.NameRegistry()
+    for name in ('Xin Yu Wang', 'Xiyu Wang', 'Dali Blanch', 'Darwin Blanch', 'Na Li', 'Li Na'):
+        registry.add_full(name, reference=True)
+    registry.add_full('Wang Xinyu')  # ESPN
+    assert registry.canonical('Blanch Dar.') == 'Darwin Blanch'
+    assert registry.canonical('Blanch D.') == 'Blanch D.'       # zwei Spieler möglich, bleibt offen
+    assert registry.canonical('Wang Xin.') == 'Xin Yu Wang'
+    assert registry.canonical('Wang Xiy.') == 'Xiyu Wang'
+    assert registry.canonical('Wang Xinyu') == 'Xin Yu Wang'    # ESPN-Schreibweise auf die Referenz
+    assert registry.canonical('Xinyu Wang') == 'Xin Yu Wang'
+    # zwei Referenz-Spieler mit vertauschten Namensteilen bleiben zwei Spieler
+    assert registry.canonical('Na Li') == 'Na Li' and registry.canonical('Li Na') == 'Li Na'
+
+
+def test_build_resolves_long_abbreviations_after_cutoff():
+    """Nach dem Sackmann-Ende darf 'Wang Xin.' weder ein eigener Spieler noch ein zweites Match werden."""
+    odds = dict(B365W=1.9, B365L=1.9, PSW=1.95, PSL=1.95, AvgW=1.9, AvgL=1.9, BFEW=1.95, BFEL=1.98)
+    sackmann = [
+        _row('sackmann', 'Xin Yu Wang', 'Hanne Vandewinkel', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-3 6-3'),
+        _row('sackmann', 'Xiyu Wang', 'Maria Timofeeva', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-4 6-4', match_num=1),
+    ]
+    tuk_rows = [
+        # vor dem Stichtag: Duplikat, liefert die Quoten (gingen vorher verloren)
+        _row('tuk', 'Wang Xin.', 'Vandewinkel H.', '20260525', '20260526', tour='wta', score='6-3 6-3', **odds),
+        # danach: dasselbe Match wie bei ESPN bzw. TennisMyLife
+        _row('tuk', 'Wang Xin.', 'Vandewinkel H.', '20260810', '20260814', tour='wta', surface='Hard',
+             tourney_name='Cincinnati Open', score='6-4 6-3', **odds),
+        _row('tuk', 'Wang Xiy.', 'Timofeeva M.', '20260810', '20260814', tour='wta', surface='Hard',
+             tourney_name='Cincinnati Open', score='6-0 3-0 RET', **odds),
+        # nur bei tennis-data
+        _row('tuk', 'Vandewinkel H.', 'Wang Xin.', '20260920', '20260922', tour='wta', surface='Hard',
+             tourney_name='Singapore Open', score='6-1 6-2', **odds),
+    ]
+    espn_rows = [_row('espn', 'Wang Xinyu', 'Hanne Vandewinkel', '20260810', '20260814', tour='wta',
+                      tourney_name='Cincinnati Open', score='6-4 6-3')]
+    tml_rows = [_row('tml', 'Xiyu Wang', 'Maria Timofeeva', '20260810', '20260814', tour='wta', surface='Hard',
+                     tourney_name='Cincinnati', score='6-0 3-0 RET')]
+
+    rows, stats = build.build(sackmann, tuk_rows, espn_rows, tml_rows=tml_rows)
+
+    assert _names(rows) == {'Xin Yu Wang', 'Xiyu Wang', 'Hanne Vandewinkel', 'Maria Timofeeva'}
+    assert stats['unresolved_names'] == [] and stats['tuk_unmatched'] == 0
+    assert len(rows) == 5  # 2 Sackmann, 2 in Cincinnati (je einmal), 1 in Singapur
+    rg = next(r for r in rows if r['source'] == 'sackmann' and r['winner_name'] == 'Xin Yu Wang')
+    assert rg['PSW'] == 1.95
+    cincy = [r for r in rows if r['tourney_date'] == '20260810']
+    # Priorität TennisMyLife > tennis-data > ESPN: je Match bleibt eine Zeile, mit dem Namen aus dem Datensatz
+    assert {(r['source'], r['winner_name']) for r in cincy} == {('tuk', 'Xin Yu Wang'), ('tml', 'Xiyu Wang')}
+    assert all(r['BFEW'] == 1.95 for r in cincy)  # Quoten hängen am Match des echten Spielers
+
+
+def test_build_links_other_first_names_by_score():
+    """Anderer Vorname je Quelle: gleicher Gegner, gleiches Fenster und gleiches Ergebnis belegen denselben Spieler."""
+    sackmann = [
+        _row('sackmann', 'Camila Osorio', 'Storm Hunter', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-2 6-2'),
+        _row('sackmann', 'Caty Mcnally', 'Ajla Tomljanovic', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-1 6-1', match_num=1),
+        _row('sackmann', 'Karolina Pliskova', 'Kristyna Pliskova', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-4 7-5', match_num=2),
+    ]
+    tml_rows = [
+        _row('tml', 'Camila Osorio', 'Storm Hunter', '20260727', '20260728', tour='wta', surface='Hard',
+             tourney_name='Memphis', score='7-5 7-5'),
+        _row('tml', 'Ajla Tomljanovic', 'Caty McNally', '20260608', '20260613', tour='wta', surface='Grass',
+             tourney_name='Rosmalen', score='6-4 6-4'),
+        _row('tml', 'Storm Hunter', 'Karolina Pliskova', '20260608', '20260610', tour='wta', surface='Grass',
+             tourney_name='Rosmalen', score='6-3 6-4'),
+    ]
+    tuk_rows = [
+        # tennis-data führt sie als Maria Camila: 'Osorio M.'
+        _row('tuk', 'Osorio M.', 'Hunter S.', '20260727', '20260728', tour='wta', score='7-5 7-5', BFEW=1.5, BFEL=2.8),
+        _row('tuk', 'Tomljanovic A.', 'Osorio M.', '20260920', '20260922', tour='wta', surface='Hard',
+             tourney_name='Singapore Open', score='6-1 6-2'),
+    ]
+    espn_rows = [
+        # ESPN: 'Catherine' statt 'Caty'
+        _row('espn', 'Ajla Tomljanovic', 'Catherine McNally', '20260608', '20260613', tour='wta',
+             tourney_name='Libema Open', score='6-4 6-4'),
+        _row('espn', 'Catherine McNally', 'Storm Hunter', '20261005', '20261006', tour='wta',
+             tourney_name='Wuhan Open', score='6-3 6-3'),
+        # Schwestern: gleicher Gegner im selben Fenster, aber ein anderes Ergebnis -> anderes Match, andere Spielerin
+        _row('espn', 'Storm Hunter', 'Kristyna Pliskova', '20260608', '20260611', tour='wta',
+             tourney_name='Libema Open', score='6-2 6-2'),
+    ]
+
+    rows, stats = build.build(sackmann, tuk_rows, espn_rows, tml_rows=tml_rows)
+
+    names = _names(rows)
+    assert 'Osorio M.' not in names and 'Catherine McNally' not in names
+    assert {'Camila Osorio', 'Caty Mcnally', 'Karolina Pliskova', 'Kristyna Pliskova'} <= names
+    assert stats['score_matches'] == 2 and stats['unresolved_names'] == []
+    memphis = [r for r in rows if r['tourney_date'] == '20260727']
+    assert len(memphis) == 1 and memphis[0]['BFEW'] == 1.5
+    # das Match gibt es nur einmal, spätere Zeilen tragen den Namen aus dem Datensatz
+    rosmalen = [r for r in rows if r['tourney_date'] == '20260608']
+    assert len([r for r in rosmalen if 'Caty Mcnally' in (r['winner_name'], r['loser_name'])]) == 1
+    assert next(r for r in rows if r['tourney_date'] == '20260920')['loser_name'] == 'Camila Osorio'
+    assert next(r for r in rows if r['tourney_date'] == '20261005')['winner_name'] == 'Caty Mcnally'
+    # beide Pliskova-Matches bleiben erhalten
+    assert len([r for r in rosmalen if 'Storm Hunter' in (r['winner_name'], r['loser_name'])]) == 2
+
+
+def test_build_reports_unresolved_short_forms():
+    sackmann = [_row('sackmann', 'Arthur Fils', 'Novak Djokovic', '20260525', surface='Clay', tourney_name='Roland Garros')]
+    # 'Novak D.' ist Dennis Novak, den der Datensatz nicht kennt: bleibt stehen, wird aber gemeldet
+    tuk_rows = [_row('tuk', 'Novak D.', 'Fils A.', '20261001', '20261002', surface='Hard', tourney_name='China Open',
+                     score='6-4 6-4')]
+    rows, stats = build.build(sackmann, tuk_rows, [])
+    assert stats['unresolved_names'] == [['atp', 'Novak D.', 1]]
+
+
+def test_score_match_never_merges_two_reference_players():
+    """Führt Sackmann zwei Namen als verschiedene Spieler, verbindet auch ein gleiches Ergebnis sie nicht."""
+    sackmann = [
+        _row('sackmann', 'Storm Hunter', 'Jia Jing Lu', '20260420', tour='wta', surface='Clay', tourney_name='Madrid',
+             score='6-3 6-4'),
+        _row('sackmann', 'Jing Jing Lu', 'Maria Timofeeva', '20260525', tour='wta', surface='Clay',
+             tourney_name='Roland Garros', score='6-1 6-1'),
+        _row('sackmann', 'Albert Ramos', 'Arthur Fils', '20260420', tour='atp', surface='Clay', tourney_name='Madrid',
+             score='7-6(4) 6-4'),
+    ]
+    tuk_rows = [
+        # tennis-data verwechselt die Spielerin: dasselbe Match, aber kein Alias zwischen den beiden
+        _row('tuk', 'Hunter S.', 'Jing Jing Lu', '20260420', '20260422', tour='wta', score='6-3 6-4', PSW=1.4, PSL=3.0),
+        # Doppelname nur bei tennis-data
+        _row('tuk', 'Ramos-Vinolas A.', 'Fils A.', '20260420', '20260423', tour='atp', score='7-6 6-4', PSW=2.1, PSL=1.8),
+    ]
+    rows, stats = build.build(sackmann, tuk_rows, [])
+    assert {'Jia Jing Lu', 'Jing Jing Lu', 'Albert Ramos'} <= _names(rows) and 'Ramos-Vinolas A.' not in _names(rows)
+    assert stats['score_matches'] == 2 and stats['tuk_unmatched'] == 0
+    assert next(r for r in rows if r['loser_name'] == 'Jia Jing Lu')['PSW'] == 1.4
+    assert next(r for r in rows if r['winner_name'] == 'Albert Ramos')['PSL'] == 1.8
+
+
+def test_manual_alias_for_changed_names():
+    sackmann = [_row('sackmann', 'Daria Saville', 'Storm Hunter', '20180521', tour='wta', surface='Clay',
+                     tourney_name='Roland Garros', score='6-4 6-4')]
+    tuk_rows = [_row('tuk', 'Gavrilova D.', 'Hunter S.', '20180521', '20180523', tour='wta', score='6-4 6-4', PSW=1.5, PSL=2.7)]
+    rows, stats = build.build(sackmann, tuk_rows, [])
+    assert rows[0]['PSW'] == 1.5 and stats['tuk_unmatched'] == 0

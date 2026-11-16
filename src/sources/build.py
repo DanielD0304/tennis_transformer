@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 from functools import lru_cache
 
-from ..names import candidate_keys
+from ..names import MAX_ABBREVIATION, candidate_keys, given_prefix
 from .common import LEVELS, ODDS_COLUMNS, ODDS_PAIRS, STAT_COLUMNS
 from .places import tourney_country
 
@@ -34,6 +34,11 @@ from .places import tourney_country
 MANUAL_ALIASES = {
     'Barrios M.': 'Tomas Barrios Vera',          # Marcelo Tomas Barrios Vera
     'Schwaerzler J.J.': 'Joel Schwaerzler',      # Joel Josef Schwaerzler
+    # Namenswechsel: tennis-data führt die Jahre davor unter dem alten Namen, Sackmann alles unter dem neuen
+    'Gavrilova D.': 'Daria Saville',
+    'Kozlova K.': 'Kateryna Baindl',
+    'Kuzmova V.': 'Viktoria Hruncakova',
+    'Sanders S.': 'Storm Hunter',                # sonst landet sie über den Schlüssel bei 'Sophia Sanders'
 }
 
 VALID_SURFACES = ('Hard', 'Clay', 'Grass', 'Carpet')
@@ -56,33 +61,85 @@ def _date(s):
     return datetime.strptime(str(s)[:8], "%Y%m%d")
 
 
+_ABBREVIATION = re.compile(r"(^|\s)(?!Jr\.|Sr\.)[A-Z][a-z]{0,%d}\." % (MAX_ABBREVIATION - 1))
+
+
 def _is_full(name):
-    """Voller Name ('Daniil Medvedev') statt Kurzform ('Medvedev D.')."""
-    return not re.search(r"(^|\s)(?!Jr\.|Sr\.)[A-Z][a-z]?\.", str(name))
+    """
+    Voller Name ('Daniil Medvedev') statt Kurzform ('Medvedev D.'). tennis-data kürzt bei gleichem Nachnamen und
+    Initial weiter aus ('Wang Xin.' und 'Wang Xiy.', 'Blanch Dar.'), auch das sind Kurzformen.
+    """
+    return not _ABBREVIATION.search(str(name))
+
+
+def _rotations(tokens):
+    """Namensteile ab jeder Stelle gelesen und zusammengezogen: ('wang', 'xinyu') -> 'wangxinyu', 'xinyuwang'."""
+    return ["".join(tokens[i:] + tokens[:i]) for i in range(len(tokens))]
+
+
+def _fits_prefix(abbr, full):
+    """
+    Passt das Kürzel einer Kurzform zum Vornamen des vollen Namens? 'Wang Xin.' passt zu 'Xin Yu Wang' und 'Wang Xinyu',
+    nicht zu 'Xiyu Wang'. Ein Kürzel aus einem Buchstaben prüft schon der Namens-Schlüssel.
+    """
+    prefix = given_prefix(abbr)
+    if len(prefix) <= 1:
+        return True
+    tokens = _tokens(full)
+    # Vornamen stehen vorn oder hinten und sind teils getrennt geschrieben ('Xin Yu'), deshalb ab jedem Namensteil
+    return any("".join(tokens[i:]).startswith(prefix) for i in range(len(tokens)))
 
 
 class NameRegistry:
-    """Bildet Schreibweisen über die Namens-Schlüssel auf einen vollen Namen ab."""
+    """
+    Bildet Schreibweisen auf einen vollen Namen ab: Kurzformen über den Namens-Schlüssel (und ihr Kürzel), volle Namen
+    mit denselben Namensteilen in anderer Reihenfolge oder Trennung auf die Schreibweise der Referenzquelle.
+    """
 
     def __init__(self):
-        self.index = defaultdict(dict)  # key -> {normalisierter Name: Originalname}
+        self.index = defaultdict(dict)      # key -> {normalisierter Name: Originalname}
+        self.reference = {}                 # normalisierter Name -> Originalname, nur Referenzquelle (Sackmann)
+        self.rotations = defaultdict(set)   # rotierter Name -> normalisierte Referenz-Namen
 
-    def add_full(self, name):
+    def add_full(self, name, reference=False):
         if not name:
             return
+        norm = _norm(name)
         for key in candidate_keys(name, reverse=False):
-            self.index[key].setdefault(_norm(name), name)
+            self.index[key].setdefault(norm, name)
+        if reference and norm not in self.reference:
+            self.reference[norm] = name
+            for rotated in _rotations(_tokens(name)):
+                self.rotations[rotated].add(norm)
+
+    def _reordered(self, name, norm):
+        """
+        Referenz-Name mit denselben Namensteilen in anderer Reihenfolge oder Trennung: 'Wang Xinyu' (ESPN) ->
+        'Xin Yu Wang', 'Ma YeXin' -> 'Yexin Ma'. Nur für volle Namen, die die Referenzquelle so nicht kennt, und nur
+        wenn genau ein Spieler passt.
+        """
+        if norm in self.reference or not _is_full(name):
+            return None
+        found = self.rotations.get(norm, ())
+        return self.reference[next(iter(found))] if len(found) == 1 else None
 
     def canonical(self, name):
         if not name:
             return name
         norm = _norm(name)
+        reordered = self._reordered(name, norm)
+        if reordered:
+            return reordered
+        abbreviated = len(given_prefix(name)) > 1 and not _is_full(name)
         for key in candidate_keys(name, reverse=False):
             variants = self.index.get(key)
             if not variants:
                 continue
             if norm in variants:
                 return variants[norm]
+            if abbreviated:
+                # 'Blanch Dar.' meint Darwin, nicht Dali Blanch
+                variants = {n: v for n, v in variants.items() if _fits_prefix(name, v)}
             if len(variants) == 1:
                 return next(iter(variants.values()))
         return name
@@ -163,8 +220,10 @@ def _same_player(a, b):
     Können zwei Schreibweisen derselbe Spieler sein?
 
     Kurzform ('Mpetshi G.') vs. voller Name: ihr Schlüssel muss einer der Kandidaten-Schlüssel
-    des vollen Namens sein. Zwei volle Namen: gleiche Bestandteile in anderer Reihenfolge
-    ('Wu Yibing'), Teilname ('Coleman Wong' in 'Chak Lam Coleman Wong') oder gleicher Nachname
+    des vollen Namens sein, und ein Kürzel aus mehreren Buchstaben muss zum Vornamen passen ('Wang Xin.' ist
+    'Xin Yu Wang', nicht 'Xiyu Wang'). Zwei Kurzformen: gleicher Schlüssel und verträgliche Kürzel.
+    Zwei volle Namen: gleiche Bestandteile in anderer Reihenfolge oder Trennung ('Wu Yibing', 'Wang Xinyu' und
+    'Xin Yu Wang'), Teilname ('Coleman Wong' in 'Chak Lam Coleman Wong') oder gleicher Nachname
     mit ähnlichem Vorname ('Aleksandr'/'Alexander'). Nur gleicher Schlüssel reicht bei vollen
     Namen nicht ('Arthur Fils' ist nicht 'Arthur Fery', 'Eduardo Nava' nicht 'Emilio Nava').
     """
@@ -174,20 +233,51 @@ def _same_player(a, b):
     if not (full_a and full_b):
         if full_a or full_b:
             abbr, full = (b, a) if full_a else (a, b)
-            return candidate_keys(abbr)[:1] and candidate_keys(abbr)[0] in _keys(full)
-        return candidate_keys(a)[:1] == candidate_keys(b)[:1] != []
+            return bool(candidate_keys(abbr)[:1]) and candidate_keys(abbr)[0] in _keys(full) and _fits_prefix(abbr, full)
+        pa, pb = given_prefix(a), given_prefix(b)
+        return candidate_keys(a)[:1] == candidate_keys(b)[:1] != [] and (pa.startswith(pb) or pb.startswith(pa))
     ta, tb = _tokens(a), _tokens(b)
     if not ta or not tb:
         return False
-    if sorted(ta) == sorted(tb) or "".join(ta) == "".join(tb):
+    if sorted(ta) == sorted(tb) or "".join(ta) in _rotations(tb) or "".join(tb) in _rotations(ta):
         return True
     short, long_ = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     # Teilname: gleicher Nachname am Ende oder gleicher Vorname (spanische Doppelnamen)
-    if len(short) >= 2 and set(short) <= set(long_) and (short[-1] == long_[-1] or short[0] == long_[0]):
+    # Jeder Namensteil zählt so oft, wie er vorkommt: 'Jing Jing Lu' ist kein Teilname von 'Jia Jing Lu'
+    if len(short) >= 2 and not Counter(short) - Counter(long_) and (short[-1] == long_[-1] or short[0] == long_[0]):
         return True
     if candidate_keys(a)[0] == candidate_keys(b)[0] and ta[-1] == tb[-1]:
         return SequenceMatcher(None, "".join(ta[:-1]), "".join(tb[:-1])).ratio() >= 0.75
     return False
+
+
+@lru_cache(maxsize=None)
+def _same_surname(a, b):
+    """
+    Schwächer als _same_player, nur zusammen mit gleichem Gegner, Zeitfenster und Ergebnis (MatchIndex.find_by_score):
+    gleicher Nachname. Zwei volle Namen: 'Catherine McNally' und 'Caty Mcnally', 'Kate Makarova' und 'Ekaterina
+    Makarova'. Kurzform und voller Name: 'Osorio M.' für Maria Camila Osorio (im Datensatz 'Camila Osorio'), auch wenn
+    nur ein Teil des Doppelnamens geführt wird ('Ramos-Vinolas A.' und 'Albert Ramos').
+    """
+    full_a, full_b = _is_full(a), _is_full(b)
+    if full_a and full_b:
+        ta, tb = _tokens(a), _tokens(b)
+        return len(ta) > 1 and len(tb) > 1 and ta[-1] == tb[-1]
+    if full_a or full_b:
+        abbr, full = (b, a) if full_a else (a, b)
+        if not candidate_keys(abbr)[:1]:
+            return False
+        surname = candidate_keys(abbr)[0][0]
+        return surname in _surnames(full) or any(len(t) >= 4 and (surname.startswith(t) or surname.endswith(t))
+                                                 for t in _tokens(full))
+    return False
+
+
+@lru_cache(maxsize=200_000)
+def _set_games(score):
+    """Games je Satz ohne Tiebreak-Punkte: '7-6(5) 6-1' -> ((7, 6), (6, 1)). Leer bei W/O oder ohne Spielstand."""
+    text = re.sub(r"\([^)]*\)", "", str(score or ""))
+    return tuple((int(w), int(l)) for w, l in re.findall(r"(\d+)-(\d+)", text))
 
 
 def _weeks(lo, hi):
@@ -221,6 +311,32 @@ class MatchIndex:
             if _same_player(w, other['loser_name']) and _same_player(l, other['winner_name']):
                 return other, False
         return None, None
+
+    def find_by_score(self, row):
+        """
+        Dasselbe Match, obwohl ein Name nicht passt: gleiches Zeitfenster, gleiches Ergebnis (mindestens zwei Sätze,
+        gleiche Sieger/Verlierer-Reihenfolge), ein Spieler stimmt nach _same_player, der andere trägt denselben
+        Nachnamen (_same_surname). So finden Quellen zusammen, die einen Spieler unter anderem Vornamen führen
+        ('Osorio M.' und 'Camila Osorio', 'Catherine McNally' und 'Caty Mcnally'). -> anderes Match oder None.
+        """
+        sets = _set_games(row.get('score'))
+        if len(sets) < 2:
+            return None
+        lo, hi = _window(row)
+        w, l = row['winner_name'], row['loser_name']
+        seen = set()
+        for key in _surnames(w) | _surnames(l):
+            for week in _weeks(lo, hi):
+                for other, olo, ohi in self.buckets.get((key, week), []):
+                    if id(other) in seen or not (lo <= ohi and olo <= hi):
+                        continue
+                    seen.add(id(other))
+                    if _set_games(other.get('score')) != sets:
+                        continue
+                    ow, ol = other['winner_name'], other['loser_name']
+                    if (_same_player(w, ow) and _same_surname(l, ol)) or (_same_surname(w, ow) and _same_player(l, ol)):
+                        return other
+        return None
 
 
 def _tourney_lookup(rows, field, valid, default):
@@ -437,7 +553,7 @@ def build(sackmann_rows, tuk_rows, espn_rows, players=None, market_rows=(), tml_
     def tour_of(r):
         return r.get('tour') or 'atp'
 
-    out, stats = [], Counter()
+    out, stats, lists = [], Counter(), {key: [] for key in LIST_STATS}
     tours = sorted({tour_of(r) for r in sackmann_rows + tml_rows + tuk_rows + espn_rows})
     for tour in tours:
         rows, tour_stats = _build_tour([r for r in sackmann_rows if tour_of(r) == tour],
@@ -449,13 +565,17 @@ def build(sackmann_rows, tuk_rows, espn_rows, players=None, market_rows=(), tml_
         for r in rows:
             r['tour'] = tour
         out += rows
+        for key in LIST_STATS:
+            lists[key] += [[tour, *item] for item in tour_stats.pop(key, [])]
         stats.update(tour_stats)
         stats[f'{tour}_matches'] = len(rows)
     out.sort(key=lambda r: (str(r['tourney_date']), int(float(r.get('match_num') or 0))))
-    return out, dict(stats)
+    return out, {**stats, **lists}
 
 
 MARKET_SOURCES = ('kalshi', 'polymarket')
+# Listen in den Zählern von _build_tour, pro Tour als [Tour, Name, Anzahl] gesammelt
+LIST_STATS = ('unresolved_names', 'tuk_unmatched_names')
 # Quellen ohne Untergrund, Turnierstufe und Ranking: ergänzt aus den anderen Quellen
 NO_DETAILS = ('espn',) + MARKET_SOURCES
 
@@ -463,7 +583,10 @@ NO_DETAILS = ('espn',) + MARKET_SOURCES
 def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=(), tml_rows=()):
     tml_rows = list(tml_rows)
     registry = NameRegistry()
-    for r in sackmann_rows + tml_rows + espn_rows:
+    for r in sackmann_rows:  # zuerst: die Sackmann-Schreibweise ist die Referenz
+        registry.add_full(r['winner_name'], reference=True)
+        registry.add_full(r['loser_name'], reference=True)
+    for r in tml_rows + espn_rows:
         registry.add_full(r['winner_name'])
         registry.add_full(r['loser_name'])
     for r in sackmann_rows + tml_rows + tuk_rows + espn_rows + list(market_rows):
@@ -471,6 +594,7 @@ def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=(), tml
         r['loser_name'] = registry.canonical(MANUAL_ALIASES.get(r['loser_name'], r['loser_name']))
 
     cutoff = max((r['tourney_date'] for r in sackmann_rows), default="00000000")
+    sack_count = Counter(n for r in sackmann_rows for n in (r['winner_name'], r['loser_name']))
 
     out = list(sackmann_rows)
     index = MatchIndex()
@@ -479,17 +603,29 @@ def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=(), tml
 
     aliases = Aliases()
     abbr_votes = defaultdict(Counter)  # Kurzform -> {voller Name: Anzahl Duplikate}
-    stats = Counter(sackmann=len(out), tml=0, tuk=0, espn=0, duplicates=0)
+    stats = Counter(sackmann=len(out), tml=0, tuk=0, espn=0, duplicates=0, score_matches=0, tuk_unmatched=0)
+    tuk_unmatched = Counter()  # Name -> tennis-data-Zeilen vor dem Stichtag ohne Gegenstück (ihre Quoten gehen verloren)
     for kind, rows in (('tml', tml_rows), ('tuk', tuk_rows), ('espn', espn_rows), ('market', market_rows)):
         for r in rows:
             source = r['source'] if kind == 'market' else kind
             other, same_order = index.find(r)
+            by_score = False
+            if other is None and kind != 'market':
+                # Märkte haben keinen Spielstand; die anderen Quellen dürfen über das Ergebnis zusammenfinden
+                other = index.find_by_score(r)
+                if other is not None:
+                    same_order = by_score = True
+                    stats['score_matches'] += 1
             if other is not None:
                 # gleiches Match: Namen verknüpfen, Quoten übernehmen
                 pairs = ((r['winner_name'], other['winner_name']), (r['loser_name'], other['loser_name'])) if same_order \
                     else ((r['winner_name'], other['loser_name']), (r['loser_name'], other['winner_name']))
                 for a, b in pairs:
                     if a == b:
+                        continue
+                    if by_score and sack_count[a] and sack_count[b]:
+                        # Zwei Namen, die Sackmann als verschiedene Spieler führt, bleiben verschieden (Geschwister,
+                        # 'Jia Jing Lu' und 'Jing Jing Lu'): Dann irrt eine Quelle beim Namen, das Match ist dasselbe
                         continue
                     if _is_full(a) and _is_full(b):
                         aliases.union(b, a)
@@ -509,13 +645,15 @@ def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=(), tml
                         stats[f'{source}_duplicates'] += 1
                 continue
             if (r['match_date'] or r['tourney_date']) <= cutoff:
+                if source == 'tuk':
+                    stats['tuk_unmatched'] += 1
+                    tuk_unmatched.update((r['winner_name'], r['loser_name']))
                 continue
             out.append(r)
             index.add(r)
             stats[source] += 1
 
     # Pro Spieler ein Name: bevorzugt voller Name, dann der mit den meisten Sackmann-Matches
-    sack_count = Counter(n for r in sackmann_rows for n in (r['winner_name'], r['loser_name']))
     all_count = Counter(n for r in out for n in (r['winner_name'], r['loser_name']))
     rename = {}
     for group in aliases.groups():
@@ -535,6 +673,12 @@ def _build_tour(sackmann_rows, tuk_rows, espn_rows, players, market_rows=(), tml
         r['winner_name'] = rename.get(r['winner_name'], r['winner_name'])
         r['loser_name'] = rename.get(r['loser_name'], r['loser_name'])
     stats['renamed_players'] = len(rename)
+    # Kurzformen, die sich keinem Spieler zuordnen ließen, stehen jetzt als eigene Spieler ohne Historie im Datensatz.
+    # Das darf nicht still passieren: update_data meldet sie und schreibt sie nach data/update_state.json.
+    unresolved = Counter(n for r in out for n in (r['winner_name'], r['loser_name']) if not _is_full(n))
+    stats['unresolved_names'] = [[n, c] for n, c in unresolved.most_common()]
+    # Die Namen mit den meisten Zeilen ohne Gegenstück zeigen, wo die Zuordnung systematisch scheitert
+    stats['tuk_unmatched_names'] = [[n, c] for n, c in tuk_unmatched.most_common(15) if c >= 5]
 
     # ESPN und Märkte: Untergrund, Turnierstufe und Ranking ergänzen
     surface = _tourney_lookup(sackmann_rows + tml_rows + tuk_rows, 'surface', VALID_SURFACES, 'Hard')

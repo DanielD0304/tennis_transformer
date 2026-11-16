@@ -125,6 +125,14 @@ def update(full=False, first_year=FIRST_YEAR, log=print, tours=TOURS, levels=LEV
         f"{stats.get('clean_duplicates', 0)} Doppel-Einträge, {stats.get('clean_odds_removed', 0)} Quoten, "
         f"{stats.get('clean_surface_filled', 0)} Untergründe; "
         f"{time.time() - t0:.0f}s")
+    # Namen, die sich keinem Spieler zuordnen ließen, nie still übernehmen: Sie stehen als eigene Spieler ohne Historie
+    # im Datensatz und verfälschen Elo und Features ihrer Gegner (Issue #40)
+    for tour, name, n in stats.get('unresolved_names', []):
+        log(f"WARNUNG: Kurzform ohne Zuordnung, steht als eigener Spieler im Datensatz: {name} ({tour}, {n} Matches). "
+            f"Bitte in sources/build.MANUAL_ALIASES eintragen.")
+    if stats.get('tuk_unmatched_names'):
+        log(f"tennis-data-Zeilen vor dem Sackmann-Ende ohne Gegenstück (Quoten fehlen dort): {stats.get('tuk_unmatched', 0)}, "
+            "am häufigsten " + ", ".join(f"{name} ({tour}, {n})" for tour, name, n in stats['tuk_unmatched_names'][:8]))
     return state
 
 

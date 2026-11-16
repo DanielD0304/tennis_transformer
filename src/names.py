@@ -23,9 +23,25 @@ def _ascii(text):
     return "".join(c for c in text if not unicodedata.combining(c)).lower()
 
 
+# tennis-data kürzt den Vornamen so weit, bis das Kürzel eindeutig ist: 'Zhang Zh.', 'Wang Xin.', 'Wongteanchai Vara.'
+MAX_ABBREVIATION = 4
+
+
 def _is_initial(token):
-    # 'd.', 'j.l.', 'j.-l.', aber auch 'd' ohne Punkt
-    return token.endswith(".") or len(token.replace(".", "").replace("-", "")) <= 1
+    # 'd.', 'j.l.', 'j.-l.', 'xin.', aber auch 'd' ohne Punkt und 'p.h' ohne Punkt am Ende
+    letters = token.replace(".", "").replace("-", "")
+    if len(letters) <= 1:
+        return True
+    parts = [p for p in token.replace("-", "").split(".") if p]
+    if token.endswith("."):
+        # Ein langes Wort mit Punkt ('gibert.') ist ein Tippfehler im Nachnamen, kein Kürzel
+        return len(parts) > 1 or len(letters) <= MAX_ABBREVIATION
+    return "." in token and all(len(p) == 1 for p in parts)
+
+
+def _prefix(token):
+    """Buchstaben des ersten Kürzels: 'xin.' -> 'xin', 'j.l.' -> 'j', 'j.-l.' -> 'j'."""
+    return re.sub(r"[^a-z]", "", token.split(".")[0])
 
 
 def _surname_tokens(tokens):
@@ -40,15 +56,18 @@ def _surname_tokens(tokens):
 
 
 def _parse(name):
-    """-> (nachnamen_tokens, initial, art) oder None. art: 'comma', 'abbr', 'full', 'single'."""
+    """
+    -> (nachnamen_tokens, initial, art, kürzel) oder None. art: 'comma', 'abbr', 'full', 'single'.
+    kürzel: der abgekürzte Vorname ('xin' bei 'Wang Xin.', 'd' bei 'Medvedev D.'), leer bei vollen Namen.
+    """
     if not name or not str(name).strip():
         return None
     name = _COUNTRY_SUFFIX.sub("", str(name).strip())
 
     if "," in name:
         surname, first = name.split(",", 1)
-        first = re.sub(r"[^a-z]", "", _ascii(first))
-        return _surname_tokens(_ascii(surname).split()), first[:1], 'comma'
+        prefix = _prefix(_ascii(first).strip())
+        return _surname_tokens(_ascii(surname).split()), prefix[:1], 'comma', prefix
 
     tokens = _ascii(name).split()
     if not tokens:
@@ -58,17 +77,19 @@ def _parse(name):
         i = len(tokens)
         while i > 1 and _is_initial(tokens[i - 1]):
             i -= 1
-        return _surname_tokens(tokens[:i]), re.sub(r"[^a-z]", "", tokens[i])[:1], 'abbr'
+        prefix = _prefix(tokens[i])
+        return _surname_tokens(tokens[:i]), prefix[:1], 'abbr', prefix
     if len(tokens) > 1 and _is_initial(tokens[0]):
         # 'D. Medvedev', 'J.-L. Struff', 'J.J. Wolf'
         i = 0
         while i < len(tokens) - 1 and _is_initial(tokens[i]):
             i += 1
-        return _surname_tokens(tokens[i:]), re.sub(r"[^a-z]", "", tokens[0])[:1], 'abbr'
+        prefix = _prefix(tokens[0])
+        return _surname_tokens(tokens[i:]), prefix[:1], 'abbr', prefix
     if len(tokens) > 1:
         # 'Daniil Medvedev'
-        return _surname_tokens(tokens[1:]), tokens[0][:1], 'full'
-    return _surname_tokens(tokens), "", 'single'
+        return _surname_tokens(tokens[1:]), tokens[0][:1], 'full', ""
+    return _surname_tokens(tokens), "", 'single', ""
 
 
 def player_key(name):
@@ -78,8 +99,18 @@ def player_key(name):
     parsed = _parse(name)
     if not parsed or not parsed[0]:
         return None
-    surname, initial, _ = parsed
+    surname, initial = parsed[:2]
     return "".join(surname), initial
+
+
+def given_prefix(name):
+    """
+    Der abgekürzte Vorname einer Kurzform, klein und ohne Akzente: 'Wang Xin.' -> 'xin', 'Cerundolo J.M.' -> 'j',
+    'Tabilo, A.' -> 'a'. Leer bei vollen Namen. Ein Kürzel aus mehreren Buchstaben unterscheidet Spieler mit gleichem
+    Nachnamen und gleichem Initial ('Wang Xin.' und 'Wang Xiy.', 'Pliskova Ka.' und 'Pliskova Kr.').
+    """
+    parsed = _parse(name)
+    return parsed[3] if parsed and parsed[2] in ('abbr', 'comma') else ""
 
 
 def candidate_keys(name, reverse=True):
@@ -97,7 +128,7 @@ def candidate_keys(name, reverse=True):
     parsed = _parse(name)
     if not parsed or not parsed[0]:
         return []
-    surname, initial, kind = parsed
+    surname, initial, kind = parsed[:3]
     keys = [("".join(surname), initial)]
     if kind == 'full':
         for i in range(1, len(surname)):
